@@ -24,3 +24,11 @@ configuration:
     name: Victron MQTT Password
     description: >
       The password to connect to the Victron MQTT broker. Not needed by default.
+  mqtt_tls:
+    name: MQTT TLS
+    description: >
+      Enable TLS/SSL for the MQTT connection. When enabled, the default port changes to 8883.
+  mqtt_tls_insecure:
+    name: MQTT TLS Insecure
+    description: >
+      Skip TLS certificate verification. Enable this if your MQTT broker uses a self-signed certificate.

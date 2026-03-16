@@ -18,20 +18,18 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 
 ### Home Assistant Add-on (Recommended)
 
-1. **Expose the add-on directory over Samba:**
-   Install the Samba share add-on in Home Assistant and configure it so the `/addons` directory is available as a network share. Mount that share on your computer.
-2. **Copy the Optivolt files:**
-   Copy the contents of your local Optivolt repository into the mounted `addons` share. Using `rsync` (macOS/Linux) skips development artifacts:
-   ```bash
-   rsync -av --delete --exclude 'node_modules' --exclude '.git' --exclude '.DS_Store' --exclude 'tests' --exclude 'vendor/highs-js' ~/Code/optivolt/ /Volumes/addons/optivolt/
+1. **Add the repository:**
+   Go to **Settings → Add-ons → Add-on Store**, click the **⋮** menu (top right), select **Repositories**, and add:
+   ```text
+   https://github.com/vervoto1/optivolt
    ```
-3. **Install the add-on:**
-   Go to **Settings → Add-ons → Add-on Store**. Reload local add-ons if necessary, find **Optivolt**, and click **Install**.
-4. **Configure connection settings:**
-   Open the Optivolt add-on configuration panel and enter your Victron VRM credentials / installation ID, and the Victron IP address on your local network.
-   *(Note: Optivolt automatically connects to the internal HA WebSocket API using the supervisor token to fetch historical sensor data.)*
-5. **Start and verify:**
-   Start the Optivolt add-on, open the UI, and verify that data (time series, prices, SoC, etc.) is being fetched correctly.
+2. **Install the add-on:**
+   Find **OptiVolt** in the store and click **Install**.
+3. **Configure connection settings:**
+   Open the OptiVolt add-on configuration panel and enter your Victron VRM credentials / installation ID, and the Victron IP address on your local network.
+   *(Note: OptiVolt automatically connects to the internal HA WebSocket API using the supervisor token to fetch historical sensor data.)*
+4. **Start and verify:**
+   Start the OptiVolt add-on, open the UI, and verify that data (time series, prices, SoC, etc.) is being fetched correctly.
 
 ### Standalone / Local Development
 
@@ -47,6 +45,7 @@ By default the server listens on `http://localhost:3000`.
 - `DATA_DIR` (default `<repo>/data`); stores `settings.json` and `data.json`
 - `VRM_INSTALLATION_ID`, `VRM_TOKEN` (enable VRM refresh routes)
 - `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD` (optional; required to push Dynamic ESS schedules)
+- `MQTT_TLS` (`true`/`1` to enable TLS; default port becomes 8883), `MQTT_TLS_INSECURE` (`true`/`1` to skip certificate verification)
 
 Create a `.env.local` file in the project root to set these variables for local development.
 
@@ -134,10 +133,8 @@ rest_command:
 app/                 # Static web UI (index.html, main.js, app/src/**)
 api/                 # Express server (routes + services)
 lib/                 # Core logic: LP builder, parser, DESS mapper, VRM + MQTT clients
-addon/               # Home Assistant add-on wrapper (s6, run scripts)
-translations/        # i18n strings for the HA add-on settings
-Dockerfile           # Image for HA add-on / container use
-config.yaml          # Home Assistant add-on manifest
+optivolt/            # Home Assistant add-on (config, Dockerfile, rootfs, translations)
+repository.yaml      # HA add-on repository metadata
 ```
 
 The **UI** is static and calls the **Express API** on the same origin. The **API** exposes:
