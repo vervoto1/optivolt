@@ -1,28 +1,27 @@
 {
   "sensors": [
-    { "id": "sensor.battery_charged", "name": "Battery Charge", "unit": "kWh" },
-    { "id": "sensor.battery_discharged", "name": "Battery Discharge", "unit": "kWh" },
-    { "id": "sensor.dsmr_reading_electricity_delivered_1", "name": "Grid Import", "unit": "kWh" },
-    { "id": "sensor.dsmr_reading_electricity_delivered_2", "name": "Grid Import", "unit": "kWh" },
-    { "id": "sensor.dsmr_reading_electricity_returned_1", "name": "Grid Export", "unit": "kWh" },
-    { "id": "sensor.dsmr_reading_electricity_returned_2", "name": "Grid Export", "unit": "kWh" },
-    { "id": "sensor.sma_energy", "name": "Solar Generation", "unit": "Wh" },
-    { "id": "sensor.solis_energy", "name": "Solar Generation", "unit": "Wh" },
-    { "id": "sensor.wallbox_energy", "name": "Wallbox Energy", "unit": "Wh" },
-    { "id": "sensor.altherma_outdoor_energy", "name": "Heat Pump Energy", "unit": "Wh" }
+    { "id": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_charged_energy", "name": "Battery Charge", "unit": "kWh" },
+    { "id": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_discharged_energy", "name": "Battery Discharge", "unit": "kWh" },
+    { "id": "sensor.electricity_meter_energy_consumption_tarif_1", "name": "Grid Import", "unit": "kWh" },
+    { "id": "sensor.electricity_meter_energy_consumption_tarif_2", "name": "Grid Import", "unit": "kWh" },
+    { "id": "sensor.electricity_meter_energy_production_tarif_1", "name": "Grid Export", "unit": "kWh" },
+    { "id": "sensor.electricity_meter_energy_production_tarif_2", "name": "Grid Export", "unit": "kWh" },
+    { "id": "sensor.victron_mqtt_c0619ab6bd28_system_0_system_dc_pv_energy", "name": "Victron Solar", "unit": "kWh" },
+    { "id": "sensor.envoy_122329007191_lifetime_energy_production", "name": "Enphase Solar", "unit": "MWh" },
+    { "id": "sensor.tesla_wall_connector_energy", "name": "EV Charging", "unit": "kWh" }
   ],
   "derived": [
+    {
+      "name": "Solar Generation",
+      "formula": ["+Victron Solar", "+Enphase Solar"]
+    },
     {
       "name": "Total Load",
       "formula": ["+Solar Generation", "+Grid Import", "+Battery Discharge", "-Grid Export", "-Battery Charge"]
     },
     {
-      "name": "Residual Load",
-      "formula": ["+Total Load", "-Wallbox Energy", "-Heat Pump Energy"]
-    },
-    {
       "name": "Load without EV",
-      "formula": ["+Total Load", "-Wallbox Energy"]
+      "formula": ["+Total Load", "-EV Charging"]
     }
   ],
   "activeConfig": {
