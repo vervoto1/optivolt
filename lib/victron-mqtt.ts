@@ -6,6 +6,8 @@ export interface VictronMqttConfig {
   username?: string;
   password?: string;
   protocol?: string;
+  tls?: boolean;
+  rejectUnauthorized?: boolean;
   reconnectPeriod?: number;
   serial?: string;
 }
@@ -36,6 +38,8 @@ export class VictronMqttClient {
   username: string | undefined;
   password: string | undefined;
   protocol: string;
+  tls: boolean;
+  rejectUnauthorized: boolean;
   reconnectPeriod: number;
   serial: string | null;
   private _serialPromise: Promise<string> | null;
@@ -43,18 +47,22 @@ export class VictronMqttClient {
 
   constructor({
     host = 'venus.local',
-    port = 1883,
+    port,
     username = '',
     password = '',
-    protocol = 'mqtt',    // 'mqtt', 'ws', 'wss', ...
+    protocol,
+    tls = false,
+    rejectUnauthorized = true,
     reconnectPeriod = 0,  // 0 = no auto reconnect by default
     serial,               // optional: if you already know the portal id
   }: VictronMqttConfig = {}) {
+    this.tls = tls;
+    this.rejectUnauthorized = rejectUnauthorized;
     this.host = host;
-    this.port = port;
+    this.port = port ?? (tls ? 8883 : 1883);
     this.username = username || undefined;
     this.password = password || undefined;
-    this.protocol = protocol;
+    this.protocol = protocol ?? (tls ? 'mqtts' : 'mqtt');
     this.reconnectPeriod = reconnectPeriod;
 
     this.serial = serial ?? null;  // cached portal id once known
@@ -71,6 +79,8 @@ export class VictronMqttClient {
       username: this.username,
       password: this.password,
       reconnectPeriod: this.reconnectPeriod,
+      rejectUnauthorized: this.rejectUnauthorized,
+      family: 4, // prefer IPv4 — mDNS hostnames (e.g. venus.local) often resolve to unreachable IPv6
     });
 
     const client = await this._clientPromise;
