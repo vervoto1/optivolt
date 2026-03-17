@@ -19,9 +19,9 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 The system has three layers, all ESM TypeScript (no build step; runs via Node 22+ type stripping or tsx):
 
 ### `lib/` — Core logic (pure, no I/O)
-- **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, etc.) and tracks `soc` (state of charge) evolution with charge/discharge efficiency.
+- **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, etc.) and tracks `soc` (state of charge) evolution with charge/discharge efficiency. Effective load per slot is `load + evLoad` (EV demand added as a separate input). Supports CV (Constant Voltage) phase modeling via MILP binaries that reduce charge power limits at configurable high-SoC thresholds.
 - **`parse-solution.ts`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, and timestamps.
-- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics.
+- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics. Applies EV discharge constraint (blocks battery→grid during EV charging slots) and caps CV-aware target SoC boosts to avoid overcharging.
 - **`vrm-api.ts`** / **`victron-mqtt.ts`** — VRM REST client and MQTT client for writing schedules to Victron. MQTT supports TLS via `tls` and `rejectUnauthorized` config options.
 
 ### `api/` — Express server
@@ -34,6 +34,9 @@ The system has three layers, all ESM TypeScript (no build step; runs via Node 22
   - `config-builder.ts` — Merges persisted settings + data into solver inputs.
   - `vrm-refresh.ts` — Fetches time-series from VRM and persists to `data.json`.
   - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT. Reads `MQTT_TLS` and `MQTT_TLS_INSECURE` env vars for SSL/TLS support.
+  - `ha-ev-service.ts` — Reads EV Smart Charging schedule from HA REST API (uses supervisor proxy when running as add-on).
+  - `ha-price-service.ts` — Reads electricity prices from HA sensor (e.g., GE Spot). Supports hourly (repeat 4×) and 15-min price intervals.
+  - `auto-calculate.ts` — Internal timer that calls `planAndMaybeWrite()` on a configurable interval. Concurrency guard skips tick when calculation is in progress.
 - **Defaults** (`api/defaults/`): `default-settings.json` and `default-data.json` used when no persisted files exist.
 
 ### `optivolt/` — Home Assistant add-on
@@ -50,7 +53,7 @@ The system has three layers, all ESM TypeScript (no build step; runs via Node 22
 - The UI calls the Express API on the same origin. Time-series data is display-only (comes from VRM, not editable).
 
 ### Data flow
-Settings and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings` and triggers computation via `POST /calculate`. The LP is always built server-side from persisted state — the client never sends LP parameters directly.
+Settings and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings` and triggers computation via `POST /calculate`. The LP is always built server-side from persisted state — the client never sends LP parameters directly. `evLoad` can be sourced from the HA EV Smart Charging integration (via `ha-ev-service.ts`) or injected manually via `POST /data`. Electricity prices can be sourced from VRM, pushed via `POST /data`, or read from an HA sensor (via `ha-price-service.ts`).
 
 ## Testing
 

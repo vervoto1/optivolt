@@ -13,6 +13,10 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - Optional Dynamic ESS schedule pushes over MQTT (first 4 slots)
 - Static, build-free web UI served by the same Express process
 - Persistent settings + time-series data under a configurable data directory
+- EV charging integration: reads EV Smart Charging schedule from Home Assistant, adds EV load as separate demand in the optimizer, optional battery discharge constraint during charging, visible as orange bar in charts
+- Auto-calculate timer: built-in periodic calculation (configurable interval), replaces external HA automation triggers
+- HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
+- Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling
 
 ## Installation
 
@@ -54,6 +58,8 @@ Create a `.env.local` file in the project root to set these variables for local 
 Optivolt is designed to be coordinated heavily via Home Assistant. Below are the steps and examples to automate its features.
 
 ### 1. Trigger the Optimizer Loop
+> **Note:** This step is no longer needed if you enable the built-in auto-calculate timer in Settings. The rest_command below is kept as a manual alternative.
+
 Optivolt relies on a periodic trigger to fetch new data, calculate a plan, and (optionally) push it to Victron. Create a REST command to call the `/calculate/` endpoint:
 ```yaml
 rest_command:
@@ -80,6 +86,9 @@ automation:
       - service: rest_command.optivolt_calculate
 ```
 
+### 1a. Built-in Auto-Calculate Timer
+OptiVolt can run calculations automatically on a configurable interval without any external automation. Enable it in **Settings → Auto-Calculate** and set the desired interval. When active, OptiVolt will periodically call the full pipeline (fetch VRM data → solve LP → optionally write to Victron) on its own. No HA automation or REST command trigger is required.
+
 ### 2. Victron DESS Node-RED Mode & Price API Bug
 To prevent Victron DESS from overwriting Optivolt's settings, you should set DESS to **Node-RED** mode (e.g., using the HA Victron MQTT extension).
 
@@ -95,6 +104,8 @@ rest_command:
 ```
 
 ### 4. Push Custom Pricing / Sensor Data (Optional)
+> **Note:** OptiVolt can now read prices directly from Home Assistant sensors. Set `dataSources.prices` to `'ha'` in **Settings → HA Price Sensor** and configure the entity ID (e.g., a GE Spot sensor). Both hourly and 15-minute price intervals are supported. The manual push example below remains available as an alternative.
+
 If you don't use VRM for pricing and instead manually push data (by setting data sources to "API" in the UI), you can use the `/data` endpoint.
 ```yaml
 rest_command:
@@ -127,6 +138,14 @@ rest_command:
       }
 ```
 
+### 5. EV Charging
+OptiVolt integrates with the **EV Smart Charging** integration in Home Assistant to account for EV charging demand in the optimizer.
+
+- Configure in **Settings → EV Charging**: enable the feature, set the sensor entities (charging schedule, car connected state), and charger power.
+- When enabled, OptiVolt reads the EV charging schedule from HA and adds EV load as a separate demand signal in the LP, shown as an orange bar in the energy flow charts.
+- **Always apply schedule** toggle: plan for EV demand even when the car is not currently connected.
+- Battery discharge during EV charging can be optionally disabled to avoid double-conversion losses (grid → battery → EV is less efficient than grid → EV directly).
+
 ## Architecture & HTTP API
 
 ```text
@@ -137,17 +156,28 @@ optivolt/            # Home Assistant add-on (config, Dockerfile, rootfs, transl
 repository.yaml      # HA add-on repository metadata
 ```
 
+Key services under `api/services/`:
+- `planner-service.ts` — Orchestrates the full pipeline (VRM refresh → LP build → HiGHS solve → DESS map → MQTT write).
+- `ha-ev-service.ts` — Reads EV charging schedule from Home Assistant REST API.
+- `ha-price-service.ts` — Reads electricity prices from Home Assistant sensor (e.g., GE Spot).
+- `auto-calculate.ts` — Internal timer that triggers calculations on a configurable interval.
+
 The **UI** is static and calls the **Express API** on the same origin. The **API** exposes:
 
 - `POST /calculate` — Builds & solves the LP with **HiGHS** and returns per-slot flows, SoC, and DESS mappings. Fast execution.
 - `GET/POST /settings` — Reads/writes persisted system + algorithm settings (defaulting to `api/defaults/default-settings.json`).
-- `POST /data` — Endpoint to inject custom time-series data. The payload maps arrays of 15m values:
+- `POST /data` — Endpoint to inject custom time-series data. The payload maps arrays of 15m values. Accepted keys include `importPrice`, `exportPrice`, `load`, `pv`, `soc`, and `evLoad`:
   ```json
   {
     "importPrice": {
       "start": "2024-01-01T00:00:00.000Z",
       "step": 15,
       "values": [10.5, 11.2, 12.0, 11.8]
+    },
+    "evLoad": {
+      "start": "2024-01-01T00:00:00.000Z",
+      "step": 15,
+      "values": [0, 0, 7400, 7400]
     }
   }
   ```
