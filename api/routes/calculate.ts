@@ -20,6 +20,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       await planAndMaybeWrite({
         updateData: shouldUpdateData,
         writeToVictron: shouldWriteToVictron,
+        forceWrite: true, // manual trigger always writes
       });
 
     res.json({

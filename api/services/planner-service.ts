@@ -146,18 +146,40 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   return { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow };
 }
 
-export async function writePlanToVictron(rows: PlanRowWithDess[]): Promise<void> {
-  await setDynamicEssSchedule(rows, Math.min(DESS_SLOTS, rows.length));
+let lastDessFingerprint: string | null = null;
+
+function dessFingerprint(rows: PlanRowWithDess[], slotCount: number): string {
+  const n = Math.min(slotCount, rows.length);
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = rows[i].dess;
+    parts.push(`${d.strategy}:${d.restrictions}:${d.feedin}:${Math.round(d.socTarget_percent)}`);
+  }
+  return parts.join('|');
+}
+
+export async function writePlanToVictron(rows: PlanRowWithDess[], { force = false } = {}): Promise<void> {
+  const nSlots = Math.min(DESS_SLOTS, rows.length);
+  const fp = dessFingerprint(rows, nSlots);
+
+  if (!force && fp === lastDessFingerprint) {
+    console.log(`[mqtt] DESS schedule unchanged, skipping write (${nSlots} slots)`);
+    return;
+  }
+
+  await setDynamicEssSchedule(rows, nSlots);
+  lastDessFingerprint = fp;
 }
 
 export async function planAndMaybeWrite({
   updateData = false,
   writeToVictron = false,
+  forceWrite = false,
 } = {}): Promise<ComputePlanResult> {
   const result = await computePlan({ updateData });
   if (writeToVictron) {
     try {
-      await writePlanToVictron(result.rows);
+      await writePlanToVictron(result.rows, { force: forceWrite });
     } catch (err) {
       console.error('[calculate] Failed to write to Victron:', (err as Error).message);
     }
