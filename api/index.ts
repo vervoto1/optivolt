@@ -7,8 +7,10 @@ const port = Number.isFinite(rawPort) ? rawPort : 3000;
 const host = process.env.HOST ?? '0.0.0.0';
 
 function shutdown() {
-  stopAutoCalculate();
-  process.exit(0);
+  // Load settings to revert DESS mode on clean shutdown
+  loadSettings()
+    .then(settings => { stopAutoCalculate(settings); process.exit(0); })
+    .catch(() => { stopAutoCalculate(); process.exit(0); });
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

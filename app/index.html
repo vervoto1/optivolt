@@ -795,7 +795,8 @@
     class="mx-auto w-full max-w-7xl px-4 py-8 hidden">
     <div class="grid gap-6 lg:grid-cols-2 lg:items-start">
 
-      <!-- Left column: System Settings -->
+      <!-- Left column: System Settings + feature cards -->
+      <div class="space-y-6">
       <section id="card-system" class="card">
         <div class="mb-4 flex items-center justify-between gap-3">
           <h2 class="sidebar-label">System settings</h2>
@@ -855,6 +856,109 @@
         </div>
       </section>
 
+        <!-- EV Charging Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">EV Charging</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input id="ev-enabled" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">EV charging enabled</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charger power (W)</span>
+              <input id="ev-charger-power" type="number" step="100" value="11000" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="ev-disable-discharge" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Disable battery discharge while charging</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule sensor entity</span>
+              <input id="ev-schedule-sensor" type="text" placeholder="sensor.ev_smart_charging_charging" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule attribute</span>
+              <input id="ev-schedule-attribute" type="text" value="charging_schedule" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Connected switch entity</span>
+              <input id="ev-connected-switch" type="text" placeholder="switch.ev_smart_charging_ev_connected" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="ev-always-apply" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Always apply schedule (even if car is not connected to charger)</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Constant Voltage Phase Tuning -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">CV Phase Tuning</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input type="checkbox" id="cv-enabled">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Reduce charge power at high SoC</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: SoC (%)</span>
+              <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: Max charge power (W)</span>
+              <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: SoC (%)</span>
+              <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: Max charge power (W)</span>
+              <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600" class="form-input">
+            </label>
+          </div>
+        </section>
+
+        <!-- Auto-Calculate Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Auto-Calculate</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input id="auto-calc-enabled" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Interval (minutes)</span>
+              <input id="auto-calc-interval" type="number" min="1" step="1" value="15" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="auto-calc-update-data" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Update data before calculation</span>
+            </label>
+            <label class="toggle">
+              <input id="auto-calc-write-victron" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Write to Victron</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">DESS mode entity (auto Node-RED/VRM switch)</span>
+              <input id="auto-calc-dess-entity" type="text" placeholder="select.victron_mqtt_..._dess_mode" class="form-input" />
+            </label>
+          </div>
+        </section>
+      </div>
+
       <!-- Right column: stacked cards -->
       <div class="space-y-6">
 
@@ -911,103 +1015,6 @@
             <label class="block text-sm">Derived (JSON)
               <textarea id="pred-derived" rows="5" class="form-input font-mono text-xs" data-predictions-only="true"
                 placeholder='[{"name":"Total Load","formula":["+Grid Import","-Grid Export"]}]'></textarea>
-            </label>
-          </div>
-        </section>
-
-        <!-- EV Charging Card -->
-        <section class="card">
-          <div class="mb-4">
-            <h2 class="sidebar-label">EV Charging</h2>
-          </div>
-          <div class="space-y-3">
-            <label class="toggle">
-              <input id="ev-enabled" type="checkbox">
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">EV charging enabled</span>
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charger power (W)</span>
-              <input id="ev-charger-power" type="number" step="100" value="11000" class="form-input" />
-            </label>
-            <label class="toggle">
-              <input id="ev-disable-discharge" type="checkbox" checked>
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Disable battery discharge while charging</span>
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule sensor entity</span>
-              <input id="ev-schedule-sensor" type="text" placeholder="sensor.ev_smart_charging_charging" class="form-input" />
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule attribute</span>
-              <input id="ev-schedule-attribute" type="text" value="charging_schedule" class="form-input" />
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Connected switch entity</span>
-              <input id="ev-connected-switch" type="text" placeholder="switch.ev_smart_charging_ev_connected" class="form-input" />
-            </label>
-            <label class="toggle">
-              <input id="ev-always-apply" type="checkbox">
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Always apply schedule (even if car is not connected to charger)</span>
-            </label>
-          </div>
-        </section>
-
-        <!-- Constant Voltage Phase Tuning -->
-          <section class="card">
-            <h3>Constant Voltage Phase Tuning</h3>
-            <p class="text-xs text-slate-400">
-              Reduce charge power at high SoC to match your battery's CV phase behavior.
-            </p>
-            <label class="toggle">
-              <input type="checkbox" id="cv-enabled">
-              <span class="toggle-knob"></span>
-              Enable CV phase limits
-            </label>
-            <label class="block text-sm">
-              <span class="text-xs font-medium text-slate-400">Threshold 1: SoC (%)</span>
-              <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95">
-            </label>
-            <label class="block text-sm">
-              <span class="text-xs font-medium text-slate-400">Threshold 1: Max charge power (W)</span>
-              <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360">
-            </label>
-            <label class="block text-sm">
-              <span class="text-xs font-medium text-slate-400">Threshold 2: SoC (%)</span>
-              <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97">
-            </label>
-            <label class="block text-sm">
-              <span class="text-xs font-medium text-slate-400">Threshold 2: Max charge power (W)</span>
-              <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600">
-            </label>
-          </section>
-
-        <!-- Auto-Calculate Card -->
-        <section class="card">
-          <div class="mb-4">
-            <h2 class="sidebar-label">Auto-Calculate</h2>
-          </div>
-          <div class="space-y-3">
-            <label class="toggle">
-              <input id="auto-calc-enabled" type="checkbox">
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Interval (minutes)</span>
-              <input id="auto-calc-interval" type="number" min="1" step="1" value="15" class="form-input" />
-            </label>
-            <label class="toggle">
-              <input id="auto-calc-update-data" type="checkbox" checked>
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Update data before calculation</span>
-            </label>
-            <label class="toggle">
-              <input id="auto-calc-write-victron" type="checkbox" checked>
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Write to Victron</span>
             </label>
           </div>
         </section>

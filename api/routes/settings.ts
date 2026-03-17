@@ -28,8 +28,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const mergedSettings = { ...prevSettings, ...incoming };
     await saveSettings(mergedSettings);
 
-    // Restart auto-calculate timer with new settings
-    stopAutoCalculate();
+    // Restart auto-calculate timer with new settings (pass prev settings for DESS revert)
+    stopAutoCalculate(prevSettings);
     startAutoCalculate(mergedSettings);
 
     res.json({ message: 'Settings saved successfully.', settings: mergedSettings });

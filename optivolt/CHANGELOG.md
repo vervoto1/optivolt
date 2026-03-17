@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- Auto-manage Victron DESS mode: when pushing schedules to Victron is enabled, OptiVolt automatically sets DESS to Node-RED mode via the configured HA select entity (e.g., `select.victron_mqtt_..._dess_mode`) and reverts to Auto/VRM when stopped or shut down
+- Fix CV phase: add reverse MILP constraint that prevents the solver from voluntarily activating charge throttling below the CV threshold, eliminating gaps in the charging schedule
+- Cap DESS target SoC +5% boost at the first CV threshold to prevent target oscillation during CV phase charging
+
 ## 0.4.1
 
 - Add EV charging as separate uncontrollable load input (closes #1)
