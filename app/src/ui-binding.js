@@ -88,7 +88,6 @@ export function getElements() {
     autoCalcInterval: document.getElementById('auto-calc-interval'),
     autoCalcUpdateData: document.getElementById('auto-calc-update-data'),
     autoCalcWriteVictron: document.getElementById('auto-calc-write-victron'),
-    autoCalcDessEntity: document.getElementById('auto-calc-dess-entity'),
 
     // HA Price Sensor
     haPriceSensor: document.getElementById('ha-price-sensor'),

@@ -68,7 +68,6 @@ export interface AutoCalculateConfig {
   intervalMinutes: number;
   updateData: boolean;
   writeToVictron: boolean;
-  dessModeEntity?: string;
 }
 
 export interface HaPriceConfig {

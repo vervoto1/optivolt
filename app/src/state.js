@@ -64,7 +64,6 @@ export function snapshotUI(els) {
       intervalMinutes: Math.max(1, Number(els.autoCalcInterval?.value) || 15),
       updateData: els.autoCalcUpdateData?.checked ?? true,
       writeToVictron: els.autoCalcWriteVictron?.checked ?? true,
-      dessModeEntity: els.autoCalcDessEntity?.value ?? '',
     },
 
     // HA Price Config — always send complete object (shallow merge safe)
@@ -152,8 +151,6 @@ export function hydrateUI(els, obj = {}) {
   if (els.autoCalcInterval) els.autoCalcInterval.value = obj.autoCalculate?.intervalMinutes ?? 15;
   if (els.autoCalcUpdateData) els.autoCalcUpdateData.checked = obj.autoCalculate?.updateData ?? true;
   if (els.autoCalcWriteVictron) els.autoCalcWriteVictron.checked = obj.autoCalculate?.writeToVictron ?? true;
-  if (els.autoCalcDessEntity) els.autoCalcDessEntity.value = obj.autoCalculate?.dessModeEntity ?? '';
-
   // HA Price Sensor
   if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';
   if (els.haPriceInterval) els.haPriceInterval.value = String(obj.haPriceConfig?.priceInterval ?? 60);

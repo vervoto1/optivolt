@@ -37,8 +37,7 @@
     "enabled": false,
     "intervalMinutes": 15,
     "updateData": true,
-    "writeToVictron": true,
-    "dessModeEntity": ""
+    "writeToVictron": true
   },
   "haPriceConfig": {
     "sensor": "",
