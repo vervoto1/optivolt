@@ -189,17 +189,22 @@ export function buildLP({
     // Soft min SOC constraint
     lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
 
-    // CV phase: force cv_k_t = 1 when start-of-slot SoC >= threshold
-    // Uses tight big-M (maxSoc_Wh - threshold) instead of maxSoc_Wh for numerical stability.
-    // Mathematically equivalent: when cv=1, RHS = threshold + (maxSoc - threshold) = maxSoc (always true).
+    // CV phase: cv_k_t = 1 if and only if start-of-slot SoC >= threshold.
+    // Forward constraint: forces cv=1 when SoC > threshold.
+    // Reverse constraint: forces cv=0 when SoC < threshold (prevents the solver
+    //   from voluntarily activating CV throttling below threshold to game charge distribution).
     for (let k = 0; k < cvK; k++) {
       const tightM = maxSoc_Wh - cvThresholdWh[k];
       if (t === 0) {
         // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant
         lines.push(` c_cv_${k}_${t}: ${toNum(initialSoc_Wh)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+        // Reverse: threshold * cv <= initialSoc (cv=1 only if initialSoc >= threshold)
+        lines.push(` c_cv_rev_${k}_${t}: ${toNum(cvThresholdWh[k])} ${cvBin(k, t)} <= ${toNum(initialSoc_Wh)}`);
       } else {
         // Slot t>0: start-of-slot SoC is soc_{t-1}
         lines.push(` c_cv_${k}_${t}: ${soc(t - 1)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+        // Reverse: threshold * cv <= soc_{t-1} (cv=1 only if soc >= threshold)
+        lines.push(` c_cv_rev_${k}_${t}: ${toNum(cvThresholdWh[k])} ${cvBin(k, t)} - ${soc(t - 1)} <= 0`);
       }
     }
   }
