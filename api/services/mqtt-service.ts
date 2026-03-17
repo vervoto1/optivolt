@@ -94,14 +94,8 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
     tasks.push(client.writeScheduleSlot(i, slot, { serial }));
   }
 
-  // Clear unused slots beyond our schedule by setting Start to 0 (GX ignores them)
-  for (let i = nSlots; i < 48; i += 1) {
-    tasks.push(client.writeSetting(`settings/0/Settings/DynamicEss/Schedule/${i}/Start`, 0, { serial }));
-    tasks.push(client.writeSetting(`settings/0/Settings/DynamicEss/Schedule/${i}/Duration`, 0, { serial }));
-  }
-
   await Promise.all(tasks);
-  console.log(`[mqtt] DESS schedule written (${nSlots} slots, ${48 - nSlots} cleared, serial: ${serial})`);
+  console.log(`[mqtt] DESS schedule written (${nSlots} slots, serial: ${serial})`);
 
   return { serial, slotsWritten: nSlots };
 }

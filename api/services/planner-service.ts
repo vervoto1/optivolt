@@ -14,8 +14,8 @@ import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { extractWindow } from '../../lib/time-series-utils.ts';
 import type { PlanRowWithDess, Data } from '../types.ts';
 
-// How many slots we push into Dynamic ESS (48 = 12 hours at 15-min intervals)
-const DESS_SLOTS = 48;
+// How many slots we push into Dynamic ESS
+const DESS_SLOTS = 4;
 
 // Lazy, shared HiGHS instance
 type HighsInstance = Awaited<ReturnType<typeof highsFactory>>;
