@@ -1,6 +1,17 @@
 # Home Assistant add-on Dockerfile for OptiVolt.
 # BUILD_FROM is passed automatically by the HA builder.
 ARG BUILD_FROM
+#
+# Stage 1: install npm deps on the native builder platform to avoid QEMU
+# "Illegal instruction" crashes when cross-compiling for aarch64.
+FROM node:22-alpine AS deps
+WORKDIR /opt/optivolt
+COPY package.json package-lock.json* ./
+RUN npm_config_ignore_scripts=true npm ci \
+  && npm prune --omit=dev \
+  && npm_config_ignore_scripts=true npm install -g tsx
+
+# Stage 2: final image on the target HA base.
 FROM $BUILD_FROM
 
 # Minimal runtime env
@@ -14,21 +25,17 @@ RUN apk add --no-cache nodejs npm curl
 # Workdir for the app
 WORKDIR /opt/optivolt
 
-# Copy only what we need (smaller image, faster build)
-COPY package.json package-lock.json* ./
+# Copy pre-built node_modules and global tsx from native stage
+COPY --from=deps /opt/optivolt/node_modules ./node_modules
+COPY --from=deps /usr/local/lib/node_modules/tsx /usr/local/lib/node_modules/tsx
+RUN ln -s ../lib/node_modules/tsx/dist/cli.mjs /usr/local/bin/tsx
+COPY package.json ./
+
+# Copy app source
 COPY app ./app
 COPY api ./api
 COPY lib ./lib
 COPY vendor/highs-build ./vendor/highs-build
-
-# Install deps, then prune dev deps.
-# Install tsx globally: Alpine's Node 22 is compiled without TypeScript support
-# (--without-amaro), so we use tsx as the TypeScript runtime instead.
-# npm_config_ignore_scripts avoids "Illegal instruction" crashes when QEMU
-# emulates aarch64 during cross-platform Docker builds on x86_64 runners.
-RUN npm_config_ignore_scripts=true npm ci \
-  && npm prune --omit=dev \
-  && npm_config_ignore_scripts=true npm install -g tsx
 
 # s6-overlay service + init hooks
 COPY rootfs/ /

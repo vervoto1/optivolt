@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository
+
+This is the active development fork at `vervoto1/optivolt`. The upstream repo is `bmesuere/optivolt`. All CI/CD (tests, Docker image builds) runs on this fork. Docker images are published to `ghcr.io/vervoto1/`.
+
 ## Project overview
 
 OptiVolt is a linear-programming optimizer for home energy systems (battery, PV, EV, heat pump, grid). It builds a day-ahead cost-minimization plan over 15-minute slots using the HiGHS solver (WASM). Primary target: Victron Energy ESS systems via the VRM API + MQTT Dynamic ESS schedule writing. Runs as a Home Assistant add-on or standalone Node.js server.
