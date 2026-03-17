@@ -10,6 +10,7 @@ export function getElements() {
     sourceLoad: $("#source-load"),
     sourcePv: $("#source-pv"),
     sourceSoc: $("#source-soc"),
+    sourceEvLoad: $("#source-ev-load"),
     rebalanceEnabled: $("#rebalance-enabled"),
     rebalanceHoldHours: $("#rebalance-hold-hours"),
 
@@ -46,6 +47,8 @@ export function getElements() {
     // summary fields
     sumLoad: $("#sum-load-kwh"),
     sumPv: $("#sum-pv-kwh"),
+    sumEv: $("#sum-ev-kwh"),
+    sumEvRow: $("#sum-ev-kwh-row"),
     sumLoadGrid: $("#sum-load-grid-kwh"),
     sumLoadBatt: $("#sum-load-batt-kwh"),
     sumLoadPv: $("#sum-load-pv-kwh"),
@@ -63,6 +66,38 @@ export function getElements() {
     haUrl: $("#pred-ha-url"),
     haToken: $("#pred-ha-token"),
     haSettingsGroup: $("#pred-ha-settings-group"),
+
+    // EV Charging (Settings tab)
+    evEnabled: document.getElementById('ev-enabled'),
+    evChargerPower: document.getElementById('ev-charger-power'),
+    evDisableDischarge: document.getElementById('ev-disable-discharge'),
+    evScheduleSensor: document.getElementById('ev-schedule-sensor'),
+    evScheduleAttribute: document.getElementById('ev-schedule-attribute'),
+    evConnectedSwitch: document.getElementById('ev-connected-switch'),
+    evAlwaysApply: document.getElementById('ev-always-apply'),
+
+    // CV Phase Tuning (Settings tab)
+    cvEnabled: document.getElementById('cv-enabled'),
+    cvThreshold1Soc: document.getElementById('cv-threshold1-soc'),
+    cvThreshold1Power: document.getElementById('cv-threshold1-power'),
+    cvThreshold2Soc: document.getElementById('cv-threshold2-soc'),
+    cvThreshold2Power: document.getElementById('cv-threshold2-power'),
+
+    // Auto-Calculate
+    autoCalcEnabled: document.getElementById('auto-calc-enabled'),
+    autoCalcInterval: document.getElementById('auto-calc-interval'),
+    autoCalcUpdateData: document.getElementById('auto-calc-update-data'),
+    autoCalcWriteVictron: document.getElementById('auto-calc-write-victron'),
+
+    // HA Price Sensor
+    haPriceSensor: document.getElementById('ha-price-sensor'),
+    haPriceInterval: document.getElementById('ha-price-interval'),
+    haPriceTodayAttr: document.getElementById('ha-price-today-attr'),
+    haPriceTomorrowAttr: document.getElementById('ha-price-tomorrow-attr'),
+    haPriceTimeKey: document.getElementById('ha-price-time-key'),
+    haPriceValueKey: document.getElementById('ha-price-value-key'),
+    haPriceMultiplier: document.getElementById('ha-price-multiplier'),
+    haPriceImportEqualsExport: document.getElementById('ha-price-import-equals-export'),
   };
 }
 

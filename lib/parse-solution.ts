@@ -62,6 +62,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
 
       load: round(cfg.load_W[t]),
       pv: round(cfg.pv_W[t]),
+      evLoad: round(cfg.evLoad_W?.[t] ?? 0),
       ic: cfg.importPrice[t],
       ec: cfg.exportPrice[t],
 

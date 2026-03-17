@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import { loadSettings, saveSettings } from '../services/settings-store.ts';
+import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 
 const router = express.Router();
 
@@ -26,6 +27,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const prevSettings = await loadSettings();
     const mergedSettings = { ...prevSettings, ...incoming };
     await saveSettings(mergedSettings);
+
+    // Restart auto-calculate timer with new settings
+    stopAutoCalculate();
+    startAutoCalculate(mergedSettings);
 
     res.json({ message: 'Settings saved successfully.', settings: mergedSettings });
   } catch (error) {

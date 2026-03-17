@@ -3,6 +3,8 @@ import type { VRMForecasts, VRMPrices } from '../../lib/vrm-api.ts';
 import { loadSettings, saveSettings } from './settings-store.ts';
 import { loadData, saveData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
+import { fetchEvLoadFromHA } from './ha-ev-service.ts';
+import { fetchPricesFromHA } from './ha-price-service.ts';
 import type { Data } from '../types.ts';
 
 function createClientFromEnv(): VRMClient {
@@ -136,7 +138,32 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     ? { timestamp: new Date().toISOString(), value: socPercent }
     : baseData.soc;
 
-  const nextData: Data = { load, pv, importPrice, exportPrice, soc, rebalanceState: baseData.rebalanceState };
+  // Prices from Home Assistant
+  if (settings.dataSources.prices === 'ha') {
+    try {
+      const haPrices = await fetchPricesFromHA(settings);
+      if (haPrices) {
+        importPrice = haPrices.importPrice;
+        exportPrice = haPrices.exportPrice;
+      }
+    } catch (err) {
+      console.warn('[vrm-refresh] Failed to fetch prices from HA:', (err as Error).message);
+    }
+  }
+
+  let evLoad = baseData.evLoad;
+  // EV load from Home Assistant (fetch when data source is 'ha' OR evConfig is enabled)
+  if (settings.dataSources.evLoad === 'ha' || settings.evConfig?.enabled) {
+    try {
+      const fetched = await fetchEvLoadFromHA(settings);
+      // Use fresh data or clear stale schedule (e.g., car disconnected)
+      evLoad = fetched ?? undefined;
+    } catch (err) {
+      console.warn('[vrm-refresh] Failed to fetch EV load from HA:', (err as Error).message);
+    }
+  }
+
+  const nextData: Data = { load, pv, importPrice, exportPrice, soc, rebalanceState: baseData.rebalanceState, evLoad };
   await saveData(nextData);
 
   // Optionally keep stepSize_m in settings in sync

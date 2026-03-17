@@ -1,15 +1,32 @@
 # Changelog
 
-## 0.2.4
+## 0.4.0
 
-- Add EV charging as separate uncontrollable load input
-- LP solver treats EV load as additional demand per slot (effectiveLoad = houseLoad + evLoad)
-- Optional battery discharge constraint during EV charging to avoid double-conversion losses
-- Home Assistant integration: read EV Smart Charging schedule via REST API
-- New `/data` API endpoint support for posting evLoad TimeSeries
-- EV load visualized as amber stacked bar in the load/PV chart
-- EV Charging settings section in the UI (charger power, HA sensor config, discharge toggle)
-- Plan summary includes EV load total (kWh)
+- Add EV charging as separate uncontrollable load input (closes #1)
+  - LP solver treats EV load as additional demand per slot
+  - Optional battery discharge constraint during EV charging
+  - Read EV Smart Charging schedule from Home Assistant
+  - "Always apply schedule" toggle (ignore connected switch)
+  - EV charging shown as orange bar in power flows chart
+  - DESS mapper blocks battery→grid during EV charging
+  - EV load data source selector (API / Home Assistant) in UI
+- Add auto-calculate timer and HA price sensor support (closes #2)
+  - Configurable internal interval replaces external HA automation
+  - Concurrency guard prevents overlapping calculations
+  - Read electricity prices from HA sensor (e.g., GE Spot)
+  - Supports hourly and 15-min price intervals
+  - Import = Export price toggle for spot price markets
+  - Clean server shutdown (SIGTERM/SIGINT)
+- Add Constant Voltage phase tuning
+  - Configurable SoC thresholds with reduced max charge power (MILP)
+  - Tight big-M coefficient for numerical stability
+- Fix LP solver tiebreaks
+  - Prefer battery→load over grid→load when prices are equal
+  - Prefer continuous battery charging over gaps within price blocks
+- Fix DESS target SoC monotonicity during charging phases
+- Fix HA API access from add-on: use supervisor proxy with SUPERVISOR_TOKEN
+- Fix stale EV schedule persisting when car is disconnected
+- Update add-on icon to house-with-battery design
 
 ## 0.2.3
 

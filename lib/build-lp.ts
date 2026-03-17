@@ -34,15 +34,30 @@ export function buildLP({
   // rebalancing (MILP)
   rebalanceRemainingSlots,
   rebalanceTargetSoc_percent,
+
+  // EV charging
+  evLoad_W,
+  disableDischargeWhileEvCharging = false,
+
+  // CV phase
+  cvPhaseThresholds,
 }: SolverConfig): string {
   const T = load_W.length;
   if (pv_W.length !== T || importPrice.length !== T || exportPrice.length !== T) {
     throw new Error("Arrays must have same length");
   }
 
+  // Effective load per slot: house load + EV load (uncontrollable)
+  const effectiveLoad_W = new Array<number>(T);
+  for (let t = 0; t < T; t++) {
+    effectiveLoad_W[t] = load_W[t] + (evLoad_W?.[t] ?? 0);
+  }
+
   const TIEBREAK = {
-    avoidExport: 2e-6, // stronger nudge: prefer pv used locally over pv→grid
-    pvToLoad: 1e-6,    // weaker nudge: prefer pv→load over pv→battery
+    avoidExport: 2e-6,        // stronger nudge: prefer pv used locally over pv→grid
+    pvToLoad: 1e-6,           // weaker nudge: prefer pv→load over pv→battery
+    avoidGridRoundTrip: 5e-7, // prefer battery→load over grid→load when battery is already discharging (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
+    preferEarlierCharging: 5e-7, // per-slot increasing penalty on g2b to prefer continuous charging from start of price block
   }
   const softMinSocPenalty_cents_per_Wh = 0.05; // penalty to keep soc above minSoc when possible
 
@@ -72,6 +87,18 @@ export function buildLP({
     : 0;
   const startBalance = (k: number) => `start_balance_${k}`;
 
+  // CV phase: sorted thresholds with decremental power reductions
+  const cvThresholds = cvPhaseThresholds ?? [];
+  const cvK = cvThresholds.length; // number of CV thresholds
+  // Power step reductions: how much each threshold reduces from the previous level
+  // p_0 = maxChargePower_W (full rate), p_1 = threshold[0].maxChargePower_W, p_2 = threshold[1].maxChargePower_W
+  const cvPowerSteps: number[] = [];
+  for (let k = 0; k < cvK; k++) {
+    const prevPower = k === 0 ? maxChargePower_W : cvThresholds[k - 1].maxChargePower_W;
+    cvPowerSteps.push(prevPower - cvThresholds[k].maxChargePower_W);
+  }
+  const cvThresholdWh: number[] = cvThresholds.map(t => (t.soc_percent / 100) * batteryCapacity_Wh);
+
   // Variable name helpers
   const gridToLoad = (t: number) => `grid_to_load_${t}`;
   const gridToBattery = (t: number) => `grid_to_battery_${t}`;
@@ -82,6 +109,7 @@ export function buildLP({
   const batteryToGrid = (t: number) => `battery_to_grid_${t}`;
   const soc = (t: number) => `soc_${t}`;
   const socShortfall = (t: number) => `soc_shortfall_${t}`;
+  const cvBin = (k: number, t: number) => `cv_${k}_${t}`;
 
   const lines: string[] = [];
 
@@ -95,8 +123,8 @@ export function buildLP({
     const exportCoeff_cents = exportPrice[t] * priceCoeff; // c€
 
     // Aggregate coefficients for each variable
-    const gridToLoadCoeff = importCoeff_cents; // import cost
-    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents; // import cost + battery cost
+    const gridToLoadCoeff = importCoeff_cents + TIEBREAK.avoidGridRoundTrip; // import cost + tiny nudge to prefer battery→load when prices are equal
+    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + slight preference for earlier charging
     const pvToGridCoeff = -exportCoeff_cents + TIEBREAK.avoidExport; // export revenue + slight penalty to prefer using PV locally
     const batteryToGridCoeff = -exportCoeff_cents + batteryCost_cents; // export revenue + battery cost
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
@@ -124,9 +152,9 @@ export function buildLP({
   // ===============
   lines.push("Subject To");
 
-  // Load must be met
+  // Load must be met (house load + EV load)
   for (let t = 0; t < T; t++) {
-    lines.push(` c_load_${t}: ${gridToLoad(t)} + ${pvToLoad(t)} + ${batteryToLoad(t)} = ${load_W[t]}`
+    lines.push(` c_load_${t}: ${gridToLoad(t)} + ${pvToLoad(t)} + ${batteryToLoad(t)} = ${effectiveLoad_W[t]}`
     );
   }
 
@@ -145,8 +173,13 @@ export function buildLP({
 
   // Limits per slot
   for (let t = 0; t < T; t++) {
-    // Charge/discharge limits
-    lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} <= ${maxChargePower_W}`);
+    // Charge constraint: with CV phase binaries, the effective limit decreases as SoC rises
+    if (cvK > 0) {
+      const cvTerms = cvPowerSteps.map((step, k) => ` + ${toNum(step)} ${cvBin(k, t)}`).join('');
+      lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)}${cvTerms} <= ${maxChargePower_W}`);
+    } else {
+      lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} <= ${maxChargePower_W}`);
+    }
     lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)} <= ${maxDischargePower_W}`);
 
     // Grid import/export limits
@@ -155,6 +188,20 @@ export function buildLP({
 
     // Soft min SOC constraint
     lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
+
+    // CV phase: force cv_k_t = 1 when start-of-slot SoC >= threshold
+    // Uses tight big-M (maxSoc_Wh - threshold) instead of maxSoc_Wh for numerical stability.
+    // Mathematically equivalent: when cv=1, RHS = threshold + (maxSoc - threshold) = maxSoc (always true).
+    for (let k = 0; k < cvK; k++) {
+      const tightM = maxSoc_Wh - cvThresholdWh[k];
+      if (t === 0) {
+        // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant
+        lines.push(` c_cv_${k}_${t}: ${toNum(initialSoc_Wh)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+      } else {
+        // Slot t>0: start-of-slot SoC is soc_{t-1}
+        lines.push(` c_cv_${k}_${t}: ${soc(t - 1)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+      }
+    }
   }
 
   // MILP rebalancing: force a contiguous window of D slots to hold the battery at target SoC
@@ -186,17 +233,18 @@ export function buildLP({
   lines.push("Bounds");
   for (let t = 0; t < T; t++) {
     // Grid → load/battery (cannot exceed import limit; load cap for the load branch)
-    lines.push(` 0 <= ${gridToLoad(t)} <= ${toNum(Math.min(maxGridImport_W, load_W[t]))}`);
+    lines.push(` 0 <= ${gridToLoad(t)} <= ${toNum(Math.min(maxGridImport_W, effectiveLoad_W[t]))}`);
     lines.push(` 0 <= ${gridToBattery(t)} <= ${toNum(Math.min(maxGridImport_W, maxChargePower_W))}`);
 
     // PV splits (no curtailment overall; per-branch caps keep things sane)
-    lines.push(` 0 <= ${pvToLoad(t)} <= ${toNum(load_W[t])}`);
+    lines.push(` 0 <= ${pvToLoad(t)} <= ${toNum(effectiveLoad_W[t])}`);
     lines.push(` 0 <= ${pvToBattery(t)} <= ${toNum(Math.min(pv_W[t], maxChargePower_W))}`);
     lines.push(` 0 <= ${pvToGrid(t)} <= ${toNum(Math.min(pv_W[t], maxGridExport_W))}`);
 
     // Battery → load/grid (cannot exceed discharge or respective sinks)
-    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(Math.min(maxDischargePower_W, load_W[t]))}`);
-    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(Math.min(maxDischargePower_W, maxGridExport_W))}`);
+    const evActive = disableDischargeWhileEvCharging && (evLoad_W?.[t] ?? 0) > 0;
+    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(evActive ? 0 : Math.min(maxDischargePower_W, effectiveLoad_W[t]))}`);
+    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(evActive ? 0 : Math.min(maxDischargePower_W, maxGridExport_W))}`);
 
     // SOC bounds
     // minSoc handled via soft constraint
@@ -205,10 +253,18 @@ export function buildLP({
   }
   lines.push("");
 
-  if (D > 0) {
+  const hasBinaries = D > 0 || cvK > 0;
+  if (hasBinaries) {
     lines.push("Binaries");
+    // Rebalancing binaries
     for (let k = 0; k <= T - D; k++) {
-      lines.push(` start_balance_${k}`);
+      if (D > 0) lines.push(` start_balance_${k}`);
+    }
+    // CV phase binaries
+    for (let k = 0; k < cvK; k++) {
+      for (let t = 0; t < T; t++) {
+        lines.push(` ${cvBin(k, t)}`);
+      }
     }
     lines.push("");
   }

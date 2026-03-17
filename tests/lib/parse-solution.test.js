@@ -38,4 +38,32 @@ describe('parseSolution', () => {
     expect(rows[1].timestampMs).toBe(1700000000000 + 3600000);
   });
 
+  it('includes evLoad in PlanRow from cfg.evLoad_W', () => {
+    const cfgWithEv = {
+      load_W: [100, 100, 100, 100],
+      pv_W: [0, 0, 0, 0],
+      importPrice: [10, 10, 10, 10],
+      exportPrice: [5, 5, 5, 5],
+      batteryCapacity_Wh: 1000,
+      evLoad_W: [0, 500, 11000, 0],
+    };
+
+    const result = {
+      Columns: {
+        'soc_0': { Primal: 500 },
+        'soc_1': { Primal: 500 },
+        'soc_2': { Primal: 500 },
+        'soc_3': { Primal: 500 },
+      },
+    };
+
+    const rows = parseSolution(result, cfgWithEv, { startMs: 1700000000000, stepMin: 15 });
+
+    expect(rows).toHaveLength(4);
+    expect(rows[0].evLoad).toBe(0);
+    expect(rows[1].evLoad).toBe(500);
+    expect(rows[2].evLoad).toBe(11000);
+    expect(rows[3].evLoad).toBe(0);
+  });
+
 });

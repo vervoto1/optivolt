@@ -33,6 +33,9 @@ export function validateData(d: Data): Data {
   if (Number.isNaN(new Date(d.soc.timestamp).getTime())) {
     throw new Error(`Invalid soc: 'timestamp' is not a valid timestamp (${d.soc.timestamp})`);
   }
+  if (d.evLoad) {
+    validateTimeSeries(d.evLoad, 'evLoad');
+  }
   return d;
 }
 
@@ -56,6 +59,9 @@ export async function loadData(): Promise<Data> {
     defaults.importPrice.start = startTimeStr;
     defaults.exportPrice.start = startTimeStr;
     defaults.soc.timestamp = startTimeStr;
+    if (defaults.evLoad) {
+      defaults.evLoad.start = startTimeStr;
+    }
 
     return validateData(defaults);
   }

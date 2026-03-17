@@ -36,10 +36,22 @@ export interface SolverConfig {
   // Initial state
   initialSoc_percent: number;
 
+  // EV charging
+  evLoad_W?: number[];
+  disableDischargeWhileEvCharging?: boolean;
+
   // Rebalancing (optional — only present when rebalanceEnabled is true)
   rebalanceHoldSlots?: number;
   rebalanceRemainingSlots?: number;
   rebalanceTargetSoc_percent?: number;
+
+  // Constant Voltage phase: reduced charge power at high SoC
+  cvPhaseThresholds?: CvPhaseThreshold[];
+}
+
+export interface CvPhaseThreshold {
+  soc_percent: number;       // SoC % above which charge power is reduced
+  maxChargePower_W: number;  // reduced max charge power in watts
 }
 
 /**
@@ -60,6 +72,7 @@ export interface PlanRow {
   timestampMs: number;
   load: number;       // expected load W
   pv: number;         // expected PV W
+  evLoad: number;  // expected EV load W
   ic: number;  // import price c€/kWh
   ec: number;  // export price c€/kWh
   g2l: number;   // grid → load W
@@ -111,6 +124,7 @@ export interface DessResult {
 export interface PlanSummary {
   loadTotal_kWh: number;
   pvTotal_kWh: number;
+  evLoadTotal_kWh: number;
   loadFromGrid_kWh: number;
   loadFromBattery_kWh: number;
   loadFromPv_kWh: number;

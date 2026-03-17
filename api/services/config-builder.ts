@@ -29,7 +29,8 @@ export function buildSolverConfigFromSettings(
   const pvEndMs     = getSeriesEndMs(data.pv);
   const importEndMs = getSeriesEndMs(data.importPrice);
   const exportEndMs = getSeriesEndMs(data.exportPrice);
-  const endMs = Math.min(loadEndMs, pvEndMs, importEndMs, exportEndMs);
+  const evLoadEndMs = data.evLoad ? getSeriesEndMs(data.evLoad) : Infinity;
+  const endMs = Math.min(loadEndMs, pvEndMs, importEndMs, exportEndMs, evLoadEndMs);
 
   if (endMs <= nowMs) {
     throw new HttpError(422, 'Insufficient future data', {
@@ -39,6 +40,7 @@ export function buildSolverConfigFromSettings(
         pvEnd:     new Date(pvEndMs).toISOString(),
         importEnd: new Date(importEndMs).toISOString(),
         exportEnd: new Date(exportEndMs).toISOString(),
+        ...(data.evLoad ? { evLoadEnd: new Date(evLoadEndMs).toISOString() } : {}),
       },
     });
   }
@@ -65,6 +67,21 @@ export function buildSolverConfigFromSettings(
     terminalSocCustomPrice_cents_per_kWh: settings.terminalSocCustomPrice_cents_per_kWh,
     initialSoc_percent:                   data.soc.value,
   };
+
+  // EV load: window if present, otherwise default to zeros matching load_W length
+  base.evLoad_W = data.evLoad
+    ? extractWindow(data.evLoad, nowMs, endMs)
+    : new Array(base.load_W.length).fill(0);
+
+  // Pass through EV discharge constraint setting
+  base.disableDischargeWhileEvCharging = settings.evConfig?.disableDischargeWhileCharging ?? false;
+
+  // CV phase thresholds: pass through if enabled
+  if (settings.cvPhase?.enabled && settings.cvPhase.thresholds?.length) {
+    base.cvPhaseThresholds = settings.cvPhase.thresholds
+      .filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0)
+      .sort((a, b) => a.soc_percent - b.soc_percent);
+  }
 
   if (settings.rebalanceEnabled) {
     // Math.ceil ensures the hold is never shorter than requested; Math.max(1, …) prevents 0-slot holds

@@ -16,25 +16,33 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 
 ## Architecture
 
-The system has three layers, all plain ESM (no build step, no TypeScript):
+The system has three layers, all ESM TypeScript (no build step; runs via Node 22+ type stripping or tsx):
 
 ### `lib/` — Core logic (pure, no I/O)
-- **`build-lp.js`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, etc.) and tracks `soc` (state of charge) evolution with charge/discharge efficiency.
-- **`parse-solution.js`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, and timestamps.
-- **`dess-mapper.js`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics.
-- **`vrm-api.js`** / **`victron-mqtt.js`** — VRM REST client and MQTT client for writing schedules to Victron.
+- **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, etc.) and tracks `soc` (state of charge) evolution with charge/discharge efficiency.
+- **`parse-solution.ts`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, and timestamps.
+- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics.
+- **`vrm-api.ts`** / **`victron-mqtt.ts`** — VRM REST client and MQTT client for writing schedules to Victron. MQTT supports TLS via `tls` and `rejectUnauthorized` config options.
 
 ### `api/` — Express server
-- **`app.js`** — Express app setup. Mounts routes at `/calculate`, `/settings`, `/vrm`, and serves the static UI from `app/`.
-- **`index.js`** — Server entry point (listens on `HOST`/`PORT`).
-- **Routes** (`api/routes/`): `calculate.js`, `settings.js`, `vrm.js`.
+- **`app.ts`** — Express app setup. Mounts routes at `/calculate`, `/settings`, `/vrm`, and serves the static UI from `app/`.
+- **`index.ts`** — Server entry point (listens on `HOST`/`PORT`).
+- **Routes** (`api/routes/`): `calculate.ts`, `settings.ts`, `vrm.ts`.
 - **Services** (`api/services/`):
-  - `planner-service.js` — Orchestrates the full pipeline: refresh VRM data → load settings/data → build LP → solve with HiGHS → parse → map to DESS → optionally write via MQTT.
-  - `settings-store.js` / `data-store.js` — JSON file persistence under `DATA_DIR` (defaults to `data/`).
-  - `config-builder.js` — Merges persisted settings + data into solver inputs.
-  - `vrm-refresh.js` — Fetches time-series from VRM and persists to `data.json`.
-  - `mqtt-service.js` — Writes Dynamic ESS schedule via MQTT.
+  - `planner-service.ts` — Orchestrates the full pipeline: refresh VRM data → load settings/data → build LP → solve with HiGHS → parse → map to DESS → optionally write via MQTT.
+  - `settings-store.ts` / `data-store.ts` — JSON file persistence under `DATA_DIR` (defaults to `data/`).
+  - `config-builder.ts` — Merges persisted settings + data into solver inputs.
+  - `vrm-refresh.ts` — Fetches time-series from VRM and persists to `data.json`.
+  - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT. Reads `MQTT_TLS` and `MQTT_TLS_INSECURE` env vars for SSL/TLS support.
 - **Defaults** (`api/defaults/`): `default-settings.json` and `default-data.json` used when no persisted files exist.
+
+### `optivolt/` — Home Assistant add-on
+- **`config.yaml`** — Add-on manifest (options, schema, image reference for GHCR).
+- **`Dockerfile`** — Alpine 3.21 base, Node.js 22, tsx for TypeScript execution.
+- **`build.yaml`** — Base images per architecture for the HA builder.
+- **`rootfs/`** — s6-overlay service scripts (run, finish, init).
+- **`translations/en.yaml`** — HA configuration UI labels.
+- **`repository.yaml`** (at repo root) — HA add-on repository metadata.
 
 ### `app/` — Static web UI (no build step)
 - `index.html` + `main.js` — Entry points.

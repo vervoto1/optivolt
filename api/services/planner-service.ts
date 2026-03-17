@@ -10,6 +10,8 @@ import { saveSettings } from './settings-store.ts';
 import { saveData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
+import { fetchEvLoadFromHA } from './ha-ev-service.ts';
+import { extractWindow } from '../../lib/time-series-utils.ts';
 import type { PlanRowWithDess, Data } from '../types.ts';
 
 // How many slots we push into Dynamic ESS
@@ -77,6 +79,23 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   }
 
   let { cfg, timing, data, settings } = await getSolverInputs();
+
+  // Always refresh EV load from HA when evConfig is enabled (schedule changes frequently)
+  if (settings.evConfig?.enabled) {
+    try {
+      const evLoad = await fetchEvLoadFromHA(settings);
+      if (evLoad) {
+        cfg.evLoad_W = extractWindow(evLoad, timing.startMs, timing.startMs + cfg.load_W.length * settings.stepSize_m * 60_000);
+        console.log(`[calculate] EV load refreshed from HA (${cfg.evLoad_W.filter(v => v > 0).length} active slots)`);
+      } else {
+        // Clear stale EV load (e.g., car disconnected, schedule empty)
+        cfg.evLoad_W = new Array(cfg.load_W.length).fill(0);
+        console.log('[calculate] EV load cleared (not available from HA)');
+      }
+    } catch (err) {
+      console.warn('[calculate] Failed to refresh EV load from HA:', (err as Error).message);
+    }
+  }
 
   // Pre-solve bookkeeping: if a rebalance cycle just completed, auto-disable
   if (settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0) {

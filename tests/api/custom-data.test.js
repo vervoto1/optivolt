@@ -108,6 +108,33 @@ describe('Custom Data Injection', () => {
     expect(saveData).not.toHaveBeenCalled();
   });
 
+  it('POST /data should accept evLoad when dataSources.evLoad is "api"', async () => {
+    loadSettings.mockResolvedValue({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api', evLoad: 'api' }
+    });
+
+    const res = await request(app)
+      .post('/data')
+      .send({ evLoad: { start: '2026-03-17T00:00:00.000Z', step: 15, values: [0, 0, 11000, 11000] } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.keysUpdated).toContain('evLoad');
+  });
+
+  it('POST /data should reject evLoad when dataSources.evLoad is "ha"', async () => {
+    loadSettings.mockResolvedValue({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api', evLoad: 'ha' }
+    });
+
+    const res = await request(app)
+      .post('/data')
+      .send({ evLoad: { start: '2026-03-17T00:00:00.000Z', step: 15, values: [11000] } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('No valid data keys provided or settings are not set to API');
+    expect(saveData).not.toHaveBeenCalled();
+  });
+
   it('POST /data should validate structure', async () => {
     // Missing values
     const res1 = await request(app)

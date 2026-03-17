@@ -81,7 +81,7 @@ export class VictronMqttClient {
       reconnectPeriod: this.reconnectPeriod,
       rejectUnauthorized: this.rejectUnauthorized,
       family: 4, // prefer IPv4 — mDNS hostnames (e.g. venus.local) often resolve to unreachable IPv6
-    });
+    } as mqtt.IClientOptions & { family?: number });
 
     const client = await this._clientPromise;
 

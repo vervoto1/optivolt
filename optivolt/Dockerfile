@@ -24,9 +24,11 @@ COPY vendor/highs-build ./vendor/highs-build
 # Install deps, then prune dev deps.
 # Install tsx globally: Alpine's Node 22 is compiled without TypeScript support
 # (--without-amaro), so we use tsx as the TypeScript runtime instead.
-RUN npm ci \
+# npm_config_ignore_scripts avoids "Illegal instruction" crashes when QEMU
+# emulates aarch64 during cross-platform Docker builds on x86_64 runners.
+RUN npm_config_ignore_scripts=true npm ci \
   && npm prune --omit=dev \
-  && npm install -g tsx
+  && npm_config_ignore_scripts=true npm install -g tsx
 
 # s6-overlay service + init hooks
 COPY rootfs/ /

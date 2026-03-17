@@ -412,6 +412,10 @@
                 <div class="stat-label mb-0.5">Predicted PV</div>
                 <div id="sum-pv-kwh" class="stat-value">—</div>
               </div>
+              <div id="sum-ev-kwh-row" class="px-3 py-2.5 border-b col-span-2 border-slate-100 dark:border-white/5 hidden">
+                <div class="stat-label mb-0.5">EV load</div>
+                <div id="sum-ev-kwh" class="stat-value">—</div>
+              </div>
               <div class="px-3 py-2.5 col-span-2">
                 <div class="stat-label mb-0.5">Avg. import price</div>
                 <div id="avg-import-cent" class="stat-value">—</div>
@@ -864,6 +868,7 @@
               <select id="source-prices" class="form-select">
                 <option value="vrm">Victron VRM</option>
                 <option value="api">API</option>
+                <option value="ha">Home Assistant</option>
               </select>
             </label>
             <label class="text-sm">Load prediction
@@ -884,6 +889,12 @@
                 <option value="api">API</option>
               </select>
             </label>
+            <label class="text-sm">EV Charging
+              <select id="source-ev-load" class="form-select">
+                <option value="api">API</option>
+                <option value="ha">Home Assistant</option>
+              </select>
+            </label>
           </div>
         </section>
 
@@ -900,6 +911,148 @@
             <label class="block text-sm">Derived (JSON)
               <textarea id="pred-derived" rows="5" class="form-input font-mono text-xs" data-predictions-only="true"
                 placeholder='[{"name":"Total Load","formula":["+Grid Import","-Grid Export"]}]'></textarea>
+            </label>
+          </div>
+        </section>
+
+        <!-- EV Charging Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">EV Charging</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input id="ev-enabled" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">EV charging enabled</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charger power (W)</span>
+              <input id="ev-charger-power" type="number" step="100" value="11000" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="ev-disable-discharge" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Disable battery discharge while charging</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule sensor entity</span>
+              <input id="ev-schedule-sensor" type="text" placeholder="sensor.ev_smart_charging_charging" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Schedule attribute</span>
+              <input id="ev-schedule-attribute" type="text" value="charging_schedule" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Connected switch entity</span>
+              <input id="ev-connected-switch" type="text" placeholder="switch.ev_smart_charging_ev_connected" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="ev-always-apply" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Always apply schedule (even if car is not connected to charger)</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Constant Voltage Phase Tuning -->
+          <section class="card">
+            <h3>Constant Voltage Phase Tuning</h3>
+            <p class="text-xs text-slate-400">
+              Reduce charge power at high SoC to match your battery's CV phase behavior.
+            </p>
+            <label class="toggle">
+              <input type="checkbox" id="cv-enabled">
+              <span class="toggle-knob"></span>
+              Enable CV phase limits
+            </label>
+            <label class="block text-sm">
+              <span class="text-xs font-medium text-slate-400">Threshold 1: SoC (%)</span>
+              <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95">
+            </label>
+            <label class="block text-sm">
+              <span class="text-xs font-medium text-slate-400">Threshold 1: Max charge power (W)</span>
+              <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360">
+            </label>
+            <label class="block text-sm">
+              <span class="text-xs font-medium text-slate-400">Threshold 2: SoC (%)</span>
+              <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97">
+            </label>
+            <label class="block text-sm">
+              <span class="text-xs font-medium text-slate-400">Threshold 2: Max charge power (W)</span>
+              <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600">
+            </label>
+          </section>
+
+        <!-- Auto-Calculate Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Auto-Calculate</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input id="auto-calc-enabled" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Interval (minutes)</span>
+              <input id="auto-calc-interval" type="number" min="1" step="1" value="15" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="auto-calc-update-data" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Update data before calculation</span>
+            </label>
+            <label class="toggle">
+              <input id="auto-calc-write-victron" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Write to Victron</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- HA Price Sensor Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">HA Price Sensor</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price sensor entity</span>
+              <input id="ha-price-sensor" type="text" placeholder="sensor.gespot_hourly_average_price_nl" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price interval</span>
+              <select id="ha-price-interval" class="form-select">
+                <option value="60">Hourly (60 min)</option>
+                <option value="15">Every 15 min</option>
+              </select>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Today prices attribute</span>
+              <input id="ha-price-today-attr" type="text" value="today_hourly_prices" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tomorrow prices attribute</span>
+              <input id="ha-price-tomorrow-attr" type="text" value="tomorrow_hourly_prices" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Timestamp field</span>
+              <input id="ha-price-time-key" type="text" value="time" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price field</span>
+              <input id="ha-price-value-key" type="text" value="value" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price multiplier (to cents)</span>
+              <input id="ha-price-multiplier" type="number" step="1" value="100" class="form-input" />
+            </label>
+            <label class="toggle">
+              <input id="ha-price-import-equals-export" type="checkbox" checked>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Import = Export price</span>
             </label>
           </div>
         </section>

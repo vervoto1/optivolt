@@ -371,7 +371,13 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
       strategy = Strategy.proBattery;
       restrictions = Restrictions.batteryToGrid; // allow grid→battery
       if (gridImport >= cfg.maxGridImport_W - FLOW_EPSILON_W || chargePower >= cfg.maxChargePower_W - FLOW_EPSILON_W) {
-        socTarget_percent = Math.min(socTarget_percent + 5, cfg.maxSoc_percent - 1);
+        // Cap the +5% boost at the first CV phase threshold to prevent target
+        // oscillation: without the cap, the target overshoots into the CV region
+        // (e.g. 93%→98%), then next slot CV throttles charge power, the saturation
+        // check fails, and the target drops back (98%→96%). Capping at the CV
+        // threshold keeps the target smooth (93%→95%, 95%→95%, 96%→96%).
+        const cvCap = cfg.cvPhaseThresholds?.[0]?.soc_percent ?? cfg.maxSoc_percent;
+        socTarget_percent = Math.min(socTarget_percent + 5, cvCap, cfg.maxSoc_percent - 1);
       }
     } else if (importCost <= gridBatteryTp) {
       // Electricity is cheap enough to use grid for load (save battery)
@@ -394,6 +400,16 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
       // Default: use battery for self-consumption
       strategy = Strategy.selfConsumption;
       restrictions = Restrictions.both;
+    }
+
+    // EV discharge constraint: block battery discharge during EV charging
+    if (cfg.disableDischargeWhileEvCharging && (cfg.evLoad_W?.[t] ?? 0) > 0) {
+      if (restrictions === Restrictions.none) {
+        restrictions = Restrictions.batteryToGrid;
+      } else if (restrictions === Restrictions.gridToBattery) {
+        restrictions = Restrictions.both;
+      }
+      // Restrictions.batteryToGrid and Restrictions.both already block battery→grid
     }
 
     perSlot[t] = {

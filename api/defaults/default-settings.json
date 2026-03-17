@@ -17,10 +17,43 @@
     "prices": "vrm",
     "load": "vrm",
     "pv": "vrm",
-    "soc": "mqtt"
+    "soc": "mqtt",
+    "evLoad": "api"
   },
   "rebalanceEnabled": false,
   "rebalanceHoldHours": 3,
   "haUrl": "ws://homeassistant.local:8123/api/websocket",
-  "haToken": ""
+  "haToken": "",
+  "evConfig": {
+    "enabled": false,
+    "chargerPower_W": 11000,
+    "disableDischargeWhileCharging": true,
+    "scheduleSensor": "",
+    "scheduleAttribute": "charging_schedule",
+    "connectedSwitch": "",
+    "alwaysApplySchedule": false
+  },
+  "autoCalculate": {
+    "enabled": false,
+    "intervalMinutes": 15,
+    "updateData": true,
+    "writeToVictron": true
+  },
+  "haPriceConfig": {
+    "sensor": "",
+    "todayAttribute": "today_hourly_prices",
+    "tomorrowAttribute": "tomorrow_hourly_prices",
+    "timeKey": "time",
+    "valueKey": "value",
+    "valueMultiplier": 100,
+    "importEqualsExport": true,
+    "priceInterval": 60
+  },
+  "cvPhase": {
+    "enabled": false,
+    "thresholds": [
+      { "soc_percent": 95, "maxChargePower_W": 9360 },
+      { "soc_percent": 97, "maxChargePower_W": 2600 }
+    ]
+  }
 }

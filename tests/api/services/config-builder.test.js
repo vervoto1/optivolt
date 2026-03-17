@@ -93,3 +93,50 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     expect(cfg.rebalanceRemainingSlots).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('buildSolverConfigFromSettings — EV', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('includes evLoad_W from data.evLoad when present', () => {
+    const evValues = Array(96).fill(0);
+    evValues[2] = 11000;
+    evValues[3] = 11000;
+    const data = {
+      ...makeData(),
+      evLoad: { start: NOW_STRING, step: 15, values: evValues },
+    };
+    const cfg = buildSolverConfigFromSettings(mockSettings, data, NOW_MS);
+    expect(Array.isArray(cfg.evLoad_W)).toBe(true);
+    expect(cfg.evLoad_W[2]).toBe(11000);
+    expect(cfg.evLoad_W[3]).toBe(11000);
+    expect(cfg.evLoad_W[0]).toBe(0);
+  });
+
+  it('defaults evLoad_W to zeros when data.evLoad is absent', () => {
+    const cfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
+    expect(Array.isArray(cfg.evLoad_W)).toBe(true);
+    expect(cfg.evLoad_W.length).toBe(cfg.load_W.length);
+    expect(cfg.evLoad_W.every(v => v === 0)).toBe(true);
+  });
+
+  it('passes disableDischargeWhileEvCharging from settings.evConfig', () => {
+    const settings = {
+      ...mockSettings,
+      evConfig: { enabled: true, disableDischargeWhileCharging: true },
+    };
+    const cfg = buildSolverConfigFromSettings(settings, makeData(), NOW_MS);
+    expect(cfg.disableDischargeWhileEvCharging).toBe(true);
+  });
+
+  it('defaults disableDischargeWhileEvCharging to false when evConfig is absent', () => {
+    const cfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
+    expect(cfg.disableDischargeWhileEvCharging).toBe(false);
+  });
+});

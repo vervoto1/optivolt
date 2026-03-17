@@ -9,7 +9,7 @@ export type { HaSensor, HaDerivedSensor };
 
 // ----------------------------- Data sources -----------------------------
 
-export type DataSource = 'vrm' | 'api';
+export type DataSource = 'vrm' | 'api' | 'ha';
 export type SocSource = 'mqtt' | 'api';
 
 export interface DataSources {
@@ -17,6 +17,7 @@ export interface DataSources {
   pv: DataSource;
   prices: DataSource;
   soc: SocSource;
+  evLoad?: DataSource;
 }
 
 // ----------------------------- Settings ---------------------------------
@@ -41,6 +42,43 @@ export interface Settings {
   rebalanceHoldHours: number;
   haUrl: string;
   haToken: string;
+  evConfig?: EvConfig;
+  autoCalculate?: AutoCalculateConfig;
+  haPriceConfig?: HaPriceConfig;
+  cvPhase?: CvPhaseConfig;
+}
+
+export interface EvConfig {
+  enabled: boolean;
+  chargerPower_W: number;
+  disableDischargeWhileCharging: boolean;
+  scheduleSensor: string;
+  scheduleAttribute: string;
+  connectedSwitch: string;
+  alwaysApplySchedule: boolean;
+}
+
+export interface CvPhaseConfig {
+  enabled: boolean;
+  thresholds: { soc_percent: number; maxChargePower_W: number }[];
+}
+
+export interface AutoCalculateConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+  updateData: boolean;
+  writeToVictron: boolean;
+}
+
+export interface HaPriceConfig {
+  sensor: string;
+  todayAttribute: string;
+  tomorrowAttribute: string;
+  timeKey: string;
+  valueKey: string;
+  valueMultiplier: number;
+  importEqualsExport: boolean;
+  priceInterval: number;
 }
 
 // ----------------------------- Persisted data ---------------------------
@@ -61,6 +99,7 @@ export interface Data {
   exportPrice: TimeSeries;
   soc: SocData;
   rebalanceState?: RebalanceState;
+  evLoad?: TimeSeries;
 }
 
 // ----------------------------- Plan rows with DESS ----------------------

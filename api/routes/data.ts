@@ -35,9 +35,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       importPrice: dataSources.prices,
       exportPrice: dataSources.prices,
       soc: dataSources.soc,
+      evLoad: dataSources.evLoad ?? 'api',
     };
 
-    const allowedKeys = ['load', 'pv', 'importPrice', 'exportPrice', 'soc'];
+    const allowedKeys = ['load', 'pv', 'importPrice', 'exportPrice', 'soc', 'evLoad'];
     const keysToUpdate = Object.keys(payload).filter(k => allowedKeys.includes(k) && sourceMapping[k] === 'api');
 
     assertCondition(
@@ -57,6 +58,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       );
       if (key === 'soc') {
         nextData.soc = value as SocData;
+      } else if (key === 'evLoad') {
+        nextData.evLoad = value as TimeSeries;
       } else if (key === 'load' || key === 'pv' || key === 'importPrice' || key === 'exportPrice') {
         nextData[key] = value as TimeSeries;
       }

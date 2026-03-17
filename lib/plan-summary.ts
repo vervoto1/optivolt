@@ -22,6 +22,7 @@ export function buildPlanSummary(
     return {
       loadTotal_kWh: 0,
       pvTotal_kWh: 0,
+      evLoadTotal_kWh: 0,
       loadFromGrid_kWh: 0,
       loadFromBattery_kWh: 0,
       loadFromPv_kWh: 0,
@@ -48,6 +49,7 @@ export function buildPlanSummary(
 
   let loadTotal = 0;
   let pvTotal = 0;
+  let evLoadTotal = 0;
   let loadFromGrid = 0;
   let loadFromBattery = 0;
   let loadFromPv = 0;
@@ -59,6 +61,7 @@ export function buildPlanSummary(
   for (const row of rows) {
     const loadK = W2kWh(row.load);
     const pvK = W2kWh(row.pv);
+    const evLoadK = W2kWh(row.evLoad);
     const g2lK = W2kWh(row.g2l);
     const b2lK = W2kWh(row.b2l);
     const pv2lK = W2kWh(row.pv2l);
@@ -68,6 +71,7 @@ export function buildPlanSummary(
 
     loadTotal += loadK;
     pvTotal += pvK;
+    evLoadTotal += evLoadK;
     loadFromGrid += g2lK;
     loadFromBattery += b2lK;
     loadFromPv += pv2lK;
@@ -86,6 +90,7 @@ export function buildPlanSummary(
   return {
     loadTotal_kWh: loadTotal,
     pvTotal_kWh: pvTotal,
+    evLoadTotal_kWh: evLoadTotal,
     loadFromGrid_kWh: loadFromGrid,
     loadFromBattery_kWh: loadFromBattery,
     loadFromPv_kWh: loadFromPv,

@@ -432,13 +432,27 @@ describe('mapRowsToDessV2', () => {
     expect(perSlot[1].socTarget_percent).toBe(50); // no boost
   });
 
-  it('caps SoC boost at maxSoc_percent - 1', () => {
+  it('caps SoC boost at CV phase threshold', () => {
+    const rows = [
+      makeRow({ g2b: 100, ic: 15, soc_percent: 93 }),
+      makeRow({ ic: 10, ec: 5, soc_percent: 93, g2l: 1000, g2b: 4000 }), // saturated
+    ];
+    const cvCfg = {
+      ...cfg,
+      maxSoc_percent: 100,
+      cvPhaseThresholds: [{ soc_percent: 95, maxChargePower_W: 9360 }],
+    };
+    const { perSlot } = mapRowsToDessV2(rows, cvCfg);
+    expect(perSlot[1].socTarget_percent).toBe(95); // 93+5=98 capped to CV threshold 95
+  });
+
+  it('caps SoC boost at maxSoc_percent - 1 when no CV phase', () => {
     const rows = [
       makeRow({ g2b: 100, ic: 15, soc_percent: 97 }),
       makeRow({ ic: 10, ec: 5, soc_percent: 97, g2l: 1000, g2b: 4000 }), // saturated
     ];
     const { perSlot } = mapRowsToDessV2(rows, { ...cfg, maxSoc_percent: 100 });
-    expect(perSlot[1].socTarget_percent).toBe(99); // capped at 100-1
+    expect(perSlot[1].socTarget_percent).toBe(99); // 97+5=102 capped to 100-1=99
   });
 
   it('uses grid for load when gridChargeTp < importCost <= gridBatteryTp', () => {
@@ -591,6 +605,69 @@ describe('mapRowsToDessV2', () => {
     const v2Result = mapRowsToDessV2(rows, cfg);
     expect(v2Result.diagnostics).toHaveProperty('pvExportTippingPoint_cents_per_kWh');
     expect(v2Result.diagnostics.pvExportTippingPoint_cents_per_kWh).toBe(25);
+  });
+
+  describe('EV load inflation of g2l does not affect strategy or restrictions', () => {
+    // When an EV is charging, its load is added to g2l (grid-to-load).
+    // The DESS mapper should not misinterpret an inflated g2l as a signal to
+    // change battery strategy — only g2b (grid-to-battery) and b2g flows drive
+    // strategy and restrictions. The g2l magnitude affects the gridBatteryTp
+    // tipping-point condition only insofar as it controls whether the slot counts
+    // as a "grid usage" slot (g2l > FLOW_EPSILON_W), which is true for both base
+    // and EV cases when any grid-to-load flow is present.
+
+    // Shared battery/PV flows and prices for all slots (no g2b, no b2g).
+    // Slots cycle through four different price/flow combos to exercise multiple branches.
+    const sharedSlots = [
+      // Slot 0: grid covers deficit, moderate price
+      { g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0, soc: 5000, soc_percent: 50, load: 500, pv: 0, ic: 20, ec: 5 },
+      // Slot 1: battery covers deficit, high price
+      { g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 500, b2g: 0, soc: 4500, soc_percent: 44, load: 500, pv: 0, ic: 40, ec: 5 },
+      // Slot 2: PV covers load, surplus to battery, low price
+      { g2b: 0, pv2l: 500, pv2b: 1000, pv2g: 0, b2l: 0, b2g: 0, soc: 5500, soc_percent: 54, load: 500, pv: 1500, ic: 10, ec: 5 },
+      // Slot 3: selfConsumption default (no flows, no tipping-point match)
+      { g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0, soc: 5500, soc_percent: 54, load: 0, pv: 0, ic: 30, ec: 5 },
+    ];
+
+    // Set A: base load — g2l = 500 where grid covers load (slot 0 only)
+    const baseLoadRows = sharedSlots.map((slot, i) => makeRow({
+      ...slot,
+      g2l: i === 0 ? 500 : 0,
+    }));
+
+    // Set B: EV load — g2l = 11500 where grid covers load+EV (slot 0 only)
+    // evLoad = 11000 added on top of the 500 W base load
+    const evLoadRows = sharedSlots.map((slot, i) => makeRow({
+      ...slot,
+      g2l: i === 0 ? 11500 : 0,
+      // load field reflects only household load (EV load tracked separately);
+      // g2l reflects total grid draw including EV
+    }));
+
+    it('produces identical per-slot strategies for base-load and EV-load rows', () => {
+      // NOTE: if this test fails it means the DESS mapper is sensitive to the
+      // magnitude of g2l, which would indicate a bug where EV load inflation
+      // causes incorrect strategy selection.
+      // TODO: if this test fails, investigate whether the gridImport saturation
+      // check (g2l + g2b >= maxGridImport_W) inside the gridChargeTp branch
+      // incorrectly fires when g2l is inflated by EV load.
+      const { perSlot: baseSlots } = mapRowsToDessV2(baseLoadRows, cfg);
+      const { perSlot: evSlots } = mapRowsToDessV2(evLoadRows, cfg);
+
+      for (let i = 0; i < baseSlots.length; i++) {
+        expect(evSlots[i].strategy, `slot ${i} strategy`).toBe(baseSlots[i].strategy);
+        expect(evSlots[i].restrictions, `slot ${i} restrictions`).toBe(baseSlots[i].restrictions);
+      }
+    });
+
+    it('produces identical feedin decisions for base-load and EV-load rows', () => {
+      const { perSlot: baseSlots } = mapRowsToDessV2(baseLoadRows, cfg);
+      const { perSlot: evSlots } = mapRowsToDessV2(evLoadRows, cfg);
+
+      for (let i = 0; i < baseSlots.length; i++) {
+        expect(evSlots[i].feedin, `slot ${i} feedin`).toBe(baseSlots[i].feedin);
+      }
+    });
   });
 });
 

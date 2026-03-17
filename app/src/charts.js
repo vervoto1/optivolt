@@ -8,6 +8,7 @@ export const SOLUTION_COLORS = {
   b2l: "rgb(71, 144, 208)",   // Battery to Consumption (blue)
   g2l: "rgb(233, 122, 131)",  // Grid to Consumption (red)
   g2b: "rgb(225, 142, 233)",  // Grid to Battery (purple)
+  ev: "rgb(245, 158, 11)",    // EV Charging (orange/amber)
   soc: "rgb(71, 144, 208)"    // SoC line color = battery-ish blue
 };
 
@@ -241,6 +242,9 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
 
   const stackId = "flows";
 
+  // Check if any EV load is present
+  const hasEvLoad = rows.some(r => (r.evLoad ?? 0) > 0);
+
   // Define structure: key -> params
   const flowSpecs = [
     // Positive Stack
@@ -257,11 +261,29 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   const datasets = flowSpecs.map(spec =>
     dsBar(
       spec.label,
-      rows.map(r => spec.sign * Math.abs(W2kWh(r[spec.key]))),
+      rows.map(r => {
+        const val = Math.abs(W2kWh(r[spec.key]));
+        // Subtract EV load from g2l so it's not double-counted
+        if (spec.key === "g2l" && hasEvLoad) {
+          const evPart = Math.abs(W2kWh(r.evLoad ?? 0));
+          return spec.sign * Math.max(0, val - evPart);
+        }
+        return spec.sign * val;
+      }),
       spec.color,
       stackId
     )
   );
+
+  // Add EV Charging as a separate orange bar in the negative stack
+  if (hasEvLoad) {
+    datasets.push(dsBar(
+      "EV charging",
+      rows.map(r => -Math.abs(W2kWh(r.evLoad ?? 0))),
+      SOLUTION_COLORS.ev,
+      stackId
+    ));
+  }
 
   const plugins = rebalanceWindow
     ? [makeRebalancingPlugin(rebalanceWindow.startIdx, rebalanceWindow.endIdx)]
@@ -364,11 +386,12 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
     const hourMs = dt.getTime();
 
     if (!hourMap.has(hourMs)) {
-      hourMap.set(hourMs, { dtHour: dt, loadKWh: 0, pvKWh: 0 });
+      hourMap.set(hourMs, { dtHour: dt, loadKWh: 0, pvKWh: 0, evLoadKWh: 0 });
     }
     const bucket = hourMap.get(hourMs);
     bucket.loadKWh += W2kWh(row.load);
     bucket.pvKWh += W2kWh(row.pv);
+    bucket.evLoadKWh += W2kWh(row.evLoad ?? 0);
   }
 
   const buckets = [...hourMap.values()].sort((a, b) => a.dtHour - b.dtHour);
@@ -377,22 +400,31 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
   const axis = buildTimeAxisFromTimestamps(buckets.map(b => b.dtHour.getTime()));
 
   const stripe = (c) => window.pattern?.draw("diagonal", c) || c;
-  const ds = (label, data, color) => ({
+  const ds = (label, data, color, stack) => ({
     label, data,
     backgroundColor: stripe(color),
     borderColor: color,
     borderWidth: 1,
-    hoverBackgroundColor: stripe(dim(color))
+    hoverBackgroundColor: stripe(dim(color)),
+    ...(stack ? { stack } : {})
   });
+
+  const hasEvLoad = buckets.some(b => b.evLoadKWh > 0);
+
+  const datasets = [
+    ds("Consumption forecast", buckets.map(b => b.loadKWh), SOLUTION_COLORS.g2l, hasEvLoad ? "load" : undefined),
+    ds("Solar forecast", buckets.map(b => b.pvKWh), SOLUTION_COLORS.pv2g),
+  ];
+
+  if (hasEvLoad) {
+    datasets.splice(1, 0, ds("EV charging", buckets.map(b => b.evLoadKWh), 'rgb(245, 158, 11)', "load"));
+  }
 
   renderChart(canvas, {
     type: "bar",
     data: {
       labels: axis.labels,
-      datasets: [
-        ds("Consumption forecast", buckets.map(b => b.loadKWh), SOLUTION_COLORS.g2l),
-        ds("Solar forecast", buckets.map(b => b.pvKWh), SOLUTION_COLORS.pv2g)
-      ]
+      datasets
     },
     options: getBaseOptions({ ...axis, yTitle: "kWh" })
   });

@@ -27,6 +27,7 @@ export function snapshotUI(els) {
       load: els.sourceLoad?.value || "vrm",
       pv: els.sourcePv?.value || "vrm",
       soc: els.sourceSoc?.value || "mqtt",
+      evLoad: els.sourceEvLoad?.value || "api",
     },
 
     // ALGORITHM
@@ -36,6 +37,46 @@ export function snapshotUI(els) {
     // HOME ASSISTANT
     haUrl: els.haUrl?.value ?? '',
     haToken: els.haToken?.value ?? '',
+
+    // EV CHARGING
+    evConfig: {
+      enabled: els.evEnabled?.checked ?? false,
+      chargerPower_W: Number(els.evChargerPower?.value) || 11000,
+      disableDischargeWhileCharging: els.evDisableDischarge?.checked ?? true,
+      scheduleSensor: els.evScheduleSensor?.value ?? '',
+      scheduleAttribute: els.evScheduleAttribute?.value ?? 'charging_schedule',
+      connectedSwitch: els.evConnectedSwitch?.value ?? '',
+      alwaysApplySchedule: els.evAlwaysApply?.checked ?? false,
+    },
+
+    // CV PHASE TUNING
+    cvPhase: {
+      enabled: els.cvEnabled?.checked ?? false,
+      thresholds: [
+        { soc_percent: +els.cvThreshold1Soc?.value, maxChargePower_W: +els.cvThreshold1Power?.value },
+        { soc_percent: +els.cvThreshold2Soc?.value, maxChargePower_W: +els.cvThreshold2Power?.value },
+      ].filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0),
+    },
+
+    // Auto-Calculate — always send complete object (shallow merge safe)
+    autoCalculate: {
+      enabled: els.autoCalcEnabled?.checked ?? false,
+      intervalMinutes: Math.max(1, Number(els.autoCalcInterval?.value) || 15),
+      updateData: els.autoCalcUpdateData?.checked ?? true,
+      writeToVictron: els.autoCalcWriteVictron?.checked ?? true,
+    },
+
+    // HA Price Config — always send complete object (shallow merge safe)
+    haPriceConfig: {
+      sensor: els.haPriceSensor?.value ?? '',
+      todayAttribute: els.haPriceTodayAttr?.value ?? 'today_hourly_prices',
+      tomorrowAttribute: els.haPriceTomorrowAttr?.value ?? 'tomorrow_hourly_prices',
+      timeKey: els.haPriceTimeKey?.value ?? 'time',
+      valueKey: els.haPriceValueKey?.value ?? 'value',
+      valueMultiplier: Number(els.haPriceMultiplier?.value) || 100,
+      importEqualsExport: els.haPriceImportEqualsExport?.checked ?? true,
+      priceInterval: Number(els.haPriceInterval?.value) || 60,
+    },
 
     // UI-only
     tableShowKwh: !!els.tableKwh?.checked,
@@ -72,6 +113,7 @@ export function hydrateUI(els, obj = {}) {
   if (els.sourceLoad && obj.dataSources?.load) els.sourceLoad.value = obj.dataSources.load;
   if (els.sourcePv && obj.dataSources?.pv) els.sourcePv.value = obj.dataSources.pv;
   if (els.sourceSoc && obj.dataSources?.soc) els.sourceSoc.value = obj.dataSources.soc;
+  if (els.sourceEvLoad && obj.dataSources?.evLoad) els.sourceEvLoad.value = obj.dataSources.evLoad;
 
   // Algorithm
   if (els.rebalanceEnabled && obj.rebalanceEnabled != null) {
@@ -85,6 +127,40 @@ export function hydrateUI(els, obj = {}) {
   if (els.haSettingsGroup) {
     els.haSettingsGroup.hidden = !!obj.isAddon;
   }
+
+  // EV CHARGING
+  if (els.evEnabled) els.evEnabled.checked = obj.evConfig?.enabled ?? false;
+  if (els.evChargerPower) els.evChargerPower.value = obj.evConfig?.chargerPower_W ?? 11000;
+  if (els.evDisableDischarge) els.evDisableDischarge.checked = obj.evConfig?.disableDischargeWhileCharging ?? true;
+  if (els.evScheduleSensor) els.evScheduleSensor.value = obj.evConfig?.scheduleSensor ?? '';
+  if (els.evScheduleAttribute) els.evScheduleAttribute.value = obj.evConfig?.scheduleAttribute ?? 'charging_schedule';
+  if (els.evConnectedSwitch) els.evConnectedSwitch.value = obj.evConfig?.connectedSwitch ?? '';
+  if (els.evAlwaysApply) els.evAlwaysApply.checked = obj.evConfig?.alwaysApplySchedule ?? false;
+
+  // CV PHASE TUNING
+  if (els.cvEnabled) els.cvEnabled.checked = obj.cvPhase?.enabled ?? false;
+  const cvT1 = obj.cvPhase?.thresholds?.[0];
+  const cvT2 = obj.cvPhase?.thresholds?.[1];
+  if (els.cvThreshold1Soc) els.cvThreshold1Soc.value = cvT1?.soc_percent ?? 95;
+  if (els.cvThreshold1Power) els.cvThreshold1Power.value = cvT1?.maxChargePower_W ?? 9360;
+  if (els.cvThreshold2Soc) els.cvThreshold2Soc.value = cvT2?.soc_percent ?? 97;
+  if (els.cvThreshold2Power) els.cvThreshold2Power.value = cvT2?.maxChargePower_W ?? 2600;
+
+  // Auto-Calculate
+  if (els.autoCalcEnabled) els.autoCalcEnabled.checked = obj.autoCalculate?.enabled ?? false;
+  if (els.autoCalcInterval) els.autoCalcInterval.value = obj.autoCalculate?.intervalMinutes ?? 15;
+  if (els.autoCalcUpdateData) els.autoCalcUpdateData.checked = obj.autoCalculate?.updateData ?? true;
+  if (els.autoCalcWriteVictron) els.autoCalcWriteVictron.checked = obj.autoCalculate?.writeToVictron ?? true;
+
+  // HA Price Sensor
+  if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';
+  if (els.haPriceInterval) els.haPriceInterval.value = String(obj.haPriceConfig?.priceInterval ?? 60);
+  if (els.haPriceTodayAttr) els.haPriceTodayAttr.value = obj.haPriceConfig?.todayAttribute ?? 'today_hourly_prices';
+  if (els.haPriceTomorrowAttr) els.haPriceTomorrowAttr.value = obj.haPriceConfig?.tomorrowAttribute ?? 'tomorrow_hourly_prices';
+  if (els.haPriceTimeKey) els.haPriceTimeKey.value = obj.haPriceConfig?.timeKey ?? 'time';
+  if (els.haPriceValueKey) els.haPriceValueKey.value = obj.haPriceConfig?.valueKey ?? 'value';
+  if (els.haPriceMultiplier) els.haPriceMultiplier.value = obj.haPriceConfig?.valueMultiplier ?? 100;
+  if (els.haPriceImportEqualsExport) els.haPriceImportEqualsExport.checked = obj.haPriceConfig?.importEqualsExport ?? true;
 
   // UI-only
   if (els.tableKwh && obj.tableShowKwh != null) {
@@ -129,6 +205,8 @@ export function updateSummaryUI(els, summary) {
   if (!summary) {
     setText(els.sumLoad, "—");
     setText(els.sumPv, "—");
+    setText(els.sumEv, "—");
+    if (els.sumEvRow) els.sumEvRow.hidden = true;
     setText(els.sumLoadGrid, "—");
     setText(els.sumLoadBatt, "—");
     setText(els.sumLoadPv, "—");
@@ -159,6 +237,10 @@ export function updateSummaryUI(els, summary) {
 
   setText(els.sumLoad, formatKWh(loadTotal_kWh));
   setText(els.sumPv, formatKWh(pvTotal_kWh));
+
+  const evTotal_kWh = summary.evLoadTotal_kWh;
+  if (els.sumEvRow) els.sumEvRow.hidden = !(Number(evTotal_kWh) > 0);
+  if (Number(evTotal_kWh) > 0) setText(els.sumEv, formatKWh(evTotal_kWh));
   setText(els.sumLoadGrid, formatKWh(loadFromGrid_kWh));
   setText(els.sumLoadBatt, formatKWh(loadFromBattery_kWh));
   setText(els.sumLoadPv, formatKWh(loadFromPv_kWh));
