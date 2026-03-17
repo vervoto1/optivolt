@@ -10,7 +10,7 @@ import { loadSettings, saveSettings } from '../../../api/services/settings-store
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
-import { computePlan } from '../../../api/services/planner-service.ts';
+import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
@@ -101,5 +101,47 @@ describe('computePlan — rebalance bookkeeping', () => {
     expect(saveData).toHaveBeenCalledWith(
       expect.objectContaining({ rebalanceState: { startMs: null } })
     );
+  });
+});
+
+describe('planAndMaybeWrite — DESS fingerprint cache', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('skips MQTT write when DESS schedule is unchanged between calls', async () => {
+    // First call: should write because fingerprint is new (or changed)
+    await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+    const callsAfterFirst = setDynamicEssSchedule.mock.calls.length;
+
+    // Second call with same data: fingerprint matches, should skip
+    await planAndMaybeWrite({ writeToVictron: true });
+    const callsAfterSecond = setDynamicEssSchedule.mock.calls.length;
+
+    // First call always writes (forceWrite=true); second should be skipped
+    expect(callsAfterFirst).toBe(1);
+    expect(callsAfterSecond).toBe(1); // no additional call
+  });
+
+  it('writes when forceWrite is true even if schedule unchanged', async () => {
+    // First call: establish the fingerprint
+    await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+    expect(setDynamicEssSchedule).toHaveBeenCalledTimes(1);
+
+    // Second call with forceWrite=true: must write even though schedule is identical
+    await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+    expect(setDynamicEssSchedule).toHaveBeenCalledTimes(2);
   });
 });

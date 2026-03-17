@@ -281,4 +281,18 @@ describe('buildLP — CV phase', () => {
     const withUndefinedLP = buildLP({ ...mockData, cvPhaseThresholds: undefined });
     expect(withUndefinedLP).toBe(baselineLP);
   });
+
+  it('CV phase generates both forward and reverse constraints', () => {
+    const lp = buildLP({
+      ...mockData,
+      cvPhaseThresholds: [{ soc_percent: 95, maxChargePower_W: 9360 }],
+    });
+    // Forward constraint for slot 1 (k=0, t=1)
+    expect(lp).toContain('c_cv_0_1:');
+    // Reverse constraint for slot 1 (k=0, t=1)
+    expect(lp).toContain('c_cv_rev_0_1:');
+    // Slot 1's start-of-slot SoC is soc_0 (the previous slot's SoC variable)
+    expect(lp).toMatch(/c_cv_0_1:.*soc_0/);
+    expect(lp).toMatch(/c_cv_rev_0_1:.*soc_0/);
+  });
 });

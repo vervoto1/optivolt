@@ -137,4 +137,32 @@ describe('fetchEvLoadFromHA', () => {
     expect(calledUrl).not.toMatch(/^ws:\/\//);
     expect(calledUrl).toContain('homeassistant.local:8123');
   });
+
+  it('uses supervisor proxy when SUPERVISOR_TOKEN is set', async () => {
+    process.env.SUPERVISOR_TOKEN = 'test-supervisor-token';
+    try {
+      // Mock connected switch returns 'on', schedule sensor returns schedule
+      fetchMock
+        .mockResolvedValueOnce(makeOkResponse({ state: 'on', attributes: {} }))
+        .mockResolvedValueOnce(
+          makeOkResponse({
+            state: 'on',
+            attributes: { charging_schedule: CHARGING_SCHEDULE },
+          }),
+        );
+
+      await fetchEvLoadFromHA(makeSettings());
+
+      // Should use supervisor URL, not homeassistant.local
+      const calledUrl = fetchMock.mock.calls[0][0];
+      expect(calledUrl).toContain('supervisor/core');
+      expect(calledUrl).not.toContain('homeassistant.local');
+
+      // Should use SUPERVISOR_TOKEN, not the settings token
+      const authHeader = fetchMock.mock.calls[0][1].headers.Authorization;
+      expect(authHeader).toBe('Bearer test-supervisor-token');
+    } finally {
+      delete process.env.SUPERVISOR_TOKEN;
+    }
+  });
 });

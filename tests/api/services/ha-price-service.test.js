@@ -214,4 +214,30 @@ describe('fetchPricesFromHA', () => {
     const result = await fetchPricesFromHA(makeSettings());
     expect(result).toBeNull();
   });
+
+  it('uses supervisor proxy when SUPERVISOR_TOKEN is set', async () => {
+    process.env.SUPERVISOR_TOKEN = 'test-supervisor-token';
+    try {
+      const todayPrices = [
+        { time: '2026-03-17T00:00:00+01:00', value: 0.25 },
+      ];
+      fetchMock.mockResolvedValueOnce(
+        makeOkResponse({
+          state: 'on',
+          attributes: { today_hourly_prices: todayPrices },
+        }),
+      );
+
+      await fetchPricesFromHA(makeSettings());
+
+      const calledUrl = fetchMock.mock.calls[0][0];
+      expect(calledUrl).toContain('supervisor/core');
+      expect(calledUrl).not.toContain('homeassistant.local');
+
+      const authHeader = fetchMock.mock.calls[0][1].headers.Authorization;
+      expect(authHeader).toBe('Bearer test-supervisor-token');
+    } finally {
+      delete process.env.SUPERVISOR_TOKEN;
+    }
+  });
 });
