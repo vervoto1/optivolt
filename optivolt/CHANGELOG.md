@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0
+## 0.4.1
 
 - Add EV charging as separate uncontrollable load input (closes #1)
   - LP solver treats EV load as additional demand per slot
