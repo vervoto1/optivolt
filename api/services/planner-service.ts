@@ -152,8 +152,10 @@ function dessFingerprint(rows: PlanRowWithDess[], slotCount: number): string {
   const n = Math.min(slotCount, rows.length);
   const parts: string[] = [];
   for (let i = 0; i < n; i++) {
-    const d = rows[i].dess;
-    parts.push(`${d.strategy}:${d.restrictions}:${d.feedin}:${Math.round(d.socTarget_percent)}`);
+    const r = rows[i];
+    const d = r.dess;
+    // Include timestamp so shifted slots trigger a rewrite (DESS ignores expired Start times)
+    parts.push(`${Math.round(r.timestampMs / 1000)}:${d.strategy}:${d.restrictions}:${d.feedin}:${Math.round(d.socTarget_percent)}`);
   }
   return parts.join('|');
 }
