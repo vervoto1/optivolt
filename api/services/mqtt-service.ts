@@ -56,8 +56,42 @@ export async function readVictronSocLimits({ timeoutMs }: { timeoutMs?: number }
   return { minSoc_percent: res.minSoc_percent, maxSoc_percent: res.maxSoc_percent };
 }
 
+// DESS Mode 4 = Custom/Node-RED mode: VRM cloud stops sending schedules
+// and the local GX daemon watches our schedule slots instead.
+const DESS_MODE_CUSTOM = 4;
+
+/**
+ * Ensure Dynamic ESS is in Mode 4 (Custom).
+ * Reads the current mode and sets it if not already 4.
+ * Mode 4 does not persist across GX reboots, so we check every write.
+ */
+async function ensureDessMode4(client: VictronMqttClient, serial: string): Promise<void> {
+  try {
+    const payload = await client.readSetting('settings/0/Settings/DynamicEss/Mode', {
+      serial,
+      timeoutMs: 3000,
+    }) as { value?: unknown } | null;
+
+    const currentMode = Number(payload?.value);
+    if (currentMode === DESS_MODE_CUSTOM) return;
+
+    console.log(`[mqtt] DESS Mode is ${currentMode}, switching to Mode 4 (Custom)...`);
+    await client.writeSetting('settings/0/Settings/DynamicEss/Mode', DESS_MODE_CUSTOM, { serial });
+    console.log('[mqtt] DESS Mode set to 4 (Custom)');
+  } catch (err) {
+    console.warn('[mqtt] Failed to read DESS Mode, setting to 4:', (err as Error).message);
+    // If read timed out (e.g. first connect), write Mode 4 anyway
+    await client.writeSetting('settings/0/Settings/DynamicEss/Mode', DESS_MODE_CUSTOM, { serial });
+    console.log('[mqtt] DESS Mode set to 4 (Custom) after read failure');
+  }
+}
+
 /**
  * High-level Dynamic ESS schedule builder.
+ *
+ * Ensures DESS is in Mode 4 (Custom), then writes schedule slots.
+ * Fills all available slots from rows — Venus OS ignores expired slots
+ * based on Start timestamps, so filling all 48 ensures no gaps.
  *
  * rows: optimizer rows with DESS slot data
  * slotCount: how many slots to push (starting from rows[0])
@@ -74,6 +108,9 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
     console.error('[mqtt] Failed to get Venus serial:', (err as Error).message);
     throw err;
   }
+
+  // Ensure DESS is in Custom mode so our local schedules are used
+  await ensureDessMode4(client, serial);
 
   const nSlots = Math.min(slotCount, rows.length);
   const tasks = [];

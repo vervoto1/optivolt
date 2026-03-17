@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.4
+
+- Remove ESS Direct control mode (`ess-direct`): AcPowerSetPoint never worked on Multi RS Solar, superseded by DESS Mode 4
+- Remove `victronControlMode` setting, type, UI dropdown, and default
+- Update README with DESS Mode 4 documentation
+- Clean up all ESS Direct references from codebase and docs
+
+## 0.5.3
+
+- Add comprehensive tests for DESS Mode 4, dual Soc/TargetSoc writes, 48-slot count, and restrictions alignment
+
+## 0.5.2
+
+- Fix DESS restrictions for Mode 4: align restrictions with strategy so GX can reach target SoC
+  - proBattery slots: allow grid→battery (was blocking both directions)
+  - proGrid/PV export slots: allow battery→grid (was blocking both)
+  - selfConsumption default: no restrictions (was blocking both)
+
+## 0.5.1
+
+- Version bump for DESS restriction fix deployment
+
+## 0.5.0
+
+- Fix Dynamic ESS schedules not being picked up by Multi RS Solar devices
+  - Set DESS Mode 4 (Custom/Node-RED) via MQTT before writing schedules, so VRM cloud stops overriding local schedule slots
+  - Mode 4 does not persist across GX reboots; checked and re-applied on every schedule write
+  - Write both `Soc` and `TargetSoc` fields per schedule slot for Venus OS >= 3.20 compatibility (prevents stale `TargetSoc` from previous controllers silently overriding our values)
+  - Fill all 48 schedule slots (up from 4) to eliminate gaps when slots expire between writes
+
 ## 0.4.3
 
 - Auto-manage Victron DESS mode: when pushing schedules to Victron is enabled, OptiVolt automatically sets DESS to Node-RED mode via the configured HA select entity (e.g., `select.victron_mqtt_..._dess_mode`) and reverts to Auto/VRM when stopped or shut down

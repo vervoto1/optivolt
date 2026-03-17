@@ -104,6 +104,34 @@ describe('computePlan — rebalance bookkeeping', () => {
   });
 });
 
+describe('planAndMaybeWrite — DESS slot count', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes up to 48 slots to setDynamicEssSchedule', async () => {
+    await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+
+    expect(setDynamicEssSchedule).toHaveBeenCalledTimes(1);
+    const [rows, slotCount] = setDynamicEssSchedule.mock.calls[0];
+    // DESS_SLOTS = 48; actual slots capped at min(48, rows.length)
+    expect(slotCount).toBe(Math.min(48, rows.length));
+    expect(slotCount).toBeGreaterThan(4); // must be more than old value of 4
+  });
+});
+
 describe('planAndMaybeWrite — DESS fingerprint cache', () => {
   beforeEach(() => {
     vi.useFakeTimers();

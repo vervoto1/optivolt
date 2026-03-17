@@ -32,6 +32,7 @@ export interface ScheduleSlot {
   allowGridFeedIn?: number;
 }
 
+
 export class VictronMqttClient {
   host: string;
   port: number;
@@ -350,8 +351,13 @@ export class VictronMqttClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Write a single schedule slot:
-   *   Settings/DynamicEss/Schedule/<slotIndex>/{Start,Duration,Strategy,Flags,Soc,Restrictions,AllowGridFeedIn}
+   * Write a single schedule slot.
+   *
+   * Writes both `Soc` (legacy) and `TargetSoc` (preferred on Venus OS >= 3.20).
+   * Venus OS uses `TargetSoc` when non-zero, falling back to `Soc` when
+   * `TargetSoc` is 0 or null. Writing both ensures compatibility across
+   * firmware versions and prevents stale `TargetSoc` values from overriding
+   * our `Soc` writes.
    */
   async writeScheduleSlot(slotIndex: number, slot: ScheduleSlot, { serial }: { serial?: string } = {}): Promise<void> {
     const s = serial ?? (await this.getSerial());
@@ -363,12 +369,16 @@ export class VictronMqttClient {
     if (slot.durationSeconds !== undefined) tasks.push(this.writeSetting(`${base}/Duration`, slot.durationSeconds, { serial: s }));
     if (slot.strategy !== undefined) tasks.push(this.writeSetting(`${base}/Strategy`, slot.strategy, { serial: s }));
     if (slot.flags !== undefined) tasks.push(this.writeSetting(`${base}/Flags`, slot.flags, { serial: s }));
-    if (slot.socTarget !== undefined) tasks.push(this.writeSetting(`${base}/Soc`, slot.socTarget, { serial: s }));
+    if (slot.socTarget !== undefined) {
+      tasks.push(this.writeSetting(`${base}/Soc`, slot.socTarget, { serial: s }));
+      tasks.push(this.writeSetting(`${base}/TargetSoc`, slot.socTarget, { serial: s }));
+    }
     if (slot.restrictions !== undefined) tasks.push(this.writeSetting(`${base}/Restrictions`, slot.restrictions, { serial: s }));
     if (slot.allowGridFeedIn !== undefined) tasks.push(this.writeSetting(`${base}/AllowGridFeedIn`, slot.allowGridFeedIn, { serial: s }));
 
     await Promise.all(tasks);
   }
+
 }
 
 // Convenience helper for one-off scripts

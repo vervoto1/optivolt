@@ -6,7 +6,7 @@ const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
 const port = Number.isFinite(rawPort) ? rawPort : 3000;
 const host = process.env.HOST ?? '0.0.0.0';
 
-function shutdown() {
+async function shutdown() {
   stopAutoCalculate();
   process.exit(0);
 }

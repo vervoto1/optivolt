@@ -465,7 +465,7 @@ describe('mapRowsToDessV2', () => {
     ];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[2].strategy).toBe(Strategy.proBattery);
-    expect(perSlot[2].restrictions).toBe(Restrictions.both);
+    expect(perSlot[2].restrictions).toBe(Restrictions.batteryToGrid);
   });
 
   it('exports when exportPrice >= batteryExportTp', () => {
@@ -515,10 +515,10 @@ describe('mapRowsToDessV2', () => {
     ];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[0].strategy).toBe(Strategy.selfConsumption);
-    expect(perSlot[0].restrictions).toBe(Restrictions.both);
+    expect(perSlot[0].restrictions).toBe(Restrictions.none);
   });
 
-  it('triggers proGrid with both restrictions when exportPrice >= pvExportTp and PV surplus', () => {
+  it('triggers proGrid with gridToBattery restrictions when exportPrice >= pvExportTp and PV surplus', () => {
     // Row 0: establish pvExportTp = 15 (pv2g flow at ec 15)
     // Row 1: test slot with ec = 20 (>= 15) AND pv > load should trigger PV export branch
     const rows = [
@@ -527,7 +527,7 @@ describe('mapRowsToDessV2', () => {
     ];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[1].strategy).toBe(Strategy.proGrid);
-    expect(perSlot[1].restrictions).toBe(Restrictions.both);
+    expect(perSlot[1].restrictions).toBe(Restrictions.gridToBattery);
   });
 
   it('does NOT trigger pvExportTp when exportPrice < pvExportTp', () => {
@@ -539,7 +539,7 @@ describe('mapRowsToDessV2', () => {
     ];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[1].strategy).toBe(Strategy.selfConsumption);
-    expect(perSlot[1].restrictions).toBe(Restrictions.both);
+    expect(perSlot[1].restrictions).toBe(Restrictions.none);
   });
 
   it('does NOT trigger pvExportTp in deficit slots (load > PV)', () => {
@@ -551,7 +551,7 @@ describe('mapRowsToDessV2', () => {
     ];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[1].strategy).toBe(Strategy.selfConsumption);
-    expect(perSlot[1].restrictions).toBe(Restrictions.both);
+    expect(perSlot[1].restrictions).toBe(Restrictions.none);
   });
 
   it('batteryExportTp takes precedence over pvExportTp', () => {

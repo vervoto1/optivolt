@@ -381,8 +381,10 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
       }
     } else if (importCost <= gridBatteryTp) {
       // Electricity is cheap enough to use grid for load (save battery)
+      // In Mode 4, proBattery still needs grid→battery allowed so GX can
+      // charge toward target SoC if needed.
       strategy = Strategy.proBattery;
-      restrictions = Restrictions.both;
+      restrictions = Restrictions.batteryToGrid; // allow grid→battery
     } else if (exportPrice >= batteryExportTp) {
       // Export price is high enough to dump battery to grid
       strategy = Strategy.proGrid;
@@ -393,13 +395,14 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
     } else if (pvSurplus && exportPrice >= pvExportTp) {
       // PV surplus goes to grid (battery likely full)
       // Only applies when we actually expect PV to exceed load
-      // Don't actively discharge battery — just allow PV export
+      // Allow battery→grid so GX can discharge toward target SoC
       strategy = Strategy.proGrid;
-      restrictions = Restrictions.both;
+      restrictions = Restrictions.gridToBattery; // allow battery→grid
     } else {
       // Default: use battery for self-consumption
+      // In Mode 4, GX needs unrestricted access to reach target SoC
       strategy = Strategy.selfConsumption;
-      restrictions = Restrictions.both;
+      restrictions = Restrictions.none;
     }
 
     // EV discharge constraint: block battery discharge during EV charging

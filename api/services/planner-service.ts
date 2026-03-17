@@ -6,7 +6,7 @@ import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary } from '../../lib/types.ts';
 import { getSolverInputs, buildSolverConfigFromSettings } from './config-builder.ts';
-import { saveSettings } from './settings-store.ts';
+import { saveSettings, loadSettings } from './settings-store.ts';
 import { saveData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
@@ -14,8 +14,10 @@ import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { extractWindow } from '../../lib/time-series-utils.ts';
 import type { PlanRowWithDess, Data } from '../types.ts';
 
-// How many slots we push into Dynamic ESS
-const DESS_SLOTS = 4;
+// How many slots we push into Dynamic ESS.
+// Venus OS supports 48 schedule slots (indices 0–47).
+// Filling all 48 ensures no gaps when slots expire between writes.
+const DESS_SLOTS = 48;
 
 // Lazy, shared HiGHS instance
 type HighsInstance = Awaited<ReturnType<typeof highsFactory>>;
