@@ -63,8 +63,17 @@ export async function readVictronSocLimits({ timeoutMs }: { timeoutMs?: number }
  * slotCount: how many slots to push (starting from rows[0])
  */
 export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: number): Promise<{ serial: string; slotsWritten: number }> {
+  console.log(`[mqtt] Writing DESS schedule (${Math.min(slotCount, rows.length)} slots)...`);
   const client = getVictronClient();
-  const serial = await client.getSerial();
+
+  let serial: string;
+  try {
+    serial = await client.getSerial();
+    console.log(`[mqtt] Connected, serial: ${serial}`);
+  } catch (err) {
+    console.error('[mqtt] Failed to get Venus serial:', (err as Error).message);
+    throw err;
+  }
 
   const nSlots = Math.min(slotCount, rows.length);
   const tasks = [];
@@ -86,6 +95,7 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
   }
 
   await Promise.all(tasks);
+  console.log(`[mqtt] DESS schedule written (${nSlots} slots, serial: ${serial})`);
 
   return { serial, slotsWritten: nSlots };
 }

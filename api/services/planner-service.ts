@@ -14,8 +14,8 @@ import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { extractWindow } from '../../lib/time-series-utils.ts';
 import type { PlanRowWithDess, Data } from '../types.ts';
 
-// How many slots we push into Dynamic ESS
-const DESS_SLOTS = 4;
+// How many slots we push into Dynamic ESS (48 = 12 hours at 15-min intervals)
+const DESS_SLOTS = 48;
 
 // Lazy, shared HiGHS instance
 type HighsInstance = Awaited<ReturnType<typeof highsFactory>>;
@@ -156,7 +156,11 @@ export async function planAndMaybeWrite({
 } = {}): Promise<ComputePlanResult> {
   const result = await computePlan({ updateData });
   if (writeToVictron) {
-    await writePlanToVictron(result.rows);
+    try {
+      await writePlanToVictron(result.rows);
+    } catch (err) {
+      console.error('[calculate] Failed to write to Victron:', (err as Error).message);
+    }
   }
   return result;
 }
