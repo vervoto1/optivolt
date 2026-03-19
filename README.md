@@ -94,7 +94,7 @@ OptiVolt automatically sets Dynamic ESS to **Mode 4** (Custom/Node-RED) via MQTT
 
 OptiVolt writes both `Soc` and `TargetSoc` fields per schedule slot for compatibility with Venus OS >= 3.20, and fills all 48 schedule slots to eliminate gaps between writes.
 
-_Workaround:_ There is a bug in the Victron API where **price data is not available** when DESS is not in the default mode. Create a Home Assistant automation that temporarily sets DESS back to **default** mode between **13:00 and 14:00** every day to fetch prices. OptiVolt will automatically switch back to Mode 4 on the next schedule write.
+**Price refresh:** There is a Victron API limitation where price data is not available when DESS is in Mode 4. OptiVolt has a built-in **DESS Price Refresh** feature (Settings → DESS Price Refresh) that temporarily switches to Auto/VRM mode at a configurable daily time so prices can update, then restores Mode 4 and triggers an immediate recalculation with fresh prices. No external HA automation needed.
 
 ### 3. Load Forecasting Periodic Trigger (Optional)
 Call the endpoint `/predictions/forecast/now` periodically from Home Assistant (via a REST Command) to generate up-to-date load forecasts. Be sure to first configure the predictor on the optimizer page of the UI.

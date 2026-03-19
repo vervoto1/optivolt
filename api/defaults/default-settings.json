@@ -49,6 +49,11 @@
     "importEqualsExport": true,
     "priceInterval": 60
   },
+  "dessPriceRefresh": {
+    "enabled": false,
+    "time": "23:00",
+    "durationMinutes": 15
+  },
   "cvPhase": {
     "enabled": false,
     "thresholds": [

@@ -41,6 +41,7 @@ The system has three layers, all ESM TypeScript (no build step; runs via Node 22
   - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT. Ensures DESS Mode 4 (Custom/Node-RED) is active before writing, so VRM cloud stops overriding local schedules. Writes both `Soc` and `TargetSoc` fields for Venus OS >= 3.20 compatibility. Fills all 48 schedule slots per write. Reads `MQTT_TLS` and `MQTT_TLS_INSECURE` env vars for SSL/TLS support.
   - `ha-ev-service.ts` — Reads EV Smart Charging schedule from HA REST API (uses supervisor proxy when running as add-on).
   - `ha-price-service.ts` — Reads electricity prices from HA sensor (e.g., GE Spot). Supports hourly (repeat 4×) and 15-min price intervals.
+  - `dess-price-refresh.ts` — Daily timer that temporarily switches DESS to Mode 1 (Auto/VRM) so Victron can refresh prices. Exports `isPriceRefreshWindowActive()` which `mqtt-service.ts` checks to skip schedule writes during the window. Explicitly restores Mode 4 and triggers forced recalc at window end.
   - `auto-calculate.ts` — Internal timer that calls `planAndMaybeWrite()` on a configurable interval. Concurrency guard skips tick when calculation is in progress.
 - **Defaults** (`api/defaults/`): `default-settings.json` and `default-data.json` used when no persisted files exist.
 

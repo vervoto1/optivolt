@@ -66,6 +66,13 @@ export function snapshotUI(els) {
       writeToVictron: els.autoCalcWriteVictron?.checked ?? true,
     },
 
+    // DESS Price Refresh — always send complete object (shallow merge safe)
+    dessPriceRefresh: {
+      enabled: els.dessRefreshEnabled?.checked ?? false,
+      time: els.dessRefreshTime?.value ?? '23:00',
+      durationMinutes: Math.max(5, Number(els.dessRefreshDuration?.value) || 15),
+    },
+
     // HA Price Config — always send complete object (shallow merge safe)
     haPriceConfig: {
       sensor: els.haPriceSensor?.value ?? '',
@@ -151,6 +158,11 @@ export function hydrateUI(els, obj = {}) {
   if (els.autoCalcInterval) els.autoCalcInterval.value = obj.autoCalculate?.intervalMinutes ?? 15;
   if (els.autoCalcUpdateData) els.autoCalcUpdateData.checked = obj.autoCalculate?.updateData ?? true;
   if (els.autoCalcWriteVictron) els.autoCalcWriteVictron.checked = obj.autoCalculate?.writeToVictron ?? true;
+  // DESS Price Refresh
+  if (els.dessRefreshEnabled) els.dessRefreshEnabled.checked = obj.dessPriceRefresh?.enabled ?? false;
+  if (els.dessRefreshTime) els.dessRefreshTime.value = obj.dessPriceRefresh?.time ?? '23:00';
+  if (els.dessRefreshDuration) els.dessRefreshDuration.value = obj.dessPriceRefresh?.durationMinutes ?? 15;
+
   // HA Price Sensor
   if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';
   if (els.haPriceInterval) els.haPriceInterval.value = String(obj.haPriceConfig?.priceInterval ?? 60);

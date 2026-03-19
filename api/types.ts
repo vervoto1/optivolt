@@ -45,6 +45,7 @@ export interface Settings {
   evConfig?: EvConfig;
   autoCalculate?: AutoCalculateConfig;
   haPriceConfig?: HaPriceConfig;
+  dessPriceRefresh?: DessPriceRefreshConfig;
   cvPhase?: CvPhaseConfig;
 }
 
@@ -68,6 +69,12 @@ export interface AutoCalculateConfig {
   intervalMinutes: number;
   updateData: boolean;
   writeToVictron: boolean;
+}
+
+export interface DessPriceRefreshConfig {
+  enabled: boolean;
+  time: string;             // HH:MM local time, e.g. "23:00"
+  durationMinutes: number;  // how long to stay in Mode 1, e.g. 15
 }
 
 export interface HaPriceConfig {

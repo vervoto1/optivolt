@@ -1,4 +1,5 @@
 import { VictronMqttClient } from '../../lib/victron-mqtt.ts';
+import { isPriceRefreshWindowActive } from './dess-price-refresh.ts';
 import type { PlanRowWithDess } from '../types.ts';
 
 let victronClient: VictronMqttClient | null = null;
@@ -107,6 +108,13 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
   } catch (err) {
     console.error('[mqtt] Failed to get Venus serial:', (err as Error).message);
     throw err;
+  }
+
+  // Skip schedule writes during the price refresh window (DESS is in Mode 1
+  // so VRM can update prices; custom slots are ignored in Mode 1 anyway).
+  if (isPriceRefreshWindowActive()) {
+    console.log('[mqtt] Price refresh window active, skipping schedule write');
+    return { serial, slotsWritten: 0 };
   }
 
   // Ensure DESS is in Custom mode so our local schedules are used

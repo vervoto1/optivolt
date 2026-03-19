@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.6
+
+- Add DESS Price Refresh: configurable daily window that temporarily switches DESS to Auto/VRM mode so Victron can update prices, then restores Mode 4 and triggers immediate recalculation with fresh prices
+  - Toggle, time, and duration settings in the UI (Settings → DESS Price Refresh)
+  - Guard in schedule writer skips MQTT writes during the refresh window
+  - Explicit Mode 4 restore + forced recalc at window end (does not depend on auto-calculate)
+
 ## 0.5.5
 
 - Fix Dynamic ESS schedules not being picked up by Multi RS Solar devices

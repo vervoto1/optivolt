@@ -953,6 +953,29 @@
             </label>
           </div>
         </section>
+
+        <!-- DESS Price Refresh Card -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">DESS Price Refresh</h2>
+            <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">Temporarily switch DESS to Auto mode so VRM can update prices</p>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input id="dess-refresh-enabled" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Switch time (local)</span>
+              <input id="dess-refresh-time" type="time" value="23:00" class="form-input" />
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Duration (minutes)</span>
+              <input id="dess-refresh-duration" type="number" min="5" max="60" step="1" value="15" class="form-input" />
+            </label>
+          </div>
+        </section>
       </div>
 
       <!-- Right column: stacked cards -->
