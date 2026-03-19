@@ -34,6 +34,7 @@ import {
 const els = getElements();
 
 // ---------- State ----------
+let lastRenderData = null; // { rows, cfg, rebalanceWindow }
 const debounceRun = debounce(onRun, 250);
 const persistConfigDebounced = debounce((cfg) => {
   void persistConfig(cfg);
@@ -190,11 +191,23 @@ async function onRun() {
 }
 
 function renderAllCharts(rows, cfg, rebalanceWindow = null) {
-  drawFlowsBarStackSigned(els.flows, rows, cfg.stepSize_m, rebalanceWindow);
+  lastRenderData = { rows, cfg, rebalanceWindow };
+  const is15m = document.getElementById('flows-15m')?.checked;
+  const aggregateMinutes = is15m ? undefined : 60;
+  drawFlowsBarStackSigned(els.flows, rows, cfg.stepSize_m, rebalanceWindow, { aggregateMinutes });
   drawSocChart(els.soc, rows, cfg.stepSize_m);
   drawPricesStepLines(els.prices, rows, cfg.stepSize_m);
   drawLoadPvGrouped(els.loadpv, rows, cfg.stepSize_m);
 }
+
+// Re-render flows chart when 15m toggle changes
+document.getElementById('flows-15m')?.addEventListener('change', () => {
+  if (!lastRenderData) return;
+  const { rows, cfg, rebalanceWindow } = lastRenderData;
+  const is15m = document.getElementById('flows-15m')?.checked;
+  const aggregateMinutes = is15m ? undefined : 60;
+  drawFlowsBarStackSigned(els.flows, rows, cfg.stepSize_m, rebalanceWindow, { aggregateMinutes });
+});
 
 async function persistConfig(cfg = snapshotUI(els)) {
   try {

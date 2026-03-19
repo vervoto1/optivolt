@@ -94,12 +94,18 @@ export async function calibrate(
   const snapshots = await getRecentSnapshots(Math.max(minDataDays, 3));
   const samples = await loadSocSamples();
 
-  if (snapshots.length === 0 || samples.length === 0) return null;
+  if (snapshots.length === 0 || samples.length === 0) {
+    console.log(`[calibrator] skipped: ${snapshots.length} snapshots, ${samples.length} samples`);
+    return null;
+  }
 
   // Check we have at least minDataDays of history
   const oldestSnapshotMs = snapshots[0].createdAtMs;
   const daysCovered = (Date.now() - oldestSnapshotMs) / (24 * 60 * 60_000);
-  if (daysCovered < minDataDays) return null;
+  if (daysCovered < minDataDays) {
+    console.log(`[calibrator] skipped: ${daysCovered.toFixed(1)} days covered < ${minDataDays} min`);
+    return null;
+  }
 
   // Collect all ratio samples across all snapshots
   const allRatios: RatioSample[] = [];
@@ -107,7 +113,10 @@ export async function calibrate(
     collectRatios(snapshot, samples, allRatios);
   }
 
-  if (allRatios.length === 0) return null;
+  if (allRatios.length === 0) {
+    console.log(`[calibrator] skipped: 0 valid ratios from ${snapshots.length} snapshots (all slots filtered out)`);
+    return null;
+  }
 
   // Sort chronologically (#4 fix: ensures EMA processes in time order)
   allRatios.sort((a, b) => a.timestampMs - b.timestampMs);

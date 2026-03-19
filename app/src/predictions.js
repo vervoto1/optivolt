@@ -13,7 +13,6 @@ import {
   fetchCalibration,
   fetchStoredSettings,
   saveStoredSettings,
-  resetCalibrationData,
 } from './api/api.js';
 import { debounce } from './utils.js';
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from './charts.js';
@@ -436,27 +435,6 @@ async function hydrateAdaptiveLearning() {
         el.addEventListener('input', saveAdaptive);
         el.addEventListener('change', saveAdaptive);
       }
-    }
-    // Wire reset button
-    const resetBtn = document.getElementById('adaptive-reset');
-    if (resetBtn) {
-      resetBtn.addEventListener('click', async () => {
-        if (!confirm('Reset all calibration data? The system will need to recollect data from scratch.')) return;
-        try {
-          await resetCalibrationData();
-          setEl('adaptive-status-text', 'Reset — collecting data…');
-          setEl('adaptive-charge-rate', '--');
-          setEl('adaptive-discharge-rate', '--');
-          setEl('adaptive-confidence', '--');
-          setEl('adaptive-samples', '--');
-          setEl('cal-charge-rate', '--');
-          setEl('cal-discharge-rate', '--');
-          setEl('cal-confidence', '--');
-          setEl('cal-slots', '--');
-        } catch (err) {
-          console.warn('Failed to reset calibration:', err.message);
-        }
-      });
     }
   } catch (err) {
     console.warn('Failed to load adaptive learning settings:', err.message);

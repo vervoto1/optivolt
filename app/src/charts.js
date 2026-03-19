@@ -233,17 +233,55 @@ const dsBar = (label, data, color, stack) => ({
 // 1) Power flows bar chart (signed kWh, stacked)
 // -----------------------------------------------------------------------------
 
-export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null) {
-  const timestampsMs = rows.map(r => r.timestampMs);
+/**
+ * Aggregate plan rows into larger time buckets by averaging power values.
+ * Flow values (W) are averaged since they represent power over the slot.
+ */
+function aggregateRows(rows, inputStep_m, targetStep_m) {
+  const targetStepMs = targetStep_m * 60_000;
+  const buckets = new Map();
+
+  for (const r of rows) {
+    const bucketTs = Math.floor(r.timestampMs / targetStepMs) * targetStepMs;
+    if (!buckets.has(bucketTs)) buckets.set(bucketTs, []);
+    buckets.get(bucketTs).push(r);
+  }
+
+  const keys = ['g2l', 'g2b', 'pv2l', 'pv2b', 'pv2g', 'b2l', 'b2g', 'load', 'pv', 'imp', 'exp', 'evLoad'];
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([ts, group]) => {
+      const agg = { timestampMs: ts };
+      for (const k of keys) {
+        agg[k] = group.reduce((sum, r) => sum + (r[k] ?? 0), 0) / group.length;
+      }
+      // SoC: use last value in the bucket (end-of-period)
+      agg.soc = group[group.length - 1].soc;
+      agg.soc_percent = group[group.length - 1].soc_percent;
+      return agg;
+    });
+}
+
+export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, { aggregateMinutes } = {}) {
+  // Aggregate rows into larger buckets if requested (e.g. 60 for hourly)
+  const effectiveRows = aggregateMinutes && aggregateMinutes > stepSize_m
+    ? aggregateRows(rows, stepSize_m, aggregateMinutes)
+    : rows;
+  const effectiveStep = aggregateMinutes && aggregateMinutes > stepSize_m
+    ? aggregateMinutes
+    : stepSize_m;
+
+  const timestampsMs = effectiveRows.map(r => r.timestampMs);
   const axis = buildTimeAxisFromTimestamps(timestampsMs);
 
-  const h = Math.max(0.000001, Number(stepSize_m) / 60);
+  const h = Math.max(0.000001, Number(effectiveStep) / 60);
   const W2kWh = (x) => (x || 0) * h / 1000;
 
   const stackId = "flows";
 
   // Check if any EV load is present
-  const hasEvLoad = rows.some(r => (r.evLoad ?? 0) > 0);
+  const hasEvLoad = effectiveRows.some(r => (r.evLoad ?? 0) > 0);
 
   // Define structure: key -> params
   const flowSpecs = [
@@ -261,7 +299,7 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   const datasets = flowSpecs.map(spec =>
     dsBar(
       spec.label,
-      rows.map(r => {
+      effectiveRows.map(r => {
         const val = Math.abs(W2kWh(r[spec.key]));
         // Subtract EV load from g2l so it's not double-counted
         if (spec.key === "g2l" && hasEvLoad) {
@@ -279,7 +317,7 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   if (hasEvLoad) {
     datasets.push(dsBar(
       "EV charging",
-      rows.map(r => -Math.abs(W2kWh(r.evLoad ?? 0))),
+      effectiveRows.map(r => -Math.abs(W2kWh(r.evLoad ?? 0))),
       SOLUTION_COLORS.ev,
       stackId
     ));

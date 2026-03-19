@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock planner-service BEFORE importing auto-calculate
+// Mock dependencies BEFORE importing auto-calculate
 vi.mock('../../../api/services/planner-service.ts', () => ({
   planAndMaybeWrite: vi.fn().mockResolvedValue({}),
+}));
+vi.mock('../../../api/services/settings-store.ts', () => ({
+  loadSettings: vi.fn().mockResolvedValue({ adaptiveLearning: { enabled: false } }),
+}));
+vi.mock('../../../api/services/soc-tracker.ts', () => ({
+  sampleAndStoreSoc: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../../../api/services/efficiency-calibrator.ts', () => ({
+  calibrate: vi.fn().mockResolvedValue(null),
 }));
 
 const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await import(

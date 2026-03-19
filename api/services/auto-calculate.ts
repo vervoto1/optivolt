@@ -2,12 +2,10 @@ import type { Settings } from '../types.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
 import { sampleAndStoreSoc } from './soc-tracker.ts';
 import { calibrate } from './efficiency-calibrator.ts';
+import { loadSettings } from './settings-store.ts';
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let calculating = false;
-let tickCount = 0;
-let adaptiveLearningEnabled = false;
-let adaptiveLearningMinDays = 3;
 
 const MIN_INTERVAL_MINUTES = 1;
 
@@ -24,11 +22,7 @@ export function startAutoCalculate(settings: Settings): void {
   const minutes = Math.max(MIN_INTERVAL_MINUTES, config.intervalMinutes ?? 15);
   const intervalMs = minutes * 60_000;
 
-  adaptiveLearningEnabled = settings.adaptiveLearning?.enabled ?? false;
-  adaptiveLearningMinDays = settings.adaptiveLearning?.minDataDays ?? 3;
-  tickCount = 0;
-
-  console.log(`[auto-calculate] started (every ${minutes} min, adaptive=${adaptiveLearningEnabled})`);
+  console.log(`[auto-calculate] started (every ${minutes} min)`);
 
   // Fire first calculation immediately (non-blocking)
   runTick(config.updateData, config.writeToVictron);
@@ -65,12 +59,19 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
     await planAndMaybeWrite({ updateData, writeToVictron });
     console.log('[auto-calculate] calculation completed');
 
-    tickCount++;
-    // Run calibration every ~4 hours (16 ticks at 15-min interval)
-    if (adaptiveLearningEnabled && tickCount % 16 === 0) {
-      calibrate(adaptiveLearningMinDays).catch(err =>
-        console.warn('[auto-calculate] calibration failed:', (err as Error).message),
-      );
+    // Re-read adaptive learning settings each tick so UI changes take effect
+    // immediately without requiring auto-calculate restart
+    try {
+      const currentSettings = await loadSettings();
+      const al = currentSettings.adaptiveLearning;
+      if (al?.enabled) {
+        calibrate(al.minDataDays ?? 3).catch(err =>
+          console.warn('[auto-calculate] calibration failed:', (err as Error).message),
+        );
+      }
+    } catch (err) {
+      // Non-critical: settings read failure should not block auto-calculate
+      console.warn('[auto-calculate] adaptive learning check failed:', (err as Error).message);
     }
   } catch (err) {
     console.error('[auto-calculate] calculation failed:', (err as Error).message);

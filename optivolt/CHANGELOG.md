@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.10
+
+- Bump all dependencies to latest versions
+  - @eslint/css 0.14.1 → 1.0.0 (major)
+  - jsdom 28.0.0 → 29.0.0 (major)
+  - eslint 10.0.0 → 10.0.3
+  - globals 17.3.0 → 17.4.0
+  - nodemon 3.1.11 → 3.1.14
+  - vitest 4.0.18 → 4.1.0
+- Resolve all Dependabot security alerts (qs, undici, flatted, minimatch, rollup, ajv)
+
 ## 0.5.9
 
 - Add (dis)charge adaptive learning: compare planned vs actual battery SoC to calibrate charge/discharge efficiency over time

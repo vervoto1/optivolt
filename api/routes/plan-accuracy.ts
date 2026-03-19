@@ -1,23 +1,50 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { evaluateLatestPlan, evaluateRecentPlans } from '../services/plan-accuracy-service.ts';
-import { loadCalibration, resetCalibration } from '../services/efficiency-calibrator.ts';
+import { loadCalibration, resetCalibration, calibrate } from '../services/efficiency-calibrator.ts';
 import { loadPlanHistory } from '../services/plan-history-store.ts';
 import { getRecentSamples } from '../services/soc-tracker.ts';
 
 const router = Router();
 
 /**
- * GET /plan-accuracy
- * Returns the accuracy report for the most recent plan.
+ * GET /plan-accuracy?days=1
+ * Returns a merged accuracy report across recent plans (default: last 24h).
+ * Deviations are deduplicated by timestamp (latest plan wins for each slot).
  */
-router.get('/', async (_req: Request, res: Response) => {
-  const report = await evaluateLatestPlan();
-  if (!report) {
+router.get('/', async (req: Request, res: Response) => {
+  const days = Math.min(7, Math.max(0.5, Number(req.query.days) || 1));
+  const reports = await evaluateRecentPlans(days);
+  if (reports.length === 0) {
     res.json({ message: 'No plan accuracy data available yet', report: null });
     return;
   }
-  res.json({ report });
+
+  // Merge deviations across plans: for each timestamp, keep the latest plan's deviation
+  const byTimestamp = new Map<number, (typeof reports)[0]['deviations'][0]>();
+  for (const r of reports) {
+    for (const d of r.deviations) {
+      byTimestamp.set(d.timestampMs, d);
+    }
+  }
+  const deviations = [...byTimestamp.values()].sort((a, b) => a.timestampMs - b.timestampMs);
+
+  const absDeviations = deviations.map(d => Math.abs(d.deviation_percent));
+  const meanDeviation = absDeviations.length > 0
+    ? absDeviations.reduce((a, b) => a + b, 0) / absDeviations.length
+    : 0;
+
+  res.json({
+    report: {
+      planId: 'merged',
+      createdAtMs: reports[0].createdAtMs,
+      evaluatedAtMs: Date.now(),
+      slotsCompared: deviations.length,
+      meanDeviation_percent: Math.round(meanDeviation * 100) / 100,
+      maxDeviation_percent: absDeviations.length > 0 ? Math.round(Math.max(...absDeviations) * 100) / 100 : 0,
+      deviations,
+    },
+  });
 });
 
 /**
@@ -41,6 +68,20 @@ router.get('/calibration', async (_req: Request, res: Response) => {
     return;
   }
   res.json({ calibration });
+});
+
+/**
+ * POST /plan-accuracy/calibrate
+ * Manually trigger calibration now (instead of waiting for the next auto-calculate cycle).
+ */
+router.post('/calibrate', async (req: Request, res: Response) => {
+  const minDataDays = Math.max(1, Number(req.query.minDataDays) || 1);
+  const result = await calibrate(minDataDays);
+  if (!result) {
+    res.json({ message: 'Calibration returned no result (insufficient data or all slots filtered)', calibration: null });
+    return;
+  }
+  res.json({ message: 'Calibration complete', calibration: result });
 });
 
 /**
