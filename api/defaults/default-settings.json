@@ -60,5 +60,10 @@
       { "soc_percent": 95, "maxChargePower_W": 9360 },
       { "soc_percent": 97, "maxChargePower_W": 2600 }
     ]
+  },
+  "adaptiveLearning": {
+    "enabled": false,
+    "mode": "suggest",
+    "minDataDays": 3
   }
 }

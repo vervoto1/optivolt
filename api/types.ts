@@ -47,6 +47,7 @@ export interface Settings {
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
   cvPhase?: CvPhaseConfig;
+  adaptiveLearning?: AdaptiveLearningConfig;
 }
 
 export interface EvConfig {
@@ -113,6 +114,84 @@ export interface Data {
 
 export interface PlanRowWithDess extends PlanRow {
   dess: DessSlot;
+}
+
+// ----------------------------- Adaptive learning -------------------------
+
+export interface AdaptiveLearningConfig {
+  enabled: boolean;
+  mode: 'suggest' | 'auto';
+  /** Minimum days of data before calibration is applied */
+  minDataDays: number;
+}
+
+export interface PlanSnapshot {
+  planId: string;
+  createdAtMs: number;
+  initialSoc_percent: number;
+  slots: PlanSnapshotSlot[];
+  config: PlanSnapshotConfig;
+}
+
+export interface PlanSnapshotSlot {
+  timestampMs: number;
+  predictedSoc_percent: number;
+  chargePower_W: number;   // g2b + pv2b
+  dischargePower_W: number; // b2l + b2g
+  predictedLoad_W: number; // expected load at this slot
+  predictedPv_W: number;   // expected PV at this slot
+  strategy: number;
+}
+
+export interface PlanSnapshotConfig {
+  chargeEfficiency_percent: number;
+  dischargeEfficiency_percent: number;
+  maxChargePower_W: number;
+  maxDischargePower_W: number;
+  batteryCapacity_Wh: number;
+  idleDrain_W: number;
+  stepSize_m: number;
+}
+
+export interface SocSample {
+  timestampMs: number;
+  soc_percent: number;
+  actualLoad_W?: number;
+  actualPv_W?: number;
+}
+
+export interface SlotDeviation {
+  timestampMs: number;
+  predictedSoc_percent: number;
+  actualSoc_percent: number;
+  deviation_percent: number;
+}
+
+export interface PlanAccuracyReport {
+  planId: string;
+  createdAtMs: number;
+  evaluatedAtMs: number;
+  slotsCompared: number;
+  meanDeviation_percent: number;
+  maxDeviation_percent: number;
+  deviations: SlotDeviation[];
+}
+
+/** Per-SoC-band efficiency curve: 100 entries indexed by SoC% (0–99). */
+export type EfficiencyCurve = number[];
+
+export interface CalibrationResult {
+  /** Per-SoC charge rate curve (100 entries, index = SoC%). Each value is a multiplier, e.g. 0.82 = 82% of configured. */
+  chargeCurve: EfficiencyCurve;
+  /** Per-SoC discharge rate curve (100 entries, index = SoC%). */
+  dischargeCurve: EfficiencyCurve;
+  /** Aggregate charge rate (weighted average of chargeCurve). Kept for backward compatibility / display. */
+  effectiveChargeRate: number;
+  /** Aggregate discharge rate (weighted average of dischargeCurve). */
+  effectiveDischargeRate: number;
+  sampleCount: number;
+  confidence: number;             // 0..1
+  lastCalibratedMs: number;
 }
 
 // ----------------------------- Prediction config ------------------------

@@ -675,6 +675,63 @@
         </div>
       </section>
 
+      <!-- (Dis)Charge Adaptive Learning -->
+      <section class="card">
+        <div class="mb-4">
+          <h2 class="sidebar-label">(Dis)Charge Adaptive Learning</h2>
+        </div>
+        <div class="space-y-3">
+          <label class="flex items-center gap-2 text-sm">
+            <input id="adaptive-enabled" type="checkbox" class="form-checkbox">
+            <span>Enable</span>
+          </label>
+
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Mode</span>
+            <select id="adaptive-mode" class="form-select">
+              <option value="suggest">Suggest (observe only)</option>
+              <option value="auto">Auto (apply to solver)</option>
+            </select>
+          </label>
+
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min data days</span>
+            <input id="adaptive-min-days" type="number" min="1" max="30" value="3" class="form-input">
+          </label>
+
+          <button id="adaptive-reset" type="button"
+            class="mt-2 w-full rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:bg-slate-800 dark:text-red-400 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-red-400/50 transition-colors">
+            Reset Calibration Data
+          </button>
+
+          <!-- Calibration status -->
+          <div id="adaptive-status" class="mt-3 summary-panel">
+            <div class="summary-row">
+              <span class="stat-label">Status</span>
+              <span id="adaptive-status-text" class="text-sm font-medium text-ink-soft dark:text-slate-400">--</span>
+            </div>
+            <div class="grid grid-cols-2 border-t border-slate-100 dark:border-white/5">
+              <div class="px-3 py-2.5 border-b border-r border-slate-100 dark:border-white/5">
+                <div class="stat-label mb-0.5">Charge rate</div>
+                <div class="stat-value"><span id="adaptive-charge-rate">--</span></div>
+              </div>
+              <div class="px-3 py-2.5 border-b border-slate-100 dark:border-white/5">
+                <div class="stat-label mb-0.5">Discharge rate</div>
+                <div class="stat-value"><span id="adaptive-discharge-rate">--</span></div>
+              </div>
+              <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
+                <div class="stat-label mb-0.5">Confidence</div>
+                <div class="stat-value"><span id="adaptive-confidence">--</span></div>
+              </div>
+              <div class="px-3 py-2.5">
+                <div class="stat-label mb-0.5">Samples</div>
+                <div class="stat-value"><span id="adaptive-samples">--</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Full Comparison -->
       <section class="card">
         <div class="mb-4">
@@ -730,6 +787,46 @@
         </div>
         <div class="h-40 w-full mt-4">
           <canvas id="pv-accuracy-diff-chart" class="h-full w-full"></canvas>
+        </div>
+      </section>
+
+      <!-- SoC / Charge-Discharge Prediction Accuracy -->
+      <section class="card">
+        <h2 class="mb-3 sidebar-label">Charge / Discharge Prediction Accuracy</h2>
+        <div id="soc-accuracy-empty" class="text-sm text-ink-soft dark:text-slate-400 py-4">
+          No plan accuracy data yet. Enable adaptive learning in settings and wait for data collection.
+        </div>
+        <div id="soc-accuracy-content" hidden>
+          <div class="h-56 w-full">
+            <canvas id="soc-accuracy-chart" class="h-full w-full"></canvas>
+          </div>
+          <div class="h-40 w-full mt-4">
+            <canvas id="soc-accuracy-diff-chart" class="h-full w-full"></canvas>
+          </div>
+          <div id="soc-calibration-info" class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Charge rate</span>
+              <p id="cal-charge-rate" class="font-mono text-base">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Discharge rate</span>
+              <p id="cal-discharge-rate" class="font-mono text-base">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Confidence</span>
+              <p id="cal-confidence" class="font-mono text-base">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Slots compared</span>
+              <p id="cal-slots" class="font-mono text-base">—</p>
+            </div>
+          </div>
+          <div class="mt-4">
+            <h3 class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Efficiency Curve (by SoC%)</h3>
+            <div class="h-48 w-full">
+              <canvas id="efficiency-curve-chart" class="h-full w-full"></canvas>
+            </div>
+          </div>
         </div>
       </section>
 

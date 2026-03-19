@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.9
+
+- Add (dis)charge adaptive learning: compare planned vs actual battery SoC to calibrate charge/discharge efficiency over time
+  - Plan History Store: persists predicted SoC trajectories after each solve (ring buffer, 2000 plans max)
+  - SoC Tracker: samples actual battery SoC, load, and PV from MQTT/VRM at each auto-calculate tick
+  - Plan Accuracy Service: compares predicted vs actual SoC per elapsed slot, computes deviation metrics
+  - Efficiency Calibrator: per-SoC-band efficiency curves (100 points, one per SoC%) for charge and discharge, built via chronologically-sorted EMA
+  - Confound filtering: skips slots where actual load or PV deviated >20% from predicted (e.g. unexpected heater) to avoid contaminating efficiency calibration with forecast errors
+  - Two modes: `suggest` (data collection + UI visibility) or `auto` (also applies calibrated efficiency curve to the LP solver at the current SoC band)
+  - New setting: `adaptiveLearning: { enabled, mode, minDataDays }` (defaults to disabled)
+  - REST API: `GET /plan-accuracy`, `/plan-accuracy/history`, `/plan-accuracy/calibration`, `/plan-accuracy/soc-samples`, `/plan-accuracy/snapshots`, `POST /plan-accuracy/calibration/reset`
+  - UI: "(Dis)Charge Adaptive Learning" controls in Predictions tab sidebar (enable/disable, mode, min days, reset button) with live calibration status
+  - UI: predicted vs actual SoC chart, deviation diff chart, efficiency curve chart (charge + discharge by SoC%) in Predictions tab
+
 ## 0.5.6
 
 - Add DESS Price Refresh: configurable daily window that temporarily switches DESS to Auto/VRM mode so Victron can update prices, then restores Mode 4 and triggers immediate recalculation with fresh prices

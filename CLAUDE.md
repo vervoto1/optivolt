@@ -32,17 +32,21 @@ The system has three layers, all ESM TypeScript (no build step; runs via Node 22
 ### `api/` — Express server
 - **`app.ts`** — Express app setup. Mounts routes at `/calculate`, `/settings`, `/vrm`, and serves the static UI from `app/`.
 - **`index.ts`** — Server entry point (listens on `HOST`/`PORT`).
-- **Routes** (`api/routes/`): `calculate.ts`, `settings.ts`, `vrm.ts`.
+- **Routes** (`api/routes/`): `calculate.ts`, `settings.ts`, `vrm.ts`, `plan-accuracy.ts`.
 - **Services** (`api/services/`):
   - `planner-service.ts` — Orchestrates the full pipeline: refresh VRM data → load settings/data → build LP → solve with HiGHS → parse → map to DESS → optionally write via MQTT.
   - `settings-store.ts` / `data-store.ts` — JSON file persistence under `DATA_DIR` (defaults to `data/`).
-  - `config-builder.ts` — Merges persisted settings + data into solver inputs.
+  - `config-builder.ts` — Merges persisted settings + data into solver inputs. When adaptive learning is in `auto` mode, applies calibration multipliers to charge/discharge efficiency via `applyCalibration()`.
   - `vrm-refresh.ts` — Fetches time-series from VRM and persists to `data.json`.
   - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT. Ensures DESS Mode 4 (Custom/Node-RED) is active before writing, so VRM cloud stops overriding local schedules. Writes both `Soc` and `TargetSoc` fields for Venus OS >= 3.20 compatibility. Fills all 48 schedule slots per write. Reads `MQTT_TLS` and `MQTT_TLS_INSECURE` env vars for SSL/TLS support.
   - `ha-ev-service.ts` — Reads EV Smart Charging schedule from HA REST API (uses supervisor proxy when running as add-on).
   - `ha-price-service.ts` — Reads electricity prices from HA sensor (e.g., GE Spot). Supports hourly (repeat 4×) and 15-min price intervals.
   - `dess-price-refresh.ts` — Daily timer that temporarily switches DESS to Mode 1 (Auto/VRM) so Victron can refresh prices. Exports `isPriceRefreshWindowActive()` which `mqtt-service.ts` checks to skip schedule writes during the window. Explicitly restores Mode 4 and triggers forced recalc at window end.
-  - `auto-calculate.ts` — Internal timer that calls `planAndMaybeWrite()` on a configurable interval. Concurrency guard skips tick when calculation is in progress.
+  - `auto-calculate.ts` — Internal timer that calls `planAndMaybeWrite()` on a configurable interval. Concurrency guard skips tick when calculation is in progress. Also triggers SoC sampling and periodic calibration when adaptive learning is enabled.
+  - `plan-history-store.ts` — Ring buffer (max 2000) of plan snapshots storing predicted SoC trajectories. Written after each `computePlan()` for adaptive learning comparison.
+  - `soc-tracker.ts` — Samples actual battery SoC from MQTT (`readVictronSocPercent`) and actual load/PV from VRM data at each auto-calculate tick. Persists to `DATA_DIR/soc-samples.json` (ring buffer, 30 days). Actual load/PV stored alongside SoC for confound filtering in the calibrator.
+  - `plan-accuracy-service.ts` — Compares predicted SoC (from plan snapshots) vs actual SoC (from soc-tracker) per elapsed slot. Computes deviation metrics (mean/max absolute deviation).
+  - `efficiency-calibrator.ts` — Per-SoC-band efficiency calibration (100-point curves for charge and discharge). Builds curves from chronologically-sorted EMA of observed SoC deltas. Filters out confounded slots where actual load/PV deviated >20% from predicted. Runs every ~4 hours when adaptive learning is enabled. Persists to `DATA_DIR/calibration.json`. Supports reset via `POST /plan-accuracy/calibration/reset`.
 - **Defaults** (`api/defaults/`): `default-settings.json` and `default-data.json` used when no persisted files exist.
 
 ### `optivolt/` — Home Assistant add-on

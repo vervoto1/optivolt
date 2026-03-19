@@ -17,6 +17,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - Auto-calculate timer: built-in periodic calculation (configurable interval), replaces external HA automation triggers
 - HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
 - Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling
+- Adaptive learning: compares planned vs actual battery SoC to auto-calibrate charge/discharge efficiency over time
 
 ## Installation
 
@@ -148,6 +149,24 @@ OptiVolt integrates with the **EV Smart Charging** integration in Home Assistant
 - **Always apply schedule** toggle: plan for EV demand even when the car is not currently connected.
 - Battery discharge during EV charging can be optionally disabled to avoid double-conversion losses (grid → battery → EV is less efficient than grid → EV directly).
 
+### 6. Adaptive Learning (Plan Accuracy)
+OptiVolt can learn from actual battery behavior to improve future plans. When enabled, it samples the real battery SoC, load, and PV from MQTT/VRM at each calculation tick and compares them against the solver's predictions. Over time, it builds per-SoC efficiency curves (100 points, one per SoC%) that capture how charge and discharge efficiency varies across the battery's state of charge.
+
+- **Enable in UI:** toggle "(Dis)Charge Adaptive Learning" in the Predictions tab sidebar.
+- **Two modes:**
+  - `suggest` (default): collects data and exposes accuracy metrics via the API and Predictions tab, but does not modify the solver's parameters.
+  - `auto`: additionally applies the per-SoC efficiency curve to the LP solver so future plans automatically account for observed losses.
+- **`minDataDays`:** minimum days of data before calibration produces results (default: 3).
+- **Confound filtering:** slots where actual load or PV deviated >20% from prediction (e.g. unexpected appliance) are automatically excluded from calibration to avoid contaminating efficiency data with forecast errors.
+- **Per-SoC curves:** unlike a single efficiency number, the 100-point curves capture how efficiency varies across SoC levels. This naturally models CV phase tapering at high SoC, different bulk-phase behavior, and DESS throttling patterns.
+- **View in UI:** the Predictions tab shows predicted vs actual SoC charts, deviation diffs, an efficiency curve chart (charge + discharge by SoC%), and calibration metrics. A "Reset Calibration Data" button allows starting fresh (e.g. after battery replacement).
+- **API endpoints:**
+  - `GET /plan-accuracy` — latest plan's predicted vs actual deviations
+  - `GET /plan-accuracy/calibration` — current calibration curves, aggregate rates, and confidence
+  - `GET /plan-accuracy/history?days=7` — historical accuracy reports
+  - `GET /plan-accuracy/soc-samples?days=1` — raw SoC/load/PV samples
+  - `POST /plan-accuracy/calibration/reset` — clear all calibration data
+
 ## Architecture & HTTP API
 
 ```text
@@ -163,6 +182,10 @@ Key services under `api/services/`:
 - `ha-ev-service.ts` — Reads EV charging schedule from Home Assistant REST API.
 - `ha-price-service.ts` — Reads electricity prices from Home Assistant sensor (e.g., GE Spot).
 - `auto-calculate.ts` — Internal timer that triggers calculations on a configurable interval.
+- `plan-history-store.ts` — Persists plan snapshots (predicted SoC trajectories) for adaptive learning.
+- `soc-tracker.ts` — Samples actual battery SoC from MQTT and stores in a ring buffer.
+- `plan-accuracy-service.ts` — Compares predicted vs actual SoC to compute deviation metrics.
+- `efficiency-calibrator.ts` — EMA-based calibration of effective charge/discharge rates from observed deviations.
 
 The **UI** is static and calls the **Express API** on the same origin. The **API** exposes:
 
@@ -185,5 +208,6 @@ The **UI** is static and calls the **Express API** on the same origin. The **API
   ```
 - `POST /vrm/refresh-settings` — Fetches latest Dynamic ESS limits/settings from VRM and persists.
 - `GET/POST /predictions/*` — Load forecasting features (`/validate`, `/forecast`, `/forecast/now`).
+- `GET /plan-accuracy/*` — Plan accuracy and adaptive learning (`/plan-accuracy`, `/calibration`, `/history`, `/soc-samples`, `/snapshots`).
 
 *Note:* Data and settings are server-owned. VRM refreshes write to `DATA_DIR/data.json` and the solver always reads from this persisted snapshot.

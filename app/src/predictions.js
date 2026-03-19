@@ -1,4 +1,3 @@
-/* global Chart */
 /**
  * predictions.js
  *
@@ -10,6 +9,11 @@ import {
   savePredictionConfig,
   runPvForecast,
   runCombinedForecast,
+  fetchPlanAccuracy,
+  fetchCalibration,
+  fetchStoredSettings,
+  saveStoredSettings,
+  resetCalibrationData,
 } from './api/api.js';
 import { debounce } from './utils.js';
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from './charts.js';
@@ -22,6 +26,7 @@ export async function initPredictionsTab() {
   await hydrateForm();
   wireForm();
   onForecastAll();
+  hydrateAdaptiveLearning();
 }
 
 // ---------------------------------------------------------------------------
@@ -340,13 +345,17 @@ function renderPvAccuracyChart(recentData) {
   );
 }
 
-function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options) {
+function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options, extra = {}) {
   const overlayCanvas = document.getElementById(overlayCanvasId);
   const diffCanvas = document.getElementById(diffCanvasId);
   if (!overlayCanvas || !recentData || recentData.length === 0) return;
 
   const sorted = [...recentData].sort((a, b) => a.time - b.time);
   const axis = buildTimeAxisFromTimestamps(sorted.map(d => d.time));
+
+  const scale = extra.noKwhConversion ? 1 : 1 / 1000;
+  const yTitle = extra.yTitle || 'kWh';
+  const yTitleDiff = extra.yTitleDiff || 'kWh diff';
 
   // Chart 1: two clean lines, solid legend swatch (backgroundColor = line color, fill: false)
   renderChart(overlayCanvas, {
@@ -356,7 +365,7 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
       datasets: [
         {
           label: options.actualLabel,
-          data: sorted.map(d => options.valueActual(d) / 1000),
+          data: sorted.map(d => options.valueActual(d) * scale),
           borderColor: options.actualColor,
           backgroundColor: options.actualColor,
           borderWidth: 1.5,
@@ -366,7 +375,7 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
         },
         {
           label: options.predLabel,
-          data: sorted.map(d => options.valuePred(d) / 1000),
+          data: sorted.map(d => options.valuePred(d) * scale),
           borderColor: options.predColor,
           backgroundColor: options.predColor,
           borderWidth: 1.5,
@@ -376,7 +385,7 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
         },
       ],
     },
-    options: getBaseOptions({ ...axis, yTitle: 'kWh' }),
+    options: getBaseOptions({ ...axis, yTitle }),
   });
 
   // Chart 2: predicted − actual difference area, no legend
@@ -388,7 +397,7 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
       datasets: [
         {
           label: 'Difference (pred − actual)',
-          data: sorted.map(d => (options.valuePred(d) - options.valueActual(d)) / 1000),
+          data: sorted.map(d => (options.valuePred(d) - options.valueActual(d)) * scale),
           borderColor: 'rgba(100,116,139,0.6)',
           backgroundColor: 'transparent',
           borderWidth: 1,
@@ -398,7 +407,217 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
         },
       ],
     },
-    options: getBaseOptions({ ...axis, yTitle: 'kWh diff' }, { plugins: { legend: { display: false } } }),
+    options: getBaseOptions({ ...axis, yTitle: yTitleDiff }, { plugins: { legend: { display: false } } }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// (Dis)Charge Adaptive Learning
+// ---------------------------------------------------------------------------
+
+async function hydrateAdaptiveLearning() {
+  // Load current settings to populate the form
+  try {
+    const settings = await fetchStoredSettings();
+    const al = settings.adaptiveLearning ?? { enabled: false, mode: 'suggest', minDataDays: 3 };
+
+    const enabledEl = document.getElementById('adaptive-enabled');
+    const modeEl = document.getElementById('adaptive-mode');
+    const minDaysEl = document.getElementById('adaptive-min-days');
+
+    if (enabledEl) enabledEl.checked = al.enabled;
+    if (modeEl) modeEl.value = al.mode || 'suggest';
+    if (minDaysEl) minDaysEl.value = al.minDataDays ?? 3;
+
+    // Wire change handlers
+    const saveAdaptive = debounce(saveAdaptiveLearning, 600);
+    for (const el of [enabledEl, modeEl, minDaysEl]) {
+      if (el) {
+        el.addEventListener('input', saveAdaptive);
+        el.addEventListener('change', saveAdaptive);
+      }
+    }
+    // Wire reset button
+    const resetBtn = document.getElementById('adaptive-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', async () => {
+        if (!confirm('Reset all calibration data? The system will need to recollect data from scratch.')) return;
+        try {
+          await resetCalibrationData();
+          setEl('adaptive-status-text', 'Reset — collecting data…');
+          setEl('adaptive-charge-rate', '--');
+          setEl('adaptive-discharge-rate', '--');
+          setEl('adaptive-confidence', '--');
+          setEl('adaptive-samples', '--');
+          setEl('cal-charge-rate', '--');
+          setEl('cal-discharge-rate', '--');
+          setEl('cal-confidence', '--');
+          setEl('cal-slots', '--');
+        } catch (err) {
+          console.warn('Failed to reset calibration:', err.message);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Failed to load adaptive learning settings:', err.message);
+  }
+
+  // Load accuracy data and calibration status
+  renderSocAccuracy();
+}
+
+async function saveAdaptiveLearning() {
+  const enabled = document.getElementById('adaptive-enabled')?.checked ?? false;
+  const mode = document.getElementById('adaptive-mode')?.value ?? 'suggest';
+  const minDataDays = parseInt(document.getElementById('adaptive-min-days')?.value, 10) || 3;
+
+  try {
+    await saveStoredSettings({ adaptiveLearning: { enabled, mode, minDataDays } });
+  } catch (err) {
+    console.warn('Failed to save adaptive learning settings:', err.message);
+  }
+}
+
+async function renderSocAccuracy() {
+  try {
+    const [accuracyRes, calibrationRes] = await Promise.all([
+      fetchPlanAccuracy(),
+      fetchCalibration(),
+    ]);
+
+    const report = accuracyRes?.report;
+    const calibration = calibrationRes?.calibration;
+
+    // Update sidebar calibration status
+    if (calibration) {
+      setEl('adaptive-status-text', 'Calibrated');
+      setEl('adaptive-charge-rate', `${(calibration.effectiveChargeRate * 100).toFixed(1)}%`);
+      setEl('adaptive-discharge-rate', `${(calibration.effectiveDischargeRate * 100).toFixed(1)}%`);
+      setEl('adaptive-confidence', `${(calibration.confidence * 100).toFixed(0)}%`);
+      setEl('adaptive-samples', `${calibration.sampleCount}`);
+    } else {
+      setEl('adaptive-status-text', 'Collecting data…');
+    }
+
+    if (!report && !calibration) return;
+
+    const emptyEl = document.getElementById('soc-accuracy-empty');
+    const contentEl = document.getElementById('soc-accuracy-content');
+    if (emptyEl) emptyEl.hidden = true;
+    if (contentEl) contentEl.hidden = false;
+
+    if (report && report.deviations && report.deviations.length > 0) {
+      renderSocAccuracyCharts(report);
+    }
+
+    // Chart area calibration metrics
+    if (calibration) {
+      setEl('cal-charge-rate', `${(calibration.effectiveChargeRate * 100).toFixed(1)}%`);
+      setEl('cal-discharge-rate', `${(calibration.effectiveDischargeRate * 100).toFixed(1)}%`);
+      setEl('cal-confidence', `${(calibration.confidence * 100).toFixed(0)}%`);
+      setEl('cal-slots', `${calibration.sampleCount}`);
+      renderEfficiencyCurveChart(calibration);
+    }
+
+    if (report) {
+      setEl('cal-slots', `${report.slotsCompared}`);
+    }
+  } catch (err) {
+    console.warn('Failed to load SoC accuracy:', err.message);
+  }
+}
+
+function renderSocAccuracyCharts(report) {
+  const deviations = report.deviations;
+  const sorted = [...deviations].sort((a, b) => a.timestampMs - b.timestampMs);
+
+  renderAccuracyCharts(
+    'soc-accuracy-chart',
+    'soc-accuracy-diff-chart',
+    sorted.map(d => ({
+      time: d.timestampMs,
+      actual: d.actualSoc_percent,
+      predicted: d.predictedSoc_percent,
+    })),
+    {
+      actualLabel: 'Actual SoC (%)',
+      predLabel: 'Predicted SoC (%)',
+      actualColor: 'rgb(14, 165, 233)',
+      predColor: 'rgb(249, 115, 22)',
+      valueActual: d => d.actual,
+      valuePred: d => d.predicted,
+    },
+    { yTitle: '%', yTitleDiff: '% diff', noKwhConversion: true },
+  );
+}
+
+function renderEfficiencyCurveChart(calibration) {
+  const canvas = document.getElementById('efficiency-curve-chart');
+  if (!canvas) return;
+
+  const chargeCurve = calibration.chargeCurve;
+  const dischargeCurve = calibration.dischargeCurve;
+  if (!chargeCurve || !dischargeCurve || chargeCurve.length !== 100) return;
+
+  const labels = Array.from({ length: 100 }, (_, i) => `${i}%`);
+
+  renderChart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Charge efficiency',
+          data: chargeCurve.map(v => v * 100),
+          borderColor: 'rgb(34, 197, 94)',
+          backgroundColor: 'rgb(34, 197, 94)',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        },
+        {
+          label: 'Discharge efficiency',
+          data: dischargeCurve.map(v => v * 100),
+          borderColor: 'rgb(249, 115, 22)',
+          backgroundColor: 'rgb(249, 115, 22)',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        },
+        {
+          label: 'Baseline (100%)',
+          data: new Array(100).fill(100),
+          borderColor: 'rgba(100, 116, 139, 0.3)',
+          borderWidth: 1,
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'SoC %' },
+          ticks: {
+            maxTicksLimit: 11,
+            callback: (_v, i) => i % 10 === 0 ? `${i}%` : '',
+          },
+        },
+        y: {
+          title: { display: true, text: 'Effective rate %' },
+          min: 50,
+          max: 110,
+        },
+      },
+    },
   });
 }
 

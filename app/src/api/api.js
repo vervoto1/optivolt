@@ -31,3 +31,9 @@ export const runLoadForecast = () => postJson('/predictions/load/forecast', {});
 export const runPvForecast = () => postJson('/predictions/pv/forecast', {});
 export const runCombinedForecast = () => postJson('/predictions/forecast', {});
 export const fetchForecast = runCombinedForecast;
+
+// --- Plan Accuracy (Adaptive Learning) ---
+export const fetchPlanAccuracy = () => getJson('/plan-accuracy');
+export const fetchPlanAccuracyHistory = (days = 7) => getJson(`/plan-accuracy/history?days=${days}`);
+export const fetchCalibration = () => getJson('/plan-accuracy/calibration');
+export const resetCalibrationData = () => postJson('/plan-accuracy/calibration/reset', {});
