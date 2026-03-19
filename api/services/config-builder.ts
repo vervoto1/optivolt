@@ -1,9 +1,10 @@
 import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
 import { loadData } from './data-store.ts';
+import { loadCalibration } from './efficiency-calibrator.ts';
 import { extractWindow, getQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SolverConfig, TimeSeries } from '../../lib/types.ts';
-import type { Settings, Data } from '../types.ts';
+import type { Settings, Data, CalibrationResult } from '../types.ts';
 
 function getSeriesEndMs(source: TimeSeries): number {
   const step = source.step ?? 15;
@@ -102,9 +103,62 @@ export function buildSolverConfigFromSettings(
   return base;
 }
 
+/**
+ * Apply calibration to the solver config.
+ * Uses the per-SoC efficiency curve evaluated at the current initial SoC,
+ * or falls back to the aggregate rate for backward compatibility.
+ * Only applies when confidence exceeds 0.5 threshold.
+ */
+export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): SolverConfig {
+  if (cal.confidence < 0.5) return cfg;
+
+  // Look up the curve value at the current SoC, or use the aggregate rate
+  const socBand = Math.min(99, Math.max(0, Math.round(cfg.initialSoc_percent)));
+  const chargeRate = cal.chargeCurve?.length === 100
+    ? cal.chargeCurve[socBand]
+    : cal.effectiveChargeRate;
+  const dischargeRate = cal.dischargeCurve?.length === 100
+    ? cal.dischargeCurve[socBand]
+    : cal.effectiveDischargeRate;
+
+  const calibratedChargeEff = Math.min(
+    99,
+    Math.max(50, cfg.chargeEfficiency_percent * chargeRate),
+  );
+  const calibratedDischargeEff = Math.min(
+    99,
+    Math.max(50, cfg.dischargeEfficiency_percent * dischargeRate),
+  );
+
+  console.log(
+    `[config-builder] Applying calibration @${socBand}% SoC: chargeEff ${cfg.chargeEfficiency_percent}% → ${calibratedChargeEff.toFixed(1)}%, ` +
+    `dischargeEff ${cfg.dischargeEfficiency_percent}% → ${calibratedDischargeEff.toFixed(1)}% ` +
+    `(confidence=${cal.confidence})`,
+  );
+
+  return {
+    ...cfg,
+    chargeEfficiency_percent: calibratedChargeEff,
+    dischargeEfficiency_percent: calibratedDischargeEff,
+  };
+}
+
 export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings }> {
   const [settings, data] = await Promise.all([loadSettings(), loadData()]);
   const startMs = getQuarterStart(new Date(), settings.stepSize_m);
-  const cfg = buildSolverConfigFromSettings(settings, data, startMs);
+  let cfg = buildSolverConfigFromSettings(settings, data, startMs);
+
+  // Apply calibration when adaptive learning is in 'auto' mode
+  if (settings.adaptiveLearning?.enabled && settings.adaptiveLearning.mode === 'auto') {
+    try {
+      const cal = await loadCalibration();
+      if (cal) {
+        cfg = applyCalibration(cfg, cal);
+      }
+    } catch (err) {
+      console.warn('[config-builder] Failed to load calibration:', (err as Error).message);
+    }
+  }
+
   return { cfg, timing: { startMs, stepMin: settings.stepSize_m }, data, settings };
 }

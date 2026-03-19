@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildSolverConfigFromSettings } from '../../../api/services/config-builder.ts';
+import { buildSolverConfigFromSettings, applyCalibration } from '../../../api/services/config-builder.ts';
 
 const NOW_STRING = '2024-01-01T12:00:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
@@ -138,5 +138,80 @@ describe('buildSolverConfigFromSettings — EV', () => {
   it('defaults disableDischargeWhileEvCharging to false when evConfig is absent', () => {
     const cfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
     expect(cfg.disableDischargeWhileEvCharging).toBe(false);
+  });
+});
+
+describe('applyCalibration', () => {
+  const baseCfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
+
+  function makeCal(overrides = {}) {
+    return {
+      chargeCurve: new Array(100).fill(1.0),
+      dischargeCurve: new Array(100).fill(1.0),
+      effectiveChargeRate: 1.0,
+      effectiveDischargeRate: 1.0,
+      sampleCount: 100,
+      confidence: 0.8,
+      lastCalibratedMs: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it('does not modify config when confidence is below threshold', () => {
+    const cal = makeCal({ confidence: 0.3 });
+    cal.chargeCurve[50] = 0.8;
+    const result = applyCalibration(baseCfg, cal);
+    expect(result.chargeEfficiency_percent).toBe(baseCfg.chargeEfficiency_percent);
+    expect(result.dischargeEfficiency_percent).toBe(baseCfg.dischargeEfficiency_percent);
+  });
+
+  it('uses per-SoC curve value at initialSoc_percent', () => {
+    // baseCfg.initialSoc_percent = 50 (from mockData.soc.value)
+    const cal = makeCal();
+    cal.chargeCurve[50] = 0.8;
+    const result = applyCalibration(baseCfg, cal);
+    // 95% * 0.8 = 76%
+    expect(result.chargeEfficiency_percent).toBe(76);
+    expect(result.dischargeEfficiency_percent).toBe(baseCfg.dischargeEfficiency_percent);
+  });
+
+  it('scales discharge efficiency from curve', () => {
+    const cal = makeCal();
+    cal.dischargeCurve[50] = 0.85;
+    const result = applyCalibration(baseCfg, cal);
+    expect(result.chargeEfficiency_percent).toBe(baseCfg.chargeEfficiency_percent);
+    // 95% * 0.85 = 80.75
+    expect(result.dischargeEfficiency_percent).toBeCloseTo(80.75, 1);
+  });
+
+  it('clamps calibrated efficiency to 50-99% bounds', () => {
+    const cal = makeCal();
+    cal.chargeCurve[50] = 0.4;  // 95% * 0.4 = 38% → clamped to 50%
+    cal.dischargeCurve[50] = 1.2; // 95% * 1.2 = 114% → clamped to 99%
+    const result = applyCalibration(baseCfg, cal);
+    expect(result.chargeEfficiency_percent).toBe(50);
+    expect(result.dischargeEfficiency_percent).toBe(99);
+  });
+
+  it('falls back to aggregate rate when curves are missing', () => {
+    const cal = makeCal({
+      chargeCurve: [], // empty = no curve
+      dischargeCurve: [],
+      effectiveChargeRate: 0.8,
+      effectiveDischargeRate: 0.9,
+    });
+    const result = applyCalibration(baseCfg, cal);
+    // 95% * 0.8 = 76%
+    expect(result.chargeEfficiency_percent).toBe(76);
+    // 95% * 0.9 = 85.5
+    expect(result.dischargeEfficiency_percent).toBeCloseTo(85.5, 1);
+  });
+
+  it('does not mutate the original config', () => {
+    const original = { ...baseCfg };
+    const cal = makeCal();
+    cal.chargeCurve[50] = 0.8;
+    applyCalibration(baseCfg, cal);
+    expect(baseCfg.chargeEfficiency_percent).toBe(original.chargeEfficiency_percent);
   });
 });

@@ -12,7 +12,8 @@ import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { extractWindow } from '../../lib/time-series-utils.ts';
-import type { PlanRowWithDess, Data } from '../types.ts';
+import { savePlanSnapshot } from './plan-history-store.ts';
+import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 
 // How many slots we push into Dynamic ESS.
 // Venus OS supports 48 schedule slots (indices 0–47).
@@ -143,6 +144,34 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const rebalanceWindow = extractRebalanceWindow(
     result.Columns ?? {},
     cfg.rebalanceRemainingSlots ?? 0,
+  );
+
+  // Persist plan snapshot for adaptive learning (fire-and-forget)
+  const snapshot: PlanSnapshot = {
+    planId: `${timing.startMs}-${Date.now()}`,
+    createdAtMs: Date.now(),
+    initialSoc_percent: cfg.initialSoc_percent,
+    slots: rowsWithDess.map(r => ({
+      timestampMs: r.timestampMs,
+      predictedSoc_percent: r.soc_percent,
+      chargePower_W: r.g2b + r.pv2b,
+      dischargePower_W: r.b2l + r.b2g,
+      predictedLoad_W: r.load,
+      predictedPv_W: r.pv,
+      strategy: r.dess.strategy,
+    })),
+    config: {
+      chargeEfficiency_percent: cfg.chargeEfficiency_percent,
+      dischargeEfficiency_percent: cfg.dischargeEfficiency_percent,
+      maxChargePower_W: cfg.maxChargePower_W,
+      maxDischargePower_W: cfg.maxDischargePower_W,
+      batteryCapacity_Wh: cfg.batteryCapacity_Wh,
+      idleDrain_W: cfg.idleDrain_W,
+      stepSize_m: cfg.stepSize_m,
+    },
+  };
+  savePlanSnapshot(snapshot).catch(err =>
+    console.warn('[plan-history] Failed to save snapshot:', (err as Error).message),
   );
 
   return { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow };

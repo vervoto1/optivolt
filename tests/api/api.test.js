@@ -7,11 +7,17 @@ vi.mock('../../api/services/settings-store.ts');
 vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/vrm-refresh.ts');
 vi.mock('../../api/services/mqtt-service.ts');
+vi.mock('../../api/services/plan-history-store.ts');
+vi.mock('../../api/services/soc-tracker.ts');
+vi.mock('../../api/services/efficiency-calibrator.ts');
 
 import { loadSettings } from '../../api/services/settings-store.ts';
 import { loadData } from '../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../api/services/mqtt-service.ts';
+import { getLatestSnapshot, getRecentSnapshots, loadPlanHistory, savePlanSnapshot } from '../../api/services/plan-history-store.ts';
+import { loadSocSamples, getRecentSamples } from '../../api/services/soc-tracker.ts';
+import { loadCalibration } from '../../api/services/efficiency-calibrator.ts';
 
 const mockSettings = {
   stepSize_m: 60,
@@ -70,6 +76,7 @@ describe('Integration: API', () => {
     loadData.mockResolvedValue({ ...mockData });
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
   });
 
   afterEach(() => {
@@ -118,5 +125,63 @@ describe('Integration: API', () => {
 
     expect(res.status).toBe(200);
     expect(setDynamicEssSchedule).toHaveBeenCalled();
+  });
+});
+
+describe('Integration: Plan Accuracy API', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    getLatestSnapshot.mockResolvedValue(null);
+    getRecentSnapshots.mockResolvedValue([]);
+    loadPlanHistory.mockResolvedValue([]);
+    loadSocSamples.mockResolvedValue([]);
+    getRecentSamples.mockResolvedValue([]);
+    loadCalibration.mockResolvedValue(null);
+    savePlanSnapshot.mockResolvedValue();
+  });
+
+  it('GET /plan-accuracy returns message when no data', async () => {
+    const res = await request(app).get('/plan-accuracy');
+    expect(res.status).toBe(200);
+    expect(res.body.report).toBeNull();
+  });
+
+  it('GET /plan-accuracy/calibration returns message when no calibration', async () => {
+    const res = await request(app).get('/plan-accuracy/calibration');
+    expect(res.status).toBe(200);
+    expect(res.body.calibration).toBeNull();
+  });
+
+  it('GET /plan-accuracy/calibration returns calibration when available', async () => {
+    loadCalibration.mockResolvedValue({
+      effectiveChargeRate: 0.82,
+      effectiveDischargeRate: 0.95,
+      sampleCount: 150,
+      confidence: 0.75,
+      lastCalibratedMs: Date.now(),
+    });
+
+    const res = await request(app).get('/plan-accuracy/calibration');
+    expect(res.status).toBe(200);
+    expect(res.body.calibration.effectiveChargeRate).toBe(0.82);
+    expect(res.body.calibration.confidence).toBe(0.75);
+  });
+
+  it('GET /plan-accuracy/history returns empty array when no data', async () => {
+    const res = await request(app).get('/plan-accuracy/history?days=7');
+    expect(res.status).toBe(200);
+    expect(res.body.reports).toEqual([]);
+    expect(res.body.days).toBe(7);
+  });
+
+  it('GET /plan-accuracy/soc-samples returns samples', async () => {
+    getRecentSamples.mockResolvedValue([
+      { timestampMs: 1000, soc_percent: 65 },
+    ]);
+
+    const res = await request(app).get('/plan-accuracy/soc-samples?days=1');
+    expect(res.status).toBe(200);
+    expect(res.body.samples).toHaveLength(1);
+    expect(res.body.samples[0].soc_percent).toBe(65);
   });
 });

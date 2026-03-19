@@ -17,6 +17,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - Auto-calculate timer: built-in periodic calculation (configurable interval), replaces external HA automation triggers
 - HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
 - Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling
+- Adaptive learning: compares planned vs actual battery SoC to auto-calibrate charge/discharge efficiency over time
 
 ## Installation
 
@@ -148,6 +149,21 @@ OptiVolt integrates with the **EV Smart Charging** integration in Home Assistant
 - **Always apply schedule** toggle: plan for EV demand even when the car is not currently connected.
 - Battery discharge during EV charging can be optionally disabled to avoid double-conversion losses (grid → battery → EV is less efficient than grid → EV directly).
 
+### 6. Adaptive Learning (Plan Accuracy)
+OptiVolt can learn from actual battery behavior to improve future plans. When enabled, it samples the real battery SoC from MQTT at each calculation tick and compares it against the solver's predictions. Over time, it calibrates effective charge and discharge rate multipliers that account for real-world losses (DESS throttling, inverter efficiency, CV phase tapering).
+
+- **Enable in Settings:** set `adaptiveLearning.enabled: true`.
+- **Two modes:**
+  - `suggest` (default): collects data and exposes accuracy metrics via the API and Predictions tab, but does not modify the solver's parameters.
+  - `auto`: additionally applies the calibrated efficiency to the LP solver so future plans automatically account for observed losses.
+- **`minDataDays`:** minimum days of data before calibration produces results (default: 3).
+- **View in UI:** the Predictions tab shows a "Charge / Discharge Prediction Accuracy" section with predicted vs actual SoC charts, deviation diffs, and calibration metrics (effective charge/discharge rate, confidence level).
+- **API endpoints:**
+  - `GET /plan-accuracy` — latest plan's predicted vs actual deviations
+  - `GET /plan-accuracy/calibration` — current calibration multipliers and confidence
+  - `GET /plan-accuracy/history?days=7` — historical accuracy reports
+  - `GET /plan-accuracy/soc-samples?days=1` — raw SoC samples
+
 ## Architecture & HTTP API
 
 ```text
@@ -163,6 +179,10 @@ Key services under `api/services/`:
 - `ha-ev-service.ts` — Reads EV charging schedule from Home Assistant REST API.
 - `ha-price-service.ts` — Reads electricity prices from Home Assistant sensor (e.g., GE Spot).
 - `auto-calculate.ts` — Internal timer that triggers calculations on a configurable interval.
+- `plan-history-store.ts` — Persists plan snapshots (predicted SoC trajectories) for adaptive learning.
+- `soc-tracker.ts` — Samples actual battery SoC from MQTT and stores in a ring buffer.
+- `plan-accuracy-service.ts` — Compares predicted vs actual SoC to compute deviation metrics.
+- `efficiency-calibrator.ts` — EMA-based calibration of effective charge/discharge rates from observed deviations.
 
 The **UI** is static and calls the **Express API** on the same origin. The **API** exposes:
 
@@ -185,5 +205,6 @@ The **UI** is static and calls the **Express API** on the same origin. The **API
   ```
 - `POST /vrm/refresh-settings` — Fetches latest Dynamic ESS limits/settings from VRM and persists.
 - `GET/POST /predictions/*` — Load forecasting features (`/validate`, `/forecast`, `/forecast/now`).
+- `GET /plan-accuracy/*` — Plan accuracy and adaptive learning (`/plan-accuracy`, `/calibration`, `/history`, `/soc-samples`, `/snapshots`).
 
 *Note:* Data and settings are server-owned. VRM refreshes write to `DATA_DIR/data.json` and the solver always reads from this persisted snapshot.

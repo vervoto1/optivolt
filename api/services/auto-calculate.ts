@@ -1,8 +1,13 @@
 import type { Settings } from '../types.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
+import { sampleAndStoreSoc } from './soc-tracker.ts';
+import { calibrate } from './efficiency-calibrator.ts';
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let calculating = false;
+let tickCount = 0;
+let adaptiveLearningEnabled = false;
+let adaptiveLearningMinDays = 3;
 
 const MIN_INTERVAL_MINUTES = 1;
 
@@ -19,7 +24,11 @@ export function startAutoCalculate(settings: Settings): void {
   const minutes = Math.max(MIN_INTERVAL_MINUTES, config.intervalMinutes ?? 15);
   const intervalMs = minutes * 60_000;
 
-  console.log(`[auto-calculate] started (every ${minutes} min)`);
+  adaptiveLearningEnabled = settings.adaptiveLearning?.enabled ?? false;
+  adaptiveLearningMinDays = settings.adaptiveLearning?.minDataDays ?? 3;
+  tickCount = 0;
+
+  console.log(`[auto-calculate] started (every ${minutes} min, adaptive=${adaptiveLearningEnabled})`);
 
   // Fire first calculation immediately (non-blocking)
   runTick(config.updateData, config.writeToVictron);
@@ -48,8 +57,21 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
 
   calculating = true;
   try {
+    // Sample actual SoC before computing the new plan (fire-and-forget on failure)
+    sampleAndStoreSoc().catch(err =>
+      console.warn('[auto-calculate] SoC sampling failed:', (err as Error).message),
+    );
+
     await planAndMaybeWrite({ updateData, writeToVictron });
     console.log('[auto-calculate] calculation completed');
+
+    tickCount++;
+    // Run calibration every ~4 hours (16 ticks at 15-min interval)
+    if (adaptiveLearningEnabled && tickCount % 16 === 0) {
+      calibrate(adaptiveLearningMinDays).catch(err =>
+        console.warn('[auto-calculate] calibration failed:', (err as Error).message),
+      );
+    }
   } catch (err) {
     console.error('[auto-calculate] calculation failed:', (err as Error).message);
   } finally {

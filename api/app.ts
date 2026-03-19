@@ -9,6 +9,7 @@ import settingsRouter from './routes/settings.ts';
 import dataRouter from './routes/data.ts';
 import vrmRouter from './routes/vrm.ts';
 import predictionsRouter from './routes/predictions.ts';
+import planAccuracyRouter from './routes/plan-accuracy.ts';
 
 const app = express();
 app.disable('x-powered-by');
@@ -23,6 +24,7 @@ app.use('/settings', settingsRouter);
 app.use('/data', dataRouter);
 app.use('/vrm', vrmRouter);
 app.use('/predictions', predictionsRouter);
+app.use('/plan-accuracy', planAccuracyRouter);
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ message: 'Optivolt API is running.' });
