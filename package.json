@@ -19,6 +19,7 @@
     "dev": "dotenv -e .env.local -- nodemon --exec node --ignore 'data/' ./api/index.ts",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "npx eslint ."
   },
@@ -35,6 +36,7 @@
     "@eslint/js": "^10.0.1",
     "@eslint/markdown": "^7.5.1",
     "@types/express": "^5.0.6",
+    "@vitest/coverage-v8": "^4.1.0",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.0.0",
     "globals": "^17.3.0",

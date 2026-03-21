@@ -5,3 +5,4 @@ dist
 app/lib/
 .env.local
 .claude/settings.local.json
+coverage/
