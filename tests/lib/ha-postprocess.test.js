@@ -122,6 +122,41 @@ describe('aggregateTo15Min', () => {
   });
 });
 
+describe('postprocess — branch coverage', () => {
+  it('uses sensor id as name when sensor is not in nameOf (line 85: nameOf[id] ?? id)', () => {
+    // sensor.unknown_sensor is not in the sensors array → falls back to id
+    const rawDataWithUnknown = {
+      'sensor.unknown_sensor': [{ start: t1, change: 5 }],
+    };
+    const data = postprocess(rawDataWithUnknown, sensors, []);
+    const rec = data.find(d => d.sensor === 'sensor.unknown_sensor');
+    expect(rec).toBeDefined();
+    expect(rec.value).toBe(5); // Wh (unit unknown → multiplier 1)
+  });
+
+  it('treats null change as 0 (line 90: d.change ?? 0)', () => {
+    // change is null → should produce value 0
+    const rawDataNullChange = {
+      'sensor.solar': [{ start: t1, change: null }],
+    };
+    const data = postprocess(rawDataNullChange, sensors, []);
+    const rec = data.find(d => d.sensor === 'Solar' && d.hour === 10);
+    expect(rec).toBeDefined();
+    expect(rec.value).toBe(0);
+  });
+
+  it('uses 0 for missing sensor in derived formula (line 120: sensorsMap.get(ref) ?? 0)', () => {
+    // derived formula references a sensor not present in the data
+    const derivedWithMissing = [
+      { name: 'Ghost', formula: ['+MissingSensor'] },
+    ];
+    const data = postprocess(rawData, sensors, derivedWithMissing);
+    const rec = data.find(d => d.sensor === 'Ghost' && d.hour === 10);
+    expect(rec).toBeDefined();
+    expect(rec.value).toBe(0);
+  });
+});
+
 describe('getSensorNames', () => {
   it('returns unique sensor names', () => {
     const data = postprocess(rawData, sensors, derived);

@@ -18,6 +18,8 @@ const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await 
   '../../../api/services/auto-calculate.ts'
 );
 const { planAndMaybeWrite } = await import('../../../api/services/planner-service.ts');
+const { loadSettings } = await import('../../../api/services/settings-store.ts');
+const { calibrate } = await import('../../../api/services/efficiency-calibrator.ts');
 
 /** Build a minimal Settings object with the given autoCalculate config. */
 function makeSettings(autoCalculate) {
@@ -178,6 +180,32 @@ describe('auto-calculate', () => {
     errorSpy.mockRestore();
   });
 
+  it('defaults intervalMinutes to 15 when intervalMinutes is undefined', async () => {
+    // Line 22: config.intervalMinutes ?? 15
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: undefined, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    // Should use 15 minutes (900000ms) as default
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 15 * 60_000);
+
+    setIntervalSpy.mockRestore();
+  });
+
+  it('defaults minDataDays to 3 when minDataDays is undefined in adaptive learning settings', async () => {
+    // Line 70: al.minDataDays ?? 3
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true } }); // minDataDays not set
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // calibrate should have been called with the default of 3
+    expect(calibrate).toHaveBeenCalledWith(3);
+  });
+
   it('clamps intervalMinutes to minimum of 1', async () => {
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
 
@@ -190,6 +218,84 @@ describe('auto-calculate', () => {
     expect(isAutoCalculateRunning()).toBe(true);
 
     setIntervalSpy.mockRestore();
+  });
+
+  it('runs calibration when adaptive learning is enabled in settings', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true, minDataDays: 1 } });
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calibrate).toHaveBeenCalledWith(1);
+  });
+
+  it('does not run calibration when adaptive learning is disabled', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: false } });
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calibrate).not.toHaveBeenCalled();
+  });
+
+  it('SoC sampling failure is caught and tick still completes', async () => {
+    const { sampleAndStoreSoc } = await import('../../../api/services/soc-tracker.ts');
+    sampleAndStoreSoc.mockRejectedValueOnce(new Error('MQTT timeout'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Tick should still complete (planAndMaybeWrite was called)
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(1);
+    expect(isAutoCalculateRunning()).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('adaptive learning check failure is caught and tick still completes', async () => {
+    loadSettings.mockRejectedValueOnce(new Error('settings read failed'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // planAndMaybeWrite still called despite loadSettings failure during adaptive check
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(1);
+    expect(isAutoCalculateRunning()).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[auto-calculate] adaptive learning check failed:',
+      'settings read failed',
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('catches calibration errors without crashing', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true, minDataDays: 2 } });
+    calibrate.mockRejectedValueOnce(new Error('calibration exploded'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(isAutoCalculateRunning()).toBe(true);
+
+    // Next tick should also work
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
   });
 
 });

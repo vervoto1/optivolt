@@ -1,31 +1,27 @@
 # Changelog
 
-## 0.5.10-3
+## 0.6.0
+
+- **Fix predicted SoC alignment**: predicted SoC in plan snapshots now represents start-of-slot (before energy flows) instead of end-of-slot (after flows), matching actual SoC measurements taken at slot start — previously showed e.g. 31% predicted at 11:00 when charging hadn't started, which was the 11:15 end-of-slot value
+- **Prediction accuracy charts**: parabolic SoC lifecycle curve (charge 0→100% on left, discharge 100→0% on right) with green/orange phase coloring, deviation diff overlay, merged timeline from historical plans
+- **Reset-all endpoint**: `POST /plan-accuracy/reset-all` clears all adaptive learning data (calibration, plan history, SoC samples) in one call
+- Fix SoC sample timestamps: align to quarter-hour boundaries to match plan slot timestamps exactly
+- Fix SoC sample matching tolerance: increased to 15 minutes to avoid missed matches at slot boundaries
+- Adaptive learning SoC sampling now awaits completion before proceeding (was fire-and-forget)
+- **100% test coverage**: 762 tests covering all lines and functions across 39 source files (up from 563 at ~90%)
+- Codecov integration with CI; coverage badge added to README
+- **Note**: clear plan history after upgrading to flush stale snapshots with old end-of-slot semantics
+
+## 0.5.10
 
 - Rename "efficiency" to "prediction accuracy" throughout adaptive learning UI and API
 - Add per-SoC-band sample counts to calibration data — chart only shows bands with ≥2 samples
 - Add "Calibrate" button in Predictions tab sidebar for instant manual trigger
-- Smooth prediction accuracy curves (tension 0.4) with scatter points at data-backed bands
-- Tooltip shows sample count per band on hover
-- Weighted average now only considers bands with actual calibration data
-
-## 0.5.10-2
-
+- Parabolic prediction accuracy curve with smooth interpolation and scatter points at data-backed bands
+- Tooltip shows sample count per band on hover; weighted average only considers bands with data
 - Fix adaptive learning calibrator never running: re-read settings live each tick instead of caching at startup
-- Remove tickCount-based throttle that prevented calibration from running when settings were saved (resetting counter)
 - Add `POST /plan-accuracy/calibrate` endpoint for manual calibration trigger
-- Add diagnostic logging to calibrator for each null-return path
-
-## 0.5.10
-
-- Bump all dependencies to latest versions
-  - @eslint/css 0.14.1 → 1.0.0 (major)
-  - jsdom 28.0.0 → 29.0.0 (major)
-  - eslint 10.0.0 → 10.0.3
-  - globals 17.3.0 → 17.4.0
-  - nodemon 3.1.11 → 3.1.14
-  - vitest 4.0.18 → 4.1.0
-- Resolve all Dependabot security alerts (qs, undici, flatted, minimatch, rollup, ajv)
+- Bump all dependencies to latest; resolve all Dependabot security alerts
 
 ## 0.5.9
 

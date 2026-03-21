@@ -197,6 +197,29 @@ describe('fetchPricesFromHA', () => {
     expect(result.importPrice.values).toHaveLength((24 + 24) * 4);
   });
 
+  it('returns null when sensor entity has no attributes', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        state: '0.25',
+        attributes: null,
+      }),
+    );
+
+    const result = await fetchPricesFromHA(makeSettings());
+    expect(result).toBeNull();
+  });
+
+  it('returns null when HA API returns non-ok status', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ message: 'Internal Server Error' }),
+    });
+
+    const result = await fetchPricesFromHA(makeSettings());
+    expect(result).toBeNull();
+  });
+
   it('returns null on fetch error', async () => {
     fetchMock.mockRejectedValueOnce(new Error('Network failure'));
     const result = await fetchPricesFromHA(makeSettings());
@@ -213,6 +236,58 @@ describe('fetchPricesFromHA', () => {
 
     const result = await fetchPricesFromHA(makeSettings());
     expect(result).toBeNull();
+  });
+
+  it('uses default attribute names when config attributes are omitted', async () => {
+    // Lines 36-41: the || right-hand side is taken when config properties are absent
+    const todayPrices = [
+      { time: '2026-03-17T00:00:00+01:00', value: 0.25 },
+    ];
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        state: '0.25',
+        attributes: { today_hourly_prices: todayPrices },
+      }),
+    );
+
+    const settings = makeSettings({
+      haPriceConfig: {
+        sensor: 'sensor.gespot_hourly_average_price_nl',
+        // todayAttribute, tomorrowAttribute, timeKey, valueKey, valueMultiplier, priceInterval all omitted
+      },
+    });
+    const result = await fetchPricesFromHA(settings);
+
+    expect(result).not.toBeNull();
+    // valueMultiplier defaults to 100, priceInterval defaults to 60 → 4 slots
+    expect(result.importPrice.values).toHaveLength(4);
+    // 0.25 * 100 = 25
+    expect(result.importPrice.values[0]).toBe(25);
+  });
+
+  it('substitutes 0 for non-finite price values', async () => {
+    // Line 68: Number.isFinite(rawValue) ? rawValue : 0
+    const todayPrices = [
+      { time: '2026-03-17T00:00:00+01:00', value: 'not-a-number' },
+      { time: '2026-03-17T01:00:00+01:00', value: 0.20 },
+    ];
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse({
+        state: '0',
+        attributes: { today_hourly_prices: todayPrices },
+      }),
+    );
+
+    const result = await fetchPricesFromHA(makeSettings());
+
+    expect(result).not.toBeNull();
+    // First slot: NaN * 100 → not finite → 0
+    expect(result.importPrice.values[0]).toBe(0);
+    expect(result.importPrice.values[1]).toBe(0);
+    expect(result.importPrice.values[2]).toBe(0);
+    expect(result.importPrice.values[3]).toBe(0);
+    // Second slot: 0.20 * 100 = 20
+    expect(result.importPrice.values[4]).toBe(20);
   });
 
   it('uses supervisor proxy when SUPERVISOR_TOKEN is set', async () => {

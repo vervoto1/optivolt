@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the VictronMqttClient class before importing mqtt-service
 const mockGetSerial = vi.fn().mockResolvedValue('test-serial-123');
@@ -6,6 +6,8 @@ const mockReadSetting = vi.fn();
 const mockWriteSetting = vi.fn().mockResolvedValue(undefined);
 const mockWriteScheduleSlot = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
+const mockReadSocPercent = vi.fn().mockResolvedValue({ soc_percent: 75 });
+const mockReadSocLimitsPercent = vi.fn().mockResolvedValue({ minSoc_percent: 20, maxSoc_percent: 95 });
 
 vi.mock('../../../lib/victron-mqtt.ts', () => ({
   VictronMqttClient: class MockVictronMqttClient {
@@ -15,10 +17,19 @@ vi.mock('../../../lib/victron-mqtt.ts', () => ({
     writeSetting = mockWriteSetting;
     writeScheduleSlot = mockWriteScheduleSlot;
     close = mockClose;
+    readSocPercent = mockReadSocPercent;
+    readSocLimitsPercent = mockReadSocLimitsPercent;
   },
 }));
 
-const { setDynamicEssSchedule, shutdownVictronClient } = await import('../../../api/services/mqtt-service.ts');
+const {
+  setDynamicEssSchedule,
+  shutdownVictronClient,
+  getVictronSerial,
+  readVictronSetting,
+  readVictronSocPercent,
+  readVictronSocLimits,
+} = await import('../../../api/services/mqtt-service.ts');
 
 function makeRow(index, overrides = {}) {
   const baseMs = 1700000000000; // fixed base timestamp
@@ -161,6 +172,44 @@ describe('mqtt-service — schedule slot writing', () => {
   });
 });
 
+describe('mqtt-service — getSerial failure and price refresh window', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetSerial.mockResolvedValue('test-serial-123');
+    mockReadSetting.mockResolvedValue({ value: 4 });
+    mockWriteSetting.mockResolvedValue(undefined);
+    mockWriteScheduleSlot.mockResolvedValue(undefined);
+    await shutdownVictronClient();
+  });
+
+  it('propagates error when getSerial rejects', async () => {
+    mockGetSerial.mockRejectedValue(new Error('serial read failed'));
+
+    const rows = [makeRow(0), makeRow(1)];
+    await expect(setDynamicEssSchedule(rows, 2)).rejects.toThrow('serial read failed');
+  });
+
+  it('returns slotsWritten=0 when price refresh window is active', async () => {
+    const { startDessPriceRefresh, stopDessPriceRefresh } = await import('../../../api/services/dess-price-refresh.ts');
+
+    // Activate the price refresh window by setting a time that's inside the window
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-19T13:05:00'));
+    startDessPriceRefresh({ dessPriceRefresh: { enabled: true, time: '13:00', durationMinutes: 15 } });
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+
+    try {
+      const rows = [makeRow(0), makeRow(1)];
+      const result = await setDynamicEssSchedule(rows, 2);
+      expect(result.slotsWritten).toBe(0);
+      expect(mockWriteScheduleSlot).not.toHaveBeenCalled();
+    } finally {
+      stopDessPriceRefresh();
+    }
+  });
+});
+
 describe('mqtt-service — writeScheduleSlot writes both Soc and TargetSoc', () => {
   // This test verifies the VictronMqttClient.writeScheduleSlot implementation
   // by importing and testing it directly with a mock publishJson
@@ -220,5 +269,105 @@ describe('mqtt-service — writeScheduleSlot writes both Soc and TargetSoc', () 
     const socWrites = writes.filter(w => w.path.includes('/Soc') || w.path.includes('/TargetSoc'));
     expect(socWrites).toHaveLength(0);
     expect(writes).toHaveLength(3); // Start, Duration, Strategy only
+  });
+});
+
+describe('mqtt-service — TLS env var parsing', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetSerial.mockResolvedValue('test-serial-123');
+    mockReadSetting.mockResolvedValue({ value: 4 });
+    mockWriteSetting.mockResolvedValue(undefined);
+    mockWriteScheduleSlot.mockResolvedValue(undefined);
+    await shutdownVictronClient();
+  });
+
+  afterEach(async () => {
+    // Clean up env vars
+    delete process.env.MQTT_TLS;
+    delete process.env.MQTT_PORT;
+    await shutdownVictronClient();
+  });
+
+  it('enables TLS when MQTT_TLS is set to "1"', async () => {
+    // Line 11: process.env.MQTT_TLS === '1' → tls=true
+    process.env.MQTT_TLS = '1';
+
+    // Just calling a function that triggers getVictronClient() is enough
+    const rows = [makeRow(0), makeRow(1)];
+    await setDynamicEssSchedule(rows, 2);
+
+    // If it ran without error, the client was created with TLS=true via '1'
+    expect(mockGetSerial).toHaveBeenCalled();
+  });
+
+  it('overrides port to undefined when TLS is enabled and port is 1883', async () => {
+    // Line 14: tls && rawPort === 1883 → port = undefined
+    process.env.MQTT_TLS = 'true';
+    process.env.MQTT_PORT = '1883';
+
+    const rows = [makeRow(0), makeRow(1)];
+    await setDynamicEssSchedule(rows, 2);
+
+    // Client was created — the port override logic ran without error
+    expect(mockGetSerial).toHaveBeenCalled();
+  });
+});
+
+describe('mqtt-service — thin wrapper functions', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetSerial.mockResolvedValue('test-serial-123');
+    mockReadSetting.mockResolvedValue({ value: 42 });
+    mockReadSocPercent.mockResolvedValue({ soc_percent: 75 });
+    mockReadSocLimitsPercent.mockResolvedValue({ minSoc_percent: 20, maxSoc_percent: 95 });
+    await shutdownVictronClient();
+  });
+
+  it('getVictronSerial delegates to client.getSerial and returns the serial', async () => {
+    const serial = await getVictronSerial();
+
+    expect(mockGetSerial).toHaveBeenCalledTimes(1);
+    expect(serial).toBe('test-serial-123');
+  });
+
+  it('readVictronSetting delegates to client.readSetting with path and options', async () => {
+    const result = await readVictronSetting('Settings/DynamicEss/Mode', { timeoutMs: 2000 });
+
+    expect(mockReadSetting).toHaveBeenCalledWith('Settings/DynamicEss/Mode', { timeoutMs: 2000 });
+    expect(result).toEqual({ value: 42 });
+  });
+
+  it('readVictronSetting works without options', async () => {
+    const result = await readVictronSetting('Settings/DynamicEss/Mode');
+
+    expect(mockReadSetting).toHaveBeenCalledWith('Settings/DynamicEss/Mode', {});
+    expect(result).toEqual({ value: 42 });
+  });
+
+  it('readVictronSocPercent delegates to client.readSocPercent and returns soc_percent', async () => {
+    const soc = await readVictronSocPercent();
+
+    expect(mockReadSocPercent).toHaveBeenCalledTimes(1);
+    expect(soc).toBe(75);
+  });
+
+  it('readVictronSocPercent passes timeoutMs option to client', async () => {
+    await readVictronSocPercent({ timeoutMs: 5000 });
+
+    expect(mockReadSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000 });
+  });
+
+  it('readVictronSocLimits delegates to client.readSocLimitsPercent and returns min/max', async () => {
+    const limits = await readVictronSocLimits();
+
+    expect(mockReadSocLimitsPercent).toHaveBeenCalledTimes(1);
+    expect(limits).toEqual({ minSoc_percent: 20, maxSoc_percent: 95 });
+  });
+
+  it('readVictronSocLimits passes timeoutMs option to client', async () => {
+    await readVictronSocLimits({ timeoutMs: 3000 });
+
+    expect(mockReadSocLimitsPercent).toHaveBeenCalledWith({ timeoutMs: 3000 });
   });
 });

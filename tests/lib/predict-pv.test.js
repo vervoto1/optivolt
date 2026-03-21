@@ -166,6 +166,30 @@ describe('calculateMaxRatioPerHour', () => {
     // The ratios should differ since the Bird model is evaluated at different times
     expect(result15[12]).not.toBeCloseTo(result60[12], 10);
   });
+
+  it('keeps only the maximum ratio when multiple records exist for the same hour', () => {
+    // First record sets a ratio, second record is lower — the lower one must NOT replace it
+    const timeMs = Date.UTC(2024, 5, 15, 12);
+    const records = [
+      { time: timeMs, hour: 12, ghi_W_per_m2: 800, intervalMinutes: 60 }, // higher ratio
+      { time: timeMs + 86400000, hour: 12, ghi_W_per_m2: 100, intervalMinutes: 60 }, // lower ratio
+    ];
+
+    const result = calculateMaxRatioPerHour(records, 51.05, 3.71);
+    // The max ratio (from 800 W/m²) must be retained, not overwritten by the 100 W/m² record
+    const highResult = calculateMaxRatioPerHour([records[0]], 51.05, 3.71);
+    expect(result[12]).toBeCloseTo(highResult[12]);
+  });
+
+  it('skips records where ghi_W_per_m2 is <= 0', () => {
+    const timeMs = Date.UTC(2024, 5, 15, 12);
+    const records = [
+      { time: timeMs, hour: 12, ghi_W_per_m2: 0, intervalMinutes: 60 },
+      { time: timeMs, hour: 12, ghi_W_per_m2: -10, intervalMinutes: 60 },
+    ];
+    const result = calculateMaxRatioPerHour(records, 51.05, 3.71);
+    expect(result[12]).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -207,6 +231,19 @@ describe('estimateHourlyCapacity', () => {
     const capacity = estimateHourlyCapacity(new Array(24).fill(0), new Array(24).fill(0));
     expect(capacity).toHaveLength(24);
     capacity.forEach((c, i) => expect(c.hour).toBe(i));
+  });
+
+  it('uses ?? 0 fallback when maxProd or maxRatio arrays are shorter than 24', () => {
+    // Sparse arrays with undefined slots exercise the `?? 0` branches on lines 278-279
+    const maxProd = [];
+    const maxRatio = [];
+    maxProd[12] = 1000;
+    maxRatio[12] = 0.5;
+    // hours without entries will be undefined → ?? 0
+    const capacity = estimateHourlyCapacity(maxProd, maxRatio);
+    expect(capacity[0].maxProduction_Wh).toBe(0);
+    expect(capacity[0].maxRatio).toBe(0);
+    expect(capacity[12].trueCapacity_Wh).toBe(2000);
   });
 });
 
@@ -282,6 +319,16 @@ describe('forecastPv', () => {
     ];
 
     const points = forecastPv(capacity, forecastIrradiance, 51.05, 3.71);
+    expect(points[0].predicted).toBe(0);
+  });
+
+  it('uses ?? 0 when capacity entry is undefined for an hour (line 444)', () => {
+    // capacity is an empty array — cap[rec.hour] is undefined → cap?.trueCapacity_Wh ?? 0
+    const forecastIrradiance = [
+      { time: Date.UTC(2024, 5, 20, 12), hour: 12, ghi_W_per_m2: 500, intervalMinutes: 60 },
+    ];
+
+    const points = forecastPv([], forecastIrradiance, 51.05, 3.71);
     expect(points[0].predicted).toBe(0);
   });
 });
@@ -445,6 +492,20 @@ describe('estimateSlotCapacity', () => {
     const result = estimateSlotCapacity(maxProd, maxRatio);
     expect(result[0].trueCapacity_Wh).toBe(200);
   });
+
+  it('uses ?? 0 fallback when maxProd96 or maxRatio24 arrays are sparse', () => {
+    // Sparse arrays with undefined slots exercise the `?? 0` branches on lines 335-336
+    const maxProd96 = [];
+    const maxRatio24 = [];
+    maxProd96[48] = 500;
+    maxRatio24[12] = 0.8;
+    // unset slots are undefined → ?? 0
+    const result = estimateSlotCapacity(maxProd96, maxRatio24);
+    expect(result[0].maxProduction_Wh).toBe(0);
+    expect(result[0].maxRatio).toBe(0);
+    expect(result[48].maxProduction_Wh).toBe(500);
+    expect(result[48].trueCapacity_Wh).toBeCloseTo(500 / 0.8);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,5 +549,14 @@ describe('forecastPvSlot', () => {
     const irr = [{ time: t, hour: 12, ghi_W_per_m2: 400, intervalMinutes: 15 }];
     const points = forecastPvSlot(capacity, irr, lat, lon);
     expect(points[0].actual).toBeNull();
+  });
+
+  it('uses ?? 0 when capacity entry is undefined for a slot (line 386)', () => {
+    // capacity is shorter than 96, so cap[slot] is undefined → cap?.trueCapacity_Wh ?? 0
+    const t = new Date('2024-06-15T12:00:00Z').getTime(); // slot 48
+    const capacity = []; // empty — all slots undefined
+    const irr = [{ time: t, hour: 12, ghi_W_per_m2: 600, intervalMinutes: 15 }];
+    const points = forecastPvSlot(capacity, irr, lat, lon);
+    expect(points[0].predicted).toBe(0);
   });
 });

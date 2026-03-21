@@ -533,7 +533,7 @@ async function renderSocAccuracy() {
 
 function renderSocAccuracyCharts(report) {
   const deviations = report.deviations;
-  const sorted = [...deviations].sort((a, b) => a.timestampMs - b.timestampMs);
+  const _sorted = [...deviations].sort((a, b) => a.timestampMs - b.timestampMs);
 
   renderAccuracyCharts(
     'soc-accuracy-chart',

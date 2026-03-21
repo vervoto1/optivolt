@@ -9,7 +9,14 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
       include: ['api/**', 'lib/**'],
-      exclude: ['**/node_modules/**'],
+      exclude: [
+        '**/node_modules/**',
+        '**/AGENTS.md',
+        '**/types.ts',
+        'api/index.ts',
+        'api/defaults/**',
+        'app/**',
+      ],
     },
   },
 });

@@ -247,6 +247,52 @@ describe('mapRowsToDess', () => {
   });
 });
 
+describe('mapRowsToDess — flags field', () => {
+  const cfg = {
+    maxGridImport_W: 5000,
+    maxSoc_percent: 100,
+    minSoc_percent: 0,
+    maxDischargePower_W: 4000,
+  };
+
+  const baseRow = {
+    g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+    soc: 500, soc_percent: 50,
+    load: 500, pv: 0,
+    ic: 10, ec: 5,
+  };
+
+  it('includes flags: 0 on each perSlot entry', () => {
+    const rows = [{ ...baseRow }];
+    const { perSlot } = mapRowsToDess(rows, cfg);
+    expect(perSlot[0]).toHaveProperty('flags', 0);
+  });
+});
+
+describe('mapRowsToDess — empty rows diagnostics', () => {
+  const cfg = {
+    maxGridImport_W: 5000,
+    maxSoc_percent: 100,
+    minSoc_percent: 0,
+    maxDischargePower_W: 4000,
+  };
+
+  it('returns -Infinity gridChargeTippingPoint when rows is empty', () => {
+    const { diagnostics } = mapRowsToDess([], cfg);
+    expect(diagnostics.gridChargeTippingPoint_cents_per_kWh).toBe(-Infinity);
+  });
+
+  it('returns Infinity batteryExportTippingPoint when rows is empty', () => {
+    const { diagnostics } = mapRowsToDess([], cfg);
+    expect(diagnostics.batteryExportTippingPoint_cents_per_kWh).toBe(Infinity);
+  });
+
+  it('returns empty perSlot array when rows is empty', () => {
+    const { perSlot } = mapRowsToDess([], cfg);
+    expect(perSlot).toHaveLength(0);
+  });
+});
+
 describe('Tipping Point Calculations', () => {
   // Minimal mock of the config
   const mockCfg = {
@@ -370,6 +416,72 @@ describe('Tipping Point Calculations', () => {
 
     const result = mapRowsToDess(rows, mockCfg);
     expect(result.diagnostics.gridBatteryTippingPoint_cents_per_kWh).toBe(-Infinity);
+  });
+});
+
+describe('mapRowsToDess — uncovered branches', () => {
+  const cfg = {
+    maxGridImport_W: 5000,
+    maxSoc_percent: 100,
+    minSoc_percent: 0,
+    maxDischargePower_W: 4000,
+  };
+
+  const baseRow = {
+    g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+    soc: 500, soc_percent: 50,
+    load: 500, pv: 0,
+    ic: 10, ec: 5,
+  };
+
+  it('boosts socTarget by 5 when g2l+g2b >= maxGridImport_W (line 97)', () => {
+    // g2l + g2b = 5000 = maxGridImport_W → saturation triggers +5% target boost
+    const rows = [{
+      ...baseRow,
+      g2b: 4500, g2l: 500, // total 5000 >= 5000 - 1 (FLOW_EPSILON_W)
+      soc_percent: 70,
+    }];
+    const { perSlot } = mapRowsToDess(rows, cfg);
+    // Without saturation: socTarget = 70. With saturation: min(75, 99) = 75
+    expect(perSlot[0].socTarget_percent).toBe(75);
+  });
+
+  it('pvCoversLoad branch: proGrid when pv exports to grid (line 139)', () => {
+    // pvCoversLoad = true (pv >= load), pv2g present, no pv2b → proGrid
+    const rows = [{
+      ...baseRow,
+      load: 200, pv: 1000,
+      pv2l: 200, pv2g: 800, pv2b: 0, // PV surplus to grid only
+    }];
+    const { perSlot } = mapRowsToDess(rows, cfg);
+    expect(perSlot[0].strategy).toBe(Strategy.proGrid);
+  });
+
+  it('EV discharge constraint upgrades restrictions from none to batteryToGrid in v2 (line 411)', () => {
+    // mapRowsToDessV2 applies the EV discharge constraint at lines 411-416
+    // Strategy selfConsumption + restrictions none, then EV active → batteryToGrid
+    const rows = [{
+      ...baseRow,
+      g2b: 0, b2g: 0, pv2l: 500, pv2b: 200, pv2g: 0, b2l: 0,
+      load: 500, pv: 700, soc_percent: 50,
+    }];
+    const evCfg = { ...cfg, disableDischargeWhileEvCharging: true, evLoad_W: [500] };
+    const { perSlot } = mapRowsToDessV2(rows, evCfg);
+    expect(perSlot[0].restrictions).toBe(Restrictions.batteryToGrid);
+  });
+
+  it('EV discharge constraint upgrades restrictions from gridToBattery to both in v2 (line 414)', () => {
+    // gridToBattery is set when exportPrice >= batteryExportTp (proGrid strategy)
+    // Need b2g flow with high export price so it enters proGrid+gridToBattery path
+    const rows = [{
+      ...baseRow,
+      b2g: 3000, g2l: 0, g2b: 0, b2l: 500,
+      load: 500, pv: 0, soc_percent: 80,
+      ic: 50, ec: 40, // expensive export → proGrid + gridToBattery
+    }];
+    const evCfg = { ...cfg, disableDischargeWhileEvCharging: true, evLoad_W: [500] };
+    const { perSlot } = mapRowsToDessV2(rows, evCfg);
+    expect(perSlot[0].restrictions).toBe(Restrictions.both);
   });
 });
 
@@ -667,6 +779,52 @@ describe('mapRowsToDessV2', () => {
       for (let i = 0; i < baseSlots.length; i++) {
         expect(evSlots[i].feedin, `slot ${i} feedin`).toBe(baseSlots[i].feedin);
       }
+    });
+  });
+
+  describe('EV discharge constraint', () => {
+    function makeRow(overrides = {}) {
+      return {
+        g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+        soc: 500, soc_percent: 50,
+        load: 0, pv: 0,
+        ic: 20, ec: 5,
+        ...overrides,
+      };
+    }
+
+    it('upgrades restrictions from none to batteryToGrid when EV is active', () => {
+      // selfConsumption default → restrictions = none, EV active → batteryToGrid
+      const rows = [makeRow({ ic: 20, ec: 5 })];
+      const evCfg = { ...cfg, disableDischargeWhileEvCharging: true, evLoad_W: [1000] };
+      const { perSlot } = mapRowsToDessV2(rows, evCfg);
+      expect(perSlot[0].restrictions).toBe(Restrictions.batteryToGrid);
+    });
+
+    it('upgrades restrictions from gridToBattery to both when EV is active', () => {
+      // establish batteryExportTp so slot exports (restrictions=gridToBattery), then EV active
+      const rows = [
+        makeRow({ b2g: 100, ec: 20, ic: 100 }), // sets batteryExportTp = 20
+        makeRow({ ic: 100, ec: 25 }),             // ec >= tp → proGrid + gridToBattery
+      ];
+      const evCfg = { ...cfg, disableDischargeWhileEvCharging: true, evLoad_W: [0, 1000] };
+      const { perSlot } = mapRowsToDessV2(rows, evCfg);
+      expect(perSlot[1].restrictions).toBe(Restrictions.both);
+    });
+
+    it('does not change restrictions when EV load is 0', () => {
+      const rows = [makeRow({ ic: 20, ec: 5 })];
+      const evCfg = { ...cfg, disableDischargeWhileEvCharging: true, evLoad_W: [0] };
+      const { perSlot } = mapRowsToDessV2(rows, evCfg);
+      // selfConsumption default → restrictions = none, no EV → unchanged
+      expect(perSlot[0].restrictions).toBe(Restrictions.none);
+    });
+
+    it('does not apply constraint when disableDischargeWhileEvCharging is false', () => {
+      const rows = [makeRow({ ic: 20, ec: 5 })];
+      const evCfg = { ...cfg, disableDischargeWhileEvCharging: false, evLoad_W: [1000] };
+      const { perSlot } = mapRowsToDessV2(rows, evCfg);
+      expect(perSlot[0].restrictions).toBe(Restrictions.none);
     });
   });
 });

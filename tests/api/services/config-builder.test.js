@@ -1,5 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildSolverConfigFromSettings, applyCalibration } from '../../../api/services/config-builder.ts';
+
+vi.mock('../../../api/services/settings-store.ts', () => ({
+  loadSettings: vi.fn(),
+}));
+
+vi.mock('../../../api/services/data-store.ts', () => ({
+  loadData: vi.fn(),
+}));
+
+vi.mock('../../../api/services/efficiency-calibrator.ts', () => ({
+  loadCalibration: vi.fn(),
+}));
+
+import { buildSolverConfigFromSettings, applyCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
+import { loadSettings } from '../../../api/services/settings-store.ts';
+import { loadData } from '../../../api/services/data-store.ts';
+import { loadCalibration } from '../../../api/services/efficiency-calibrator.ts';
 
 const NOW_STRING = '2024-01-01T12:00:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
@@ -91,6 +107,117 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     const cfg = buildSolverConfigFromSettings(settings, makeData({ startMs: null }), NOW_MS);
     expect(cfg.rebalanceHoldSlots).toBeGreaterThanOrEqual(1);
     expect(cfg.rebalanceRemainingSlots).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('buildSolverConfigFromSettings — step fallback and evLoad in error details', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('uses step=15 when series step is undefined (line 10: step ?? 15)', () => {
+    // Line 10: const step = source.step ?? 15
+    const data = {
+      ...makeData(),
+      // omit step in load — should default to 15
+      load: { start: NOW_STRING, values: Array(96).fill(100) }, // no step field
+      pv: { start: NOW_STRING, step: 15, values: Array(96).fill(0) },
+      importPrice: { start: NOW_STRING, step: 15, values: Array(96).fill(10) },
+      exportPrice: { start: NOW_STRING, step: 15, values: Array(96).fill(5) },
+    };
+    // Should not throw — step defaults to 15
+    const cfg = buildSolverConfigFromSettings(mockSettings, data, NOW_MS);
+    expect(Array.isArray(cfg.load_W)).toBe(true);
+  });
+
+  it('includes evLoadEnd in error details when data.evLoad is present', () => {
+    // Line 44: ...(data.evLoad ? { evLoadEnd: ... } : {})
+    const pastStart = '2024-01-01T10:00:00Z';
+    const data = {
+      load: { start: pastStart, step: 15, values: [100] },
+      pv: { start: pastStart, step: 15, values: [0] },
+      importPrice: { start: pastStart, step: 15, values: [10] },
+      exportPrice: { start: pastStart, step: 15, values: [5] },
+      soc: { timestamp: NOW_STRING, value: 50 },
+      evLoad: { start: pastStart, step: 15, values: [0] }, // evLoad present
+    };
+
+    let caught;
+    try {
+      buildSolverConfigFromSettings(mockSettings, data, NOW_MS);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toBe('Insufficient future data');
+    // Error details should include evLoadEnd since data.evLoad is set
+    expect(caught.details?.evLoadEnd).toBeDefined();
+  });
+});
+
+describe('buildSolverConfigFromSettings — insufficient data', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('throws 422 when all series end before now', () => {
+    // Series that ended 1 hour before NOW_STRING
+    const pastStart = '2024-01-01T10:00:00Z'; // 2h before NOW (12:00)
+    const pastData = {
+      load: { start: pastStart, step: 15, values: [100] },          // ends 10:15
+      pv: { start: pastStart, step: 15, values: [0] },
+      importPrice: { start: pastStart, step: 15, values: [10] },
+      exportPrice: { start: pastStart, step: 15, values: [5] },
+      soc: { timestamp: NOW_STRING, value: 50 },
+    };
+
+    expect(() => buildSolverConfigFromSettings(mockSettings, pastData, NOW_MS))
+      .toThrow('Insufficient future data');
+  });
+});
+
+describe('buildSolverConfigFromSettings — cvPhase thresholds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes cvPhase thresholds through filtered and sorted when cvPhase is enabled', () => {
+    const settings = {
+      ...mockSettings,
+      cvPhase: {
+        enabled: true,
+        thresholds: [
+          { soc_percent: 90, maxChargePower_W: 1000 },
+          { soc_percent: 80, maxChargePower_W: 2000 },
+          { soc_percent: 0, maxChargePower_W: 500 },   // filtered: soc_percent = 0
+          { soc_percent: 70, maxChargePower_W: 0 },    // filtered: maxChargePower_W = 0
+        ],
+      },
+    };
+
+    const cfg = buildSolverConfigFromSettings(settings, makeData(), NOW_MS);
+
+    expect(cfg.cvPhaseThresholds).toBeDefined();
+    // Two valid thresholds (80 and 90), sorted ascending by soc_percent
+    expect(cfg.cvPhaseThresholds).toHaveLength(2);
+    expect(cfg.cvPhaseThresholds[0].soc_percent).toBe(80);
+    expect(cfg.cvPhaseThresholds[1].soc_percent).toBe(90);
   });
 });
 
@@ -213,5 +340,116 @@ describe('applyCalibration', () => {
     cal.chargeCurve[50] = 0.8;
     applyCalibration(baseCfg, cal);
     expect(baseCfg.chargeEfficiency_percent).toBe(original.chargeEfficiency_percent);
+  });
+});
+
+describe('getSolverInputs — adaptive learning calibration', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeSettingsWithAdaptive(mode) {
+    return {
+      ...mockSettings,
+      adaptiveLearning: { enabled: true, mode },
+    };
+  }
+
+  function makeCalibration(chargeRate = 0.8, dischargeRate = 0.9) {
+    const chargeCurve = new Array(100).fill(chargeRate);
+    const dischargeCurve = new Array(100).fill(dischargeRate);
+    return {
+      chargeCurve,
+      dischargeCurve,
+      effectiveChargeRate: chargeRate,
+      effectiveDischargeRate: dischargeRate,
+      sampleCount: 100,
+      confidence: 0.8,
+      lastCalibratedMs: Date.now(),
+    };
+  }
+
+  it('applies calibration to solver config when mode is auto and calibration exists', async () => {
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(makeCalibration(0.8, 0.9));
+
+    const { cfg } = await getSolverInputs();
+
+    // chargeEfficiency: 95% * 0.8 = 76%
+    expect(cfg.chargeEfficiency_percent).toBe(76);
+    // dischargeEfficiency: 95% * 0.9 = 85.5
+    expect(cfg.dischargeEfficiency_percent).toBeCloseTo(85.5, 1);
+  });
+
+  it('skips calibration when mode is suggest', async () => {
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('suggest'));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(makeCalibration(0.8, 0.9));
+
+    const { cfg } = await getSolverInputs();
+
+    // No calibration applied — efficiencies should match settings values
+    expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
+    expect(cfg.dischargeEfficiency_percent).toBe(mockSettings.dischargeEfficiency_percent);
+    expect(loadCalibration).not.toHaveBeenCalled();
+  });
+
+  it('skips calibration when adaptiveLearning is absent', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(makeCalibration(0.8, 0.9));
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
+    expect(loadCalibration).not.toHaveBeenCalled();
+  });
+
+  it('skips calibration when loadCalibration returns null', async () => {
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
+  });
+
+  it('logs warning but still returns config when loadCalibration throws', async () => {
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockRejectedValueOnce(new Error('disk I/O error'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await getSolverInputs();
+
+    // Config still returned with original efficiency (calibration skipped on error)
+    expect(result.cfg).toBeDefined();
+    expect(result.cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[config-builder]'),
+      expect.any(String),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('returns settings and data alongside cfg', async () => {
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    const result = await getSolverInputs();
+
+    expect(result.cfg).toBeDefined();
+    expect(result.settings).toBeDefined();
+    expect(result.data).toBeDefined();
+    expect(result.timing.stepMin).toBe(mockSettings.stepSize_m);
   });
 });

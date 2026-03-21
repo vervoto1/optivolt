@@ -21,7 +21,7 @@ vi.mock('../../../api/services/json-store.ts', () => {
   };
 });
 
-import { loadPlanHistory, savePlanSnapshot, getLatestSnapshot, getRecentSnapshots } from '../../../api/services/plan-history-store.ts';
+import { loadPlanHistory, savePlanSnapshot, getLatestSnapshot, getRecentSnapshots, clearPlanHistory } from '../../../api/services/plan-history-store.ts';
 import { _reset } from '../../../api/services/json-store.ts';
 
 function makeSnapshot(overrides = {}) {
@@ -102,6 +102,30 @@ describe('plan-history-store', () => {
     expect(recent[1].planId).toBe('now');
   });
 
+  it('returns empty array and logs warning on corrupted history file', async () => {
+    const { readJson } = await import('../../../api/services/json-store.ts');
+    readJson.mockRejectedValueOnce(new Error('Unexpected token'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const history = await loadPlanHistory();
+    expect(history).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Corrupted history file'),
+      'Unexpected token',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('returns empty array when history file contains non-array data', async () => {
+    // Line 17: Array.isArray(data) ? data : [] — non-array case
+    const { writeJson } = await import('../../../api/services/json-store.ts');
+    // Write something that is not an array
+    await writeJson('/tmp/test-data/plan-history.json', { corrupted: true });
+
+    const history = await loadPlanHistory();
+    expect(history).toEqual([]);
+  });
+
   it('prunes old snapshots when exceeding max capacity', async () => {
     // Directly write a pre-filled array to avoid 2001 sequential saves
     const { writeJson } = await import('../../../api/services/json-store.ts');
@@ -118,5 +142,13 @@ describe('plan-history-store', () => {
     expect(history).toHaveLength(2000);
     // Oldest entries should have been pruned, newest kept
     expect(history[history.length - 1].planId).toBe('snap-new');
+  });
+
+  it('clearPlanHistory writes empty array and clears all data', async () => {
+    await savePlanSnapshot(makeSnapshot({ planId: 'snap-1' }));
+    await clearPlanHistory();
+
+    const history = await loadPlanHistory();
+    expect(history).toEqual([]);
   });
 });

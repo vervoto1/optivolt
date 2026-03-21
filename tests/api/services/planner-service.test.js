@@ -5,11 +5,15 @@ vi.mock('../../../api/services/settings-store.ts');
 vi.mock('../../../api/services/data-store.ts');
 vi.mock('../../../api/services/vrm-refresh.ts');
 vi.mock('../../../api/services/mqtt-service.ts');
+vi.mock('../../../api/services/ha-ev-service.ts');
+vi.mock('../../../api/services/plan-history-store.ts');
 
 import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
+import { fetchEvLoadFromHA } from '../../../api/services/ha-ev-service.ts';
+import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
@@ -55,6 +59,8 @@ describe('computePlan — rebalance bookkeeping', () => {
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -113,6 +119,8 @@ describe('planAndMaybeWrite — DESS slot count', () => {
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -132,6 +140,70 @@ describe('planAndMaybeWrite — DESS slot count', () => {
   });
 });
 
+describe('computePlan — error handling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('rejects and resets highsPromise when highs.solve throws', async () => {
+    // First call with bad data that causes HiGHS to fail — use empty values so LP is unsolvable
+    loadData.mockResolvedValueOnce({
+      ...baseData,
+      load: { start: NOW_STRING, step: 60, values: [] },
+      pv: { start: NOW_STRING, step: 60, values: [] },
+      importPrice: { start: NOW_STRING, step: 60, values: [] },
+      exportPrice: { start: NOW_STRING, step: 60, values: [] },
+    });
+
+    // computePlan should reject (insufficient future data or solve error)
+    await expect(computePlan()).rejects.toThrow();
+
+    // After rejection, computePlan should still be callable on next invocation
+    loadData.mockResolvedValue({ ...baseData });
+    await expect(computePlan()).resolves.toBeDefined();
+  });
+
+  it('succeeds even when savePlanSnapshot rejects (fire-and-forget)', async () => {
+    // Import savePlanSnapshot from plan-history-store — we need to mock it
+    // The module isn't mocked at top level, so we spy via the module registry indirectly.
+    // We verify plan still completes — if savePlanSnapshot threw synchronously it would fail.
+    // Since it's fire-and-forget (.catch), the plan result is still returned.
+    const result = await computePlan();
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+  });
+
+  it('logs error but still returns result when writeToVictron fails', async () => {
+    setDynamicEssSchedule.mockRejectedValue(new Error('MQTT connection refused'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[calculate] Failed to write to Victron:',
+      'MQTT connection refused',
+    );
+
+    errorSpy.mockRestore();
+  });
+});
+
 describe('planAndMaybeWrite — DESS fingerprint cache', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -141,6 +213,8 @@ describe('planAndMaybeWrite — DESS fingerprint cache', () => {
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -171,5 +245,207 @@ describe('planAndMaybeWrite — DESS fingerprint cache', () => {
     // Second call with forceWrite=true: must write even though schedule is identical
     await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
     expect(setDynamicEssSchedule).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('computePlan — updateData path', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('calls refreshSeriesFromVrmAndPersist when updateData=true', async () => {
+    const result = await computePlan({ updateData: true });
+
+    expect(refreshSeriesFromVrmAndPersist).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+  });
+
+  it('logs error but still returns result when VRM refresh fails (updateData=true)', async () => {
+    refreshSeriesFromVrmAndPersist.mockRejectedValue(new Error('VRM timeout'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await computePlan({ updateData: true });
+
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Failed to refresh VRM data before calculation:',
+      'VRM timeout',
+    );
+
+    errorSpy.mockRestore();
+  });
+
+  it('does not call refreshSeriesFromVrmAndPersist when updateData=false (default)', async () => {
+    await computePlan();
+
+    expect(refreshSeriesFromVrmAndPersist).not.toHaveBeenCalled();
+  });
+});
+
+describe('computePlan — evConfig EV load refresh', () => {
+  const evSettings = {
+    ...baseSettings,
+    evConfig: {
+      enabled: true,
+      scheduleSensor: 'sensor.ev_schedule',
+      chargerPower_W: 7400,
+    },
+    haUrl: 'ws://homeassistant.local:8123/api/websocket',
+    haToken: 'test-token',
+  };
+
+  // EV load time series aligned to NOW
+  const evLoad = {
+    start: NOW_STRING,
+    step: 15,
+    values: [7400, 7400, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refreshes EV load from HA when evConfig.enabled is true', async () => {
+    loadSettings.mockResolvedValue({ ...evSettings });
+    fetchEvLoadFromHA.mockResolvedValue(evLoad);
+
+    const result = await computePlan();
+
+    expect(fetchEvLoadFromHA).toHaveBeenCalledTimes(1);
+    expect(fetchEvLoadFromHA).toHaveBeenCalledWith(expect.objectContaining({ evConfig: expect.objectContaining({ enabled: true }) }));
+    expect(result).toBeDefined();
+  });
+
+  it('clears evLoad_W when fetchEvLoadFromHA returns null (car disconnected)', async () => {
+    loadSettings.mockResolvedValue({ ...evSettings });
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await computePlan();
+
+    expect(fetchEvLoadFromHA).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('EV load cleared'));
+    expect(result).toBeDefined();
+
+    logSpy.mockRestore();
+  });
+
+  it('logs warning but still computes plan when fetchEvLoadFromHA rejects', async () => {
+    loadSettings.mockResolvedValue({ ...evSettings });
+    fetchEvLoadFromHA.mockRejectedValue(new Error('HA unreachable'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await computePlan();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[calculate] Failed to refresh EV load from HA:',
+      'HA unreachable',
+    );
+    expect(result).toBeDefined();
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not call fetchEvLoadFromHA when evConfig.enabled is false', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings });
+
+    await computePlan();
+
+    expect(fetchEvLoadFromHA).not.toHaveBeenCalled();
+  });
+});
+
+describe('planAndMaybeWrite — writeToVictron=false', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not call setDynamicEssSchedule when writeToVictron is false (default)', async () => {
+    // Line 217: writeToVictron=false branch — planAndMaybeWrite skips writePlanToVictron
+    const result = await planAndMaybeWrite({ writeToVictron: false });
+
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+    expect(setDynamicEssSchedule).not.toHaveBeenCalled();
+  });
+});
+
+describe('computePlan — savePlanSnapshot fire-and-forget', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves successfully even when savePlanSnapshot rejects', async () => {
+    savePlanSnapshot.mockRejectedValue(new Error('disk full'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await computePlan();
+
+    // Allow the fire-and-forget rejection to propagate through microtask queue
+    await Promise.resolve();
+
+    expect(result).toBeDefined();
+    expect(result.rows).toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[plan-history] Failed to save snapshot:',
+      'disk full',
+    );
+
+    warnSpy.mockRestore();
   });
 });

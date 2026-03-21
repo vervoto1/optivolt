@@ -126,6 +126,51 @@ describe('fetchEvLoadFromHA', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('sensor.ev_smart_charging_charging');
   });
 
+  it('uses default charging_schedule attribute when scheduleAttribute is not set', async () => {
+    // Line 42: evConfig.scheduleAttribute || 'charging_schedule' — right side taken
+    fetchMock
+      .mockResolvedValueOnce(makeOkResponse({ state: 'on', attributes: {} })) // connected switch
+      .mockResolvedValueOnce(
+        makeOkResponse({
+          state: 'on',
+          attributes: { charging_schedule: CHARGING_SCHEDULE }, // default attribute name
+        }),
+      );
+
+    const settings = makeSettings({
+      evConfig: {
+        enabled: true,
+        chargerPower_W: 11000,
+        scheduleSensor: 'sensor.ev_smart_charging_charging',
+        connectedSwitch: 'switch.ev_smart_charging_ev_connected',
+        // scheduleAttribute is omitted → defaults to 'charging_schedule'
+      },
+    });
+    const result = await fetchEvLoadFromHA(settings);
+
+    expect(result).not.toBeNull();
+    expect(result.values).toEqual([0, 11000, 11000]);
+  });
+
+  it('returns null when haToken is empty and SUPERVISOR_TOKEN is not set', async () => {
+    const settings = makeSettings({ haToken: '' });
+    delete process.env.SUPERVISOR_TOKEN;
+    const result = await fetchEvLoadFromHA(settings);
+    expect(result).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('throws when HA API returns non-ok status', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ message: 'Internal Server Error' }),
+    });
+    const result = await fetchEvLoadFromHA(makeSettings());
+    // fetchEvLoadFromHA catches errors and returns null
+    expect(result).toBeNull();
+  });
+
   it('converts WebSocket URL to HTTP correctly', async () => {
     fetchMock
       .mockResolvedValueOnce(makeOkResponse({ state: 'off', attributes: {} }));

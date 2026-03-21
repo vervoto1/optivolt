@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildLP } from '../../lib/build-lp.ts';
+import { buildPlanSummary } from '../../lib/plan-summary.ts';
 
 describe('buildLP', () => {
   const T = 5;
@@ -69,6 +70,27 @@ describe('buildLP', () => {
     expect(lp).toMatch(/c_soc_0:.*= 40960\b/);
     // soc_1..soc_4 RHS = 0
     expect(lp).toMatch(/c_soc_1:.*= 0\b/);
+  });
+
+  it('terminal SoC valuation "min" uses the minimum import price in the objective', () => {
+    const lp = buildLP({ ...mockData, importPrice: [10, 5, 20, 15, 8], terminalSocValuation: 'min' });
+    // min price = 5 c/kWh, terminalPrice_cents_per_Wh = 5/1000 * (95/100) = 0.00475
+    // The objective should subtract the terminal soc variable
+    expect(lp).toContain(`soc_${T - 1}`);
+    expect(lp).toMatch(/- \S+ soc_4/);
+  });
+
+  it('terminal SoC valuation "avg" uses the average import price in the objective', () => {
+    const prices = [10, 20, 30, 40, 50];
+    const lp = buildLP({ ...mockData, importPrice: prices, terminalSocValuation: 'avg' });
+    // avg = 30 c/kWh → terminalPrice > 0 → objective subtracts soc_4
+    expect(lp).toMatch(/- \S+ soc_4/);
+  });
+
+  it('terminal SoC valuation "zero" does not subtract soc from objective', () => {
+    const lp = buildLP({ ...mockData, terminalSocValuation: 'zero' });
+    // terminalPrice = 0 → no terminal term in objective
+    expect(lp).not.toMatch(/- \S+ soc_4/);
   });
 
   it('gridToLoad coefficient includes avoidGridRoundTrip tiebreak', () => {
@@ -294,5 +316,219 @@ describe('buildLP — CV phase', () => {
     // Slot 1's start-of-slot SoC is soc_0 (the previous slot's SoC variable)
     expect(lp).toMatch(/c_cv_0_1:.*soc_0/);
     expect(lp).toMatch(/c_cv_rev_0_1:.*soc_0/);
+  });
+});
+
+describe('buildLP — zero-coefficient objective terms', () => {
+  // Lines 135-140: the `if (coeff !== 0)` guards skip adding terms when coeff is exactly 0.
+  // With importPrice=0, exportPrice=0, batteryCost=0, tiebreaks non-zero, most coeffs stay.
+  // To get batteryToLoad coeff = 0 we need batteryCost=0 (already default).
+  // batteryToGridCoeff = -exportCoeff + batteryCost. With exportPrice=0 and batteryCost=0,
+  // batteryToGridCoeff = 0 → the batteryToGrid variable is omitted from the objective.
+  it('omits batteryToGrid from objective when its coefficient is exactly zero', () => {
+    const T = 2;
+    const lp = buildLP({
+      load_W: Array(T).fill(500),
+      pv_W: Array(T).fill(0),
+      importPrice: Array(T).fill(0),
+      exportPrice: Array(T).fill(0),
+      batteryCost_cent_per_kWh: 0,
+      terminalSocValuation: 'zero',
+    });
+    // batteryToGridCoeff = -0 + 0 = 0 → not added
+    // batteryToLoadCoeff = 0 → not added
+    // pvToBatteryCoeff = 0 → not added
+    // pvToGridCoeff = -0 + avoidExport tiebreak (non-zero) → still included
+    expect(lp).not.toMatch(/\+ 0 battery_to_grid_/);
+    expect(lp).not.toMatch(/\+ 0 battery_to_load_/);
+    expect(lp).not.toMatch(/\+ 0 pv_to_battery_/);
+  });
+});
+
+describe('buildLP — terminal SoC valuation "custom"', () => {
+  // Line 286: if (mode === "custom") return customPrice_cents_per_kWh
+  it('uses custom price when terminalSocValuation is "custom"', () => {
+    const T = 3;
+    const lp = buildLP({
+      load_W: Array(T).fill(500),
+      pv_W: Array(T).fill(0),
+      importPrice: Array(T).fill(10),
+      exportPrice: Array(T).fill(5),
+      terminalSocValuation: 'custom',
+      terminalSocCustomPrice_cents_per_kWh: 20,
+    });
+    // custom price 20 > 0 → subtracts soc_{T-1} from objective
+    expect(lp).toMatch(/- \S+ soc_2/);
+  });
+
+  it('omits terminal soc term when custom price is zero', () => {
+    const T = 3;
+    const lp = buildLP({
+      load_W: Array(T).fill(500),
+      pv_W: Array(T).fill(0),
+      importPrice: Array(T).fill(10),
+      exportPrice: Array(T).fill(5),
+      terminalSocValuation: 'custom',
+      terminalSocCustomPrice_cents_per_kWh: 0,
+    });
+    expect(lp).not.toMatch(/- \S+ soc_2/);
+  });
+});
+
+describe('buildLP — rebalance slot skip (line 225)', () => {
+  // Line 225: `if (kLow > kHigh) continue` — skips slots that fall outside
+  // any valid rebalance start window. With D=2 and T=4, slot 0 can only be
+  // covered by start positions k=0 (kLow=0, kHigh=0). Slots beyond T-D have
+  // no valid k and are skipped.
+  it('does not generate c_rebalance_ for slots beyond T-D with D=T (only k=0 possible)', () => {
+    // D=4 clamped to T=4 means kLow=max(0,t-3), kHigh=min(t,0)
+    // For t=1: kLow=max(0,-2)=0, kHigh=min(1,0)=0 → valid
+    // For t=3: kLow=max(0,0)=0, kHigh=min(3,0)=0 → valid
+    // All slots should get c_rebalance_ when D=T
+    const T = 4;
+    const lp = buildLP({
+      load_W: Array(T).fill(500),
+      pv_W: Array(T).fill(0),
+      importPrice: Array(T).fill(10),
+      exportPrice: Array(T).fill(5),
+      batteryCapacity_Wh: 10000,
+      maxSoc_percent: 100,
+      rebalanceRemainingSlots: T,
+      rebalanceTargetSoc_percent: 80,
+    });
+    // D = T = 4, only start_balance_0 should exist
+    expect(lp).toContain('c_rebalance_0:');
+    expect(lp).toContain('c_rebalance_3:');
+  });
+});
+
+describe('buildPlanSummary — empty rows', () => {
+  const cfg = { stepSize_m: 15 };
+
+  it('returns all zero energy totals when rows is empty', () => {
+    const summary = buildPlanSummary([], cfg);
+    expect(summary.loadTotal_kWh).toBe(0);
+    expect(summary.pvTotal_kWh).toBe(0);
+    expect(summary.evLoadTotal_kWh).toBe(0);
+    expect(summary.loadFromGrid_kWh).toBe(0);
+    expect(summary.loadFromBattery_kWh).toBe(0);
+    expect(summary.loadFromPv_kWh).toBe(0);
+    expect(summary.gridToBattery_kWh).toBe(0);
+    expect(summary.batteryToGrid_kWh).toBe(0);
+    expect(summary.importEnergy_kWh).toBe(0);
+  });
+
+  it('returns null avgImportPrice when rows is empty', () => {
+    const summary = buildPlanSummary([], cfg);
+    expect(summary.avgImportPrice_cents_per_kWh).toBeNull();
+  });
+
+  it('returns null tipping points when rows is empty and no diagnostics provided', () => {
+    const summary = buildPlanSummary([], cfg);
+    expect(summary.gridBatteryTippingPoint_cents_per_kWh).toBeNull();
+    expect(summary.gridChargeTippingPoint_cents_per_kWh).toBeNull();
+    expect(summary.batteryExportTippingPoint_cents_per_kWh).toBeNull();
+    expect(summary.pvExportTippingPoint_cents_per_kWh).toBeNull();
+  });
+
+  it('returns rebalanceStatus "disabled" when no rebalance config provided', () => {
+    const summary = buildPlanSummary([], cfg);
+    expect(summary.rebalanceStatus).toBe('disabled');
+  });
+});
+
+describe('buildPlanSummary — stepSize_m edge cases (line 47)', () => {
+  // Line 47: `Number.isFinite(stepMinutes) && stepMinutes > 0 ? stepMinutes / 60 : 0.25`
+  // Falls back to 0.25 when stepSize_m is undefined, 0, or non-finite.
+  const row = {
+    load: 1000, pv: 0, evLoad: 0,
+    g2l: 1000, b2l: 0, pv2l: 0,
+    g2b: 0, b2g: 0,
+    imp: 1000, exp: 0,
+    ic: 20, ec: 5,
+    soc: 5000, soc_percent: 50,
+  };
+
+  it('falls back to 0.25 h step when stepSize_m is undefined', () => {
+    const s1 = buildPlanSummary([row], {});           // stepSize_m undefined
+    const s2 = buildPlanSummary([row], { stepSize_m: 15 }); // 0.25 h
+    expect(s1.loadTotal_kWh).toBeCloseTo(s2.loadTotal_kWh, 6);
+  });
+
+  it('falls back to 0.25 h step when stepSize_m is 0', () => {
+    const s1 = buildPlanSummary([row], { stepSize_m: 0 });
+    const s2 = buildPlanSummary([row], { stepSize_m: 15 });
+    expect(s1.loadTotal_kWh).toBeCloseTo(s2.loadTotal_kWh, 6);
+  });
+
+  it('falls back to 0.25 h step when stepSize_m is Infinity', () => {
+    const s1 = buildPlanSummary([row], { stepSize_m: Infinity });
+    const s2 = buildPlanSummary([row], { stepSize_m: 15 });
+    expect(s1.loadTotal_kWh).toBeCloseTo(s2.loadTotal_kWh, 6);
+  });
+
+  it('uses 60 min step correctly', () => {
+    const s = buildPlanSummary([row], { stepSize_m: 60 });
+    // 1000 W * 1 h / 1000 = 1 kWh
+    expect(s.loadTotal_kWh).toBeCloseTo(1.0, 6);
+  });
+});
+
+describe('buildPlanSummary — non-finite tipping points (lines 102, 114)', () => {
+  // Lines 102, 114: `Number.isFinite(x) ? x : null` — Infinity/-Infinity → null
+  // Need non-empty rows so the early return at line 21 is skipped
+  const cfg = { stepSize_m: 15 };
+  const row = { g2l: 100, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0, soc: 50, soc_percent: 50, load: 100, pv: 0, ic: 10, ec: 5 };
+
+  it('returns null for non-finite gridBatteryTippingPoint', () => {
+    const s = buildPlanSummary([row], cfg, {
+      gridBatteryTippingPoint_cents_per_kWh: Infinity,
+      gridChargeTippingPoint_cents_per_kWh: -Infinity,
+      batteryExportTippingPoint_cents_per_kWh: 5,
+      pvExportTippingPoint_cents_per_kWh: 3,
+    });
+    expect(s.gridBatteryTippingPoint_cents_per_kWh).toBeNull();
+    expect(s.gridChargeTippingPoint_cents_per_kWh).toBeNull();
+  });
+
+  it('returns null for non-finite batteryExportTippingPoint', () => {
+    const s = buildPlanSummary([row], cfg, {
+      gridBatteryTippingPoint_cents_per_kWh: 10,
+      gridChargeTippingPoint_cents_per_kWh: 8,
+      batteryExportTippingPoint_cents_per_kWh: Infinity,
+      pvExportTippingPoint_cents_per_kWh: -Infinity,
+    });
+    expect(s.batteryExportTippingPoint_cents_per_kWh).toBeNull();
+    expect(s.pvExportTippingPoint_cents_per_kWh).toBeNull();
+  });
+
+  it('passes through finite tipping point values', () => {
+    const s = buildPlanSummary([row], cfg, {
+      gridBatteryTippingPoint_cents_per_kWh: 25,
+      pvExportTippingPoint_cents_per_kWh: 10,
+      gridChargeTippingPoint_cents_per_kWh: 8,
+      batteryExportTippingPoint_cents_per_kWh: 5,
+    });
+    expect(s.gridBatteryTippingPoint_cents_per_kWh).toBe(25);
+    expect(s.pvExportTippingPoint_cents_per_kWh).toBe(10);
+  });
+});
+
+describe('buildPlanSummary — rebalanceStatus "active" vs "scheduled" (line 18)', () => {
+  const cfg = { stepSize_m: 15 };
+
+  it('returns "active" when rebalance is enabled and startMs is not null', () => {
+    const s = buildPlanSummary([], cfg, {}, { enabled: true, startMs: 12345, remainingSlots: 2 });
+    expect(s.rebalanceStatus).toBe('active');
+  });
+
+  it('returns "scheduled" when rebalance is enabled but startMs is null', () => {
+    const s = buildPlanSummary([], cfg, {}, { enabled: true, startMs: null, remainingSlots: 4 });
+    expect(s.rebalanceStatus).toBe('scheduled');
+  });
+
+  it('returns "disabled" when rebalance.enabled is false', () => {
+    const s = buildPlanSummary([], cfg, {}, { enabled: false, startMs: null, remainingSlots: 0 });
+    expect(s.rebalanceStatus).toBe('disabled');
   });
 });

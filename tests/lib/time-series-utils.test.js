@@ -124,4 +124,42 @@ describe('buildForecastSeries', () => {
     expect(series.values).toHaveLength(4);
     expect(series.values.every(v => v === 0)).toBe(true);
   });
+
+  it('skips points with null value in 15-min mode (line 126: p.value !== null && !== undefined)', () => {
+    // Points with null/undefined value should not enter the predMap
+    const start = new Date('2024-06-15T10:00:00Z').toISOString();
+    const end = new Date('2024-06-15T10:30:00Z').toISOString();
+    const points = [
+      { time: new Date('2024-06-15T10:00:00Z').getTime(), value: null },
+      { time: new Date('2024-06-15T10:15:00Z').getTime(), value: 200 },
+    ];
+    const series = buildForecastSeries(points, start, end, 15);
+    expect(series.values).toHaveLength(2);
+    expect(series.values[0]).toBe(0);   // null value → 0
+    expect(series.values[1]).toBe(200);
+  });
+
+  it('skips points with null value in hourly mode (line 134: p.value !== null && !== undefined)', () => {
+    // In 60-min (default) mode, null value should not enter predMap
+    const start = new Date('2024-06-15T10:00:00Z').toISOString();
+    const end = new Date('2024-06-15T11:00:00Z').toISOString();
+    const points = [
+      { time: new Date('2024-06-15T10:00:00Z').getTime(), value: null },
+    ];
+    const series = buildForecastSeries(points, start, end); // default inputStep=60
+    expect(series.values).toHaveLength(4);
+    expect(series.values.every(v => v === 0)).toBe(true);
+  });
+
+  it('fills each 15-min slot from the hourly bucket in hourly mode', () => {
+    // inputStep=60: each hourly value should fill all four 15-min slots
+    const start = new Date('2024-06-15T10:00:00Z').toISOString();
+    const end = new Date('2024-06-15T11:00:00Z').toISOString();
+    const points = [
+      { time: new Date('2024-06-15T10:00:00Z').getTime(), value: 500 },
+    ];
+    const series = buildForecastSeries(points, start, end, 60);
+    expect(series.values).toHaveLength(4);
+    expect(series.values).toEqual([500, 500, 500, 500]);
+  });
 });

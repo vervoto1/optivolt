@@ -25,7 +25,7 @@ vi.mock('../../../api/services/soc-tracker.ts', () => ({
   }),
 }));
 
-import { evaluateLatestPlan, evaluatePlan } from '../../../api/services/plan-accuracy-service.ts';
+import { evaluateLatestPlan, evaluatePlan, evaluateRecentPlans } from '../../../api/services/plan-accuracy-service.ts';
 
 describe('plan-accuracy-service', () => {
   beforeEach(() => {
@@ -115,5 +115,131 @@ describe('plan-accuracy-service', () => {
     expect(report).not.toBeNull();
     expect(report.slotsCompared).toBe(1);
     expect(report.deviations[0].actualSoc_percent).toBe(58);
+  });
+
+  it('evaluatePlan returns null when all slots are in the future', () => {
+    const now = Date.now();
+    const step = 15 * 60_000;
+
+    const snapshot = {
+      planId: 'future',
+      createdAtMs: now,
+      initialSoc_percent: 50,
+      slots: [
+        { timestampMs: now + 1 * step, predictedSoc_percent: 55 },
+        { timestampMs: now + 2 * step, predictedSoc_percent: 60 },
+      ],
+      config: {},
+    };
+
+    const samples = [{ timestampMs: now, soc_percent: 50 }];
+    const report = evaluatePlan(snapshot, samples);
+    expect(report).toBeNull();
+  });
+
+  it('evaluateLatestPlan returns a real report when snapshot and samples match', async () => {
+    const now = Date.now();
+    const step = 15 * 60_000;
+
+    mockLatestSnapshot = {
+      planId: 'test-real',
+      createdAtMs: now - 3 * step,
+      initialSoc_percent: 50,
+      slots: [
+        { timestampMs: now - 2 * step, predictedSoc_percent: 55 },
+        { timestampMs: now - 1 * step, predictedSoc_percent: 60 },
+        { timestampMs: now + 1 * step, predictedSoc_percent: 65 }, // future, skipped
+      ],
+      config: {},
+    };
+
+    mockSocSamples = [
+      { timestampMs: now - 2 * step, soc_percent: 53 },
+      { timestampMs: now - 1 * step, soc_percent: 57 },
+    ];
+
+    const report = await evaluateLatestPlan();
+
+    expect(report).not.toBeNull();
+    expect(report.slotsCompared).toBe(2);
+    expect(report.meanDeviation_percent).toBeGreaterThanOrEqual(0);
+    expect(report.maxDeviation_percent).toBeGreaterThanOrEqual(0);
+  });
+
+  it('evaluateRecentPlans returns reports for multiple snapshots', async () => {
+    const now = Date.now();
+    const step = 15 * 60_000;
+
+    mockRecentSnapshots = [
+      {
+        planId: 'snap-1',
+        createdAtMs: now - 3 * step,
+        initialSoc_percent: 50,
+        slots: [
+          { timestampMs: now - 2 * step, predictedSoc_percent: 55 },
+          { timestampMs: now - 1 * step, predictedSoc_percent: 60 },
+        ],
+        config: {},
+      },
+      {
+        planId: 'snap-2',
+        createdAtMs: now - 2 * step,
+        initialSoc_percent: 55,
+        slots: [
+          { timestampMs: now - 1 * step, predictedSoc_percent: 60 },
+        ],
+        config: {},
+      },
+    ];
+
+    mockSocSamples = [
+      { timestampMs: now - 2 * step, soc_percent: 53 },
+      { timestampMs: now - 1 * step, soc_percent: 58 },
+    ];
+
+    const reports = await evaluateRecentPlans(7);
+    expect(reports.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('evaluateRecentPlans skips snapshots where evaluatePlan returns null (all future slots)', async () => {
+    // Line 74: if (report) branch not taken when evaluatePlan returns null
+    const now = Date.now();
+    const step = 15 * 60_000;
+
+    mockRecentSnapshots = [
+      {
+        planId: 'all-future',
+        createdAtMs: now,
+        initialSoc_percent: 50,
+        slots: [
+          // All slots are in the future — evaluatePlan returns null
+          { timestampMs: now + 1 * step, predictedSoc_percent: 55 },
+          { timestampMs: now + 2 * step, predictedSoc_percent: 60 },
+        ],
+        config: {},
+      },
+    ];
+
+    mockSocSamples = [
+      { timestampMs: now - 1 * step, soc_percent: 50 },
+    ];
+
+    const reports = await evaluateRecentPlans(7);
+    // evaluatePlan returned null for the snapshot (all future) → nothing pushed
+    expect(reports).toEqual([]);
+  });
+
+  it('evaluateRecentPlans returns empty array when no samples', async () => {
+    mockRecentSnapshots = [{
+      planId: 'snap-1',
+      createdAtMs: Date.now() - 60_000,
+      initialSoc_percent: 50,
+      slots: [{ timestampMs: Date.now() - 30_000, predictedSoc_percent: 55 }],
+      config: {},
+    }];
+    mockSocSamples = [];
+
+    const reports = await evaluateRecentPlans(7);
+    expect(reports).toEqual([]);
   });
 });

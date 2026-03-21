@@ -159,4 +159,33 @@ describe('Custom Data Injection', () => {
 
     expect(saveData).not.toHaveBeenCalled();
   });
+
+  it('POST /data should accept soc data when dataSources.soc is "api"', async () => {
+    const res = await request(app)
+      .post('/data')
+      .send({ soc: { value: 75, timestamp: '2024-01-01T12:00:00Z' } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.keysUpdated).toContain('soc');
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({
+      soc: { value: 75, timestamp: '2024-01-01T12:00:00Z' },
+    }));
+  });
+
+  it('GET /data returns 500 when loadData fails', async () => {
+    loadData.mockRejectedValueOnce(new Error('Disk read error'));
+
+    const res = await request(app).get('/data');
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /data returns 500 when saveData fails', async () => {
+    saveData.mockRejectedValueOnce(new Error('Disk write error'));
+
+    const res = await request(app)
+      .post('/data')
+      .send({ importPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [10, 20] } });
+
+    expect(res.status).toBe(500);
+  });
 });
