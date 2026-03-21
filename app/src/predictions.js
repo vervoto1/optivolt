@@ -555,6 +555,11 @@ function renderSocAccuracyCharts(report) {
   );
 }
 
+/**
+ * Render the prediction accuracy curve as a parabolic charge→discharge lifecycle.
+ * X-axis: 0% → 100% (charge phase, left half) then 100% → 0% (discharge phase, right half).
+ * Only bands with >= minSamples are shown; others are null (gaps).
+ */
 function renderEfficiencyCurveChart(calibration) {
   const canvas = document.getElementById('efficiency-curve-chart');
   if (!canvas) return;
@@ -562,16 +567,49 @@ function renderEfficiencyCurveChart(calibration) {
   const { chargeCurve, dischargeCurve, chargeSamples, dischargeSamples } = calibration;
   if (!chargeCurve || !dischargeCurve || chargeCurve.length !== 100) return;
 
-  const minSamples = 2; // Minimum samples to show a data point
-  const labels = Array.from({ length: 100 }, (_, i) => `${i}%`);
+  const minSamples = 2;
 
-  // Only show data points for bands with enough samples; null = gap in the line
-  const chargeData = chargeCurve.map((v, i) =>
-    (chargeSamples?.[i] ?? 0) >= minSamples ? v * 100 : null
-  );
-  const dischargeData = dischargeCurve.map((v, i) =>
-    (dischargeSamples?.[i] ?? 0) >= minSamples ? v * 100 : null
-  );
+  // Build the parabolic x-axis: charge 0→100, then discharge 100→0
+  // Labels show SoC% with phase indicator
+  const labels = [];
+  const data = [];
+  const pointColors = [];
+  const pointRadii = [];
+  const sampleCounts = [];
+
+  // Left half: charge phase (0% → 100%)
+  for (let soc = 0; soc <= 99; soc++) {
+    labels.push(`${soc}%`);
+    const n = chargeSamples?.[soc] ?? 0;
+    sampleCounts.push(n);
+    if (n >= minSamples) {
+      data.push(chargeCurve[soc] * 100);
+      pointColors.push('rgb(34, 197, 94)');
+      pointRadii.push(3);
+    } else {
+      data.push(null);
+      pointColors.push('transparent');
+      pointRadii.push(0);
+    }
+  }
+
+  // Right half: discharge phase (100% → 0%)
+  for (let soc = 99; soc >= 0; soc--) {
+    labels.push(`${soc}%`);
+    const n = dischargeSamples?.[soc] ?? 0;
+    sampleCounts.push(n);
+    if (n >= minSamples) {
+      data.push(dischargeCurve[soc] * 100);
+      pointColors.push('rgb(249, 115, 22)');
+      pointRadii.push(3);
+    } else {
+      data.push(null);
+      pointColors.push('transparent');
+      pointRadii.push(0);
+    }
+  }
+
+  const totalPoints = labels.length; // 200
 
   renderChart(canvas, {
     type: 'line',
@@ -579,32 +617,27 @@ function renderEfficiencyCurveChart(calibration) {
       labels,
       datasets: [
         {
-          label: 'Charge prediction accuracy',
-          data: chargeData,
-          borderColor: 'rgb(34, 197, 94)',
-          backgroundColor: 'rgba(34, 197, 94, 0.15)',
+          label: 'Prediction accuracy',
+          data,
+          borderColor: (ctx) => {
+            // Green for charge half, orange for discharge half
+            const i = ctx.p0?.parsed?.x ?? ctx.dataIndex ?? 0;
+            return i < 100 ? 'rgb(34, 197, 94)' : 'rgb(249, 115, 22)';
+          },
+          segment: {
+            borderColor: (ctx) => ctx.p0DataIndex < 100 ? 'rgb(34, 197, 94)' : 'rgb(249, 115, 22)',
+          },
+          backgroundColor: 'transparent',
           borderWidth: 2,
-          pointRadius: chargeData.map(v => v != null ? 3 : 0),
-          pointBackgroundColor: 'rgb(34, 197, 94)',
+          pointRadius: pointRadii,
+          pointBackgroundColor: pointColors,
           tension: 0.4,
-          spanGaps: false,
-          fill: false,
-        },
-        {
-          label: 'Discharge prediction accuracy',
-          data: dischargeData,
-          borderColor: 'rgb(249, 115, 22)',
-          backgroundColor: 'rgba(249, 115, 22, 0.15)',
-          borderWidth: 2,
-          pointRadius: dischargeData.map(v => v != null ? 3 : 0),
-          pointBackgroundColor: 'rgb(249, 115, 22)',
-          tension: 0.4,
-          spanGaps: false,
+          spanGaps: true,
           fill: false,
         },
         {
           label: 'Baseline (100%)',
-          data: new Array(100).fill(100),
+          data: new Array(totalPoints).fill(100),
           borderColor: 'rgba(100, 116, 139, 0.3)',
           borderWidth: 1,
           borderDash: [4, 4],
@@ -617,13 +650,27 @@ function renderEfficiencyCurveChart(calibration) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'top' },
+        legend: {
+          display: true,
+          labels: {
+            generateLabels: () => [
+              { text: 'Charge', fillStyle: 'rgb(34, 197, 94)', strokeStyle: 'rgb(34, 197, 94)', lineWidth: 2 },
+              { text: 'Discharge', fillStyle: 'rgb(249, 115, 22)', strokeStyle: 'rgb(249, 115, 22)', lineWidth: 2 },
+              { text: 'Baseline', fillStyle: 'transparent', strokeStyle: 'rgba(100,116,139,0.3)', lineWidth: 1, lineDash: [4, 4] },
+            ],
+          },
+        },
         tooltip: {
           callbacks: {
+            title: (items) => {
+              const i = items[0]?.dataIndex ?? 0;
+              const soc = labels[i];
+              const phase = i < 100 ? 'Charging' : 'Discharging';
+              return `${phase} @ ${soc} SoC`;
+            },
             afterLabel: (ctx) => {
-              if (ctx.datasetIndex >= 2) return '';
-              const counts = ctx.datasetIndex === 0 ? chargeSamples : dischargeSamples;
-              const n = counts?.[ctx.dataIndex] ?? 0;
+              if (ctx.datasetIndex >= 1) return '';
+              const n = sampleCounts[ctx.dataIndex] ?? 0;
               return `${n} sample${n !== 1 ? 's' : ''}`;
             },
           },
@@ -631,10 +678,17 @@ function renderEfficiencyCurveChart(calibration) {
       },
       scales: {
         x: {
-          title: { display: true, text: 'SoC %' },
+          title: { display: true, text: 'Charge 0→100%                              Discharge 100→0%' },
           ticks: {
             maxTicksLimit: 11,
-            callback: (_v, i) => i % 10 === 0 ? `${i}%` : '',
+            callback: (_v, i) => {
+              if (i === 0) return '0%';
+              if (i === 99 || i === 100) return '100%';
+              if (i === totalPoints - 1) return '0%';
+              if (i < 100 && i % 20 === 0) return `${i}%`;
+              if (i > 100 && (totalPoints - 1 - i) % 20 === 0) return `${200 - 1 - i}%`;
+              return '';
+            },
           },
         },
         y: {
