@@ -15,9 +15,14 @@ let configEnabled = false;
 /**
  * Returns true when the price refresh window is active (DESS is in Mode 1).
  * Used by mqtt-service to skip schedule writes during the window.
+ *
+ * Checks both the in-memory flag (already switched to Mode 1) and the
+ * configured time window (covers the gap before the first tick fires).
  */
 export function isPriceRefreshWindowActive(): boolean {
-  return windowActive;
+  if (windowActive) return true;
+  if (!configEnabled) return false;
+  return isInWindow(new Date(), configTime, configDuration);
 }
 
 /**
