@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.10-3
+
+- Rename "efficiency" to "prediction accuracy" throughout adaptive learning UI and API
+- Add per-SoC-band sample counts to calibration data — chart only shows bands with ≥2 samples
+- Add "Calibrate" button in Predictions tab sidebar for instant manual trigger
+- Smooth prediction accuracy curves (tension 0.4) with scatter points at data-backed bands
+- Tooltip shows sample count per band on hover
+- Weighted average now only considers bands with actual calibration data
+
 ## 0.5.10-2
 
 - Fix adaptive learning calibrator never running: re-read settings live each tick instead of caching at startup
