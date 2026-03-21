@@ -706,6 +706,13 @@
             <input id="adaptive-min-days" type="number" min="1" max="30" value="3" class="form-input">
           </label>
 
+          <div class="mt-4">
+            <button id="adaptive-calibrate" type="button"
+              class="w-full rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-sky-400/50 transition-all">
+              Calibrate
+            </button>
+          </div>
+
           <!-- Calibration status -->
           <div id="adaptive-status" class="mt-3 summary-panel">
             <div class="summary-row">
@@ -714,11 +721,11 @@
             </div>
             <div class="grid grid-cols-2 border-t border-slate-100 dark:border-white/5">
               <div class="px-3 py-2.5 border-b border-r border-slate-100 dark:border-white/5">
-                <div class="stat-label mb-0.5">Charge rate</div>
+                <div class="stat-label mb-0.5">Charge accuracy</div>
                 <div class="stat-value"><span id="adaptive-charge-rate">--</span></div>
               </div>
               <div class="px-3 py-2.5 border-b border-slate-100 dark:border-white/5">
-                <div class="stat-label mb-0.5">Discharge rate</div>
+                <div class="stat-label mb-0.5">Discharge accuracy</div>
                 <div class="stat-value"><span id="adaptive-discharge-rate">--</span></div>
               </div>
               <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
@@ -807,11 +814,11 @@
           </div>
           <div id="soc-calibration-info" class="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <div>
-              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Charge rate</span>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Charge accuracy</span>
               <p id="cal-charge-rate" class="font-mono text-base">—</p>
             </div>
             <div>
-              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Discharge rate</span>
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Discharge accuracy</span>
               <p id="cal-discharge-rate" class="font-mono text-base">—</p>
             </div>
             <div>
@@ -824,7 +831,7 @@
             </div>
           </div>
           <div class="mt-4">
-            <h3 class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Efficiency Curve (by SoC%)</h3>
+            <h3 class="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">Prediction Accuracy Curve (by SoC%)</h3>
             <div class="h-48 w-full">
               <canvas id="efficiency-curve-chart" class="h-full w-full"></canvas>
             </div>

@@ -13,6 +13,7 @@ import {
   fetchCalibration,
   fetchStoredSettings,
   saveStoredSettings,
+  triggerCalibration,
 } from './api/api.js';
 import { debounce } from './utils.js';
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from './charts.js';
@@ -436,6 +437,31 @@ async function hydrateAdaptiveLearning() {
         el.addEventListener('change', saveAdaptive);
       }
     }
+    // Wire calibrate button
+    const calBtn = document.getElementById('adaptive-calibrate');
+    if (calBtn) {
+      calBtn.addEventListener('click', async () => {
+        const minDays = parseInt(document.getElementById('adaptive-min-days')?.value, 10) || 1;
+        calBtn.disabled = true;
+        calBtn.textContent = 'Calibrating…';
+        calBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        try {
+          const result = await triggerCalibration(minDays);
+          if (result.calibration) {
+            setEl('adaptive-status-text', 'Calibrated');
+          } else {
+            setEl('adaptive-status-text', result.message || 'No result');
+          }
+          renderSocAccuracy();
+        } catch (err) {
+          setEl('adaptive-status-text', `Error: ${err.message}`);
+        } finally {
+          calBtn.disabled = false;
+          calBtn.textContent = 'Calibrate';
+          calBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+      });
+    }
   } catch (err) {
     console.warn('Failed to load adaptive learning settings:', err.message);
   }
@@ -533,11 +559,19 @@ function renderEfficiencyCurveChart(calibration) {
   const canvas = document.getElementById('efficiency-curve-chart');
   if (!canvas) return;
 
-  const chargeCurve = calibration.chargeCurve;
-  const dischargeCurve = calibration.dischargeCurve;
+  const { chargeCurve, dischargeCurve, chargeSamples, dischargeSamples } = calibration;
   if (!chargeCurve || !dischargeCurve || chargeCurve.length !== 100) return;
 
+  const minSamples = 2; // Minimum samples to show a data point
   const labels = Array.from({ length: 100 }, (_, i) => `${i}%`);
+
+  // Only show data points for bands with enough samples; null = gap in the line
+  const chargeData = chargeCurve.map((v, i) =>
+    (chargeSamples?.[i] ?? 0) >= minSamples ? v * 100 : null
+  );
+  const dischargeData = dischargeCurve.map((v, i) =>
+    (dischargeSamples?.[i] ?? 0) >= minSamples ? v * 100 : null
+  );
 
   renderChart(canvas, {
     type: 'line',
@@ -545,23 +579,27 @@ function renderEfficiencyCurveChart(calibration) {
       labels,
       datasets: [
         {
-          label: 'Charge efficiency',
-          data: chargeCurve.map(v => v * 100),
+          label: 'Charge prediction accuracy',
+          data: chargeData,
           borderColor: 'rgb(34, 197, 94)',
-          backgroundColor: 'rgb(34, 197, 94)',
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.3,
+          backgroundColor: 'rgba(34, 197, 94, 0.15)',
+          borderWidth: 2,
+          pointRadius: chargeData.map(v => v != null ? 3 : 0),
+          pointBackgroundColor: 'rgb(34, 197, 94)',
+          tension: 0.4,
+          spanGaps: false,
           fill: false,
         },
         {
-          label: 'Discharge efficiency',
-          data: dischargeCurve.map(v => v * 100),
+          label: 'Discharge prediction accuracy',
+          data: dischargeData,
           borderColor: 'rgb(249, 115, 22)',
-          backgroundColor: 'rgb(249, 115, 22)',
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.3,
+          backgroundColor: 'rgba(249, 115, 22, 0.15)',
+          borderWidth: 2,
+          pointRadius: dischargeData.map(v => v != null ? 3 : 0),
+          pointBackgroundColor: 'rgb(249, 115, 22)',
+          tension: 0.4,
+          spanGaps: false,
           fill: false,
         },
         {
@@ -580,6 +618,16 @@ function renderEfficiencyCurveChart(calibration) {
       maintainAspectRatio: false,
       plugins: {
         legend: { position: 'top' },
+        tooltip: {
+          callbacks: {
+            afterLabel: (ctx) => {
+              if (ctx.datasetIndex >= 2) return '';
+              const counts = ctx.datasetIndex === 0 ? chargeSamples : dischargeSamples;
+              const n = counts?.[ctx.dataIndex] ?? 0;
+              return `${n} sample${n !== 1 ? 's' : ''}`;
+            },
+          },
+        },
       },
       scales: {
         x: {
@@ -590,7 +638,7 @@ function renderEfficiencyCurveChart(calibration) {
           },
         },
         y: {
-          title: { display: true, text: 'Effective rate %' },
+          title: { display: true, text: 'Prediction accuracy %' },
           min: 50,
           max: 110,
         },

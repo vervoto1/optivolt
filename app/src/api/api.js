@@ -37,3 +37,4 @@ export const fetchPlanAccuracy = () => getJson('/plan-accuracy');
 export const fetchPlanAccuracyHistory = (days = 7) => getJson(`/plan-accuracy/history?days=${days}`);
 export const fetchCalibration = () => getJson('/plan-accuracy/calibration');
 export const resetCalibrationData = () => postJson('/plan-accuracy/calibration/reset', {});
+export const triggerCalibration = (minDataDays = 1) => postJson(`/plan-accuracy/calibrate?minDataDays=${minDataDays}`, {});

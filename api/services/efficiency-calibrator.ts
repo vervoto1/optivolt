@@ -2,7 +2,7 @@ import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { getRecentSnapshots } from './plan-history-store.ts';
 import { loadSocSamples, findClosestSample } from './soc-tracker.ts';
-import type { CalibrationResult, EfficiencyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
+import type { CalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
 
 const DATA_DIR = resolveDataDir();
 const CALIBRATION_PATH = path.join(DATA_DIR, 'calibration.json');
@@ -35,10 +35,17 @@ interface RatioSample {
 }
 
 /**
- * Create a default efficiency curve (100 entries, all 1.0 = no correction).
+ * Create a default accuracy curve (100 entries, all 1.0 = no correction).
  */
-function defaultCurve(): EfficiencyCurve {
+function defaultCurve(): AccuracyCurve {
   return new Array(SOC_BANDS).fill(1.0);
+}
+
+/**
+ * Create a default sample count array (100 entries, all 0).
+ */
+function defaultSampleCounts(): number[] {
+  return new Array(SOC_BANDS).fill(0);
 }
 
 /**
@@ -129,6 +136,12 @@ export async function calibrate(
   const dischargeCurve = prev?.dischargeCurve?.length === SOC_BANDS
     ? [...prev.dischargeCurve]
     : defaultCurve();
+  const chargeSamples = prev?.chargeSamples?.length === SOC_BANDS
+    ? [...prev.chargeSamples]
+    : defaultSampleCounts();
+  const dischargeSamples = prev?.dischargeSamples?.length === SOC_BANDS
+    ? [...prev.dischargeSamples]
+    : defaultSampleCounts();
 
   // Apply EMA per SoC band, in chronological order
   let chargeCount = 0;
@@ -136,11 +149,13 @@ export async function calibrate(
 
   for (const rs of allRatios) {
     const curve = rs.direction === 'charge' ? chargeCurve : dischargeCurve;
+    const counts = rs.direction === 'charge' ? chargeSamples : dischargeSamples;
     curve[rs.socBand] = clamp(
       EMA_ALPHA * rs.ratio + (1 - EMA_ALPHA) * curve[rs.socBand],
       MIN_RATE,
       MAX_RATE,
     );
+    counts[rs.socBand]++;
     if (rs.direction === 'charge') chargeCount++;
     else dischargeCount++;
   }
@@ -148,13 +163,15 @@ export async function calibrate(
   const totalSamples = chargeCount + dischargeCount;
   const confidence = Math.min(1.0, totalSamples / 100);
 
-  // Compute aggregate rates (weighted average) for backward compat / display
-  const effectiveChargeRate = clamp(weightedAvg(chargeCurve), MIN_RATE, MAX_RATE);
-  const effectiveDischargeRate = clamp(weightedAvg(dischargeCurve), MIN_RATE, MAX_RATE);
+  // Compute aggregate rates (weighted average, only from bands with data)
+  const effectiveChargeRate = clamp(weightedAvg(chargeCurve, chargeSamples), MIN_RATE, MAX_RATE);
+  const effectiveDischargeRate = clamp(weightedAvg(dischargeCurve, dischargeSamples), MIN_RATE, MAX_RATE);
 
   const result: CalibrationResult = {
     chargeCurve,
     dischargeCurve,
+    chargeSamples,
+    dischargeSamples,
     effectiveChargeRate,
     effectiveDischargeRate,
     sampleCount: totalSamples,
@@ -255,16 +272,20 @@ function collectRatios(
  * Weighted average of a curve, giving more weight to mid-range SoC bands
  * (20–80%) where most charging/discharging happens.
  */
-function weightedAvg(curve: EfficiencyCurve): number {
+/**
+ * Weighted average of a curve, only including bands that have actual data.
+ * Falls back to 1.0 if no bands have samples.
+ */
+function weightedAvg(curve: AccuracyCurve, samples: number[]): number {
   let sum = 0;
   let weightSum = 0;
   for (let i = 0; i < curve.length; i++) {
-    // Weight: higher for mid-range SoC (20-80%), lower at extremes
-    const w = (i >= 20 && i <= 80) ? 2 : 1;
-    sum += curve[i] * w;
-    weightSum += w;
+    const count = samples[i] ?? 0;
+    if (count === 0) continue; // Skip bands with no data
+    sum += curve[i] * count;
+    weightSum += count;
   }
-  return sum / weightSum;
+  return weightSum > 0 ? sum / weightSum : 1.0;
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.10-2
+
+- Fix adaptive learning calibrator never running: re-read settings live each tick instead of caching at startup
+- Remove tickCount-based throttle that prevented calibration from running when settings were saved (resetting counter)
+- Add `POST /plan-accuracy/calibrate` endpoint for manual calibration trigger
+- Add diagnostic logging to calibrator for each null-return path
+
 ## 0.5.10
 
 - Bump all dependencies to latest versions

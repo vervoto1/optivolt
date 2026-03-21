@@ -177,17 +177,24 @@ export interface PlanAccuracyReport {
   deviations: SlotDeviation[];
 }
 
-/** Per-SoC-band efficiency curve: 100 entries indexed by SoC% (0–99). */
-export type EfficiencyCurve = number[];
+/** Per-SoC-band prediction accuracy curve: 100 entries indexed by SoC% (0–99). */
+export type AccuracyCurve = number[];
+
+/** Per-SoC-band sample counts: 100 entries indexed by SoC% (0–99). */
+export type BandSampleCounts = number[];
 
 export interface CalibrationResult {
-  /** Per-SoC charge rate curve (100 entries, index = SoC%). Each value is a multiplier, e.g. 0.82 = 82% of configured. */
-  chargeCurve: EfficiencyCurve;
-  /** Per-SoC discharge rate curve (100 entries, index = SoC%). */
-  dischargeCurve: EfficiencyCurve;
-  /** Aggregate charge rate (weighted average of chargeCurve). Kept for backward compatibility / display. */
+  /** Per-SoC charge prediction accuracy (100 entries, index = SoC%). Each value is a multiplier, e.g. 0.82 = 82% of predicted charge occurred. */
+  chargeCurve: AccuracyCurve;
+  /** Per-SoC discharge prediction accuracy (100 entries, index = SoC%). */
+  dischargeCurve: AccuracyCurve;
+  /** Number of calibration samples per SoC band for charge. */
+  chargeSamples: BandSampleCounts;
+  /** Number of calibration samples per SoC band for discharge. */
+  dischargeSamples: BandSampleCounts;
+  /** Aggregate charge prediction accuracy (weighted average). */
   effectiveChargeRate: number;
-  /** Aggregate discharge rate (weighted average of dischargeCurve). */
+  /** Aggregate discharge prediction accuracy (weighted average). */
   effectiveDischargeRate: number;
   sampleCount: number;
   confidence: number;             // 0..1
