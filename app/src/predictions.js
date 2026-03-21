@@ -538,7 +538,7 @@ function renderSocAccuracyCharts(report) {
   renderAccuracyCharts(
     'soc-accuracy-chart',
     'soc-accuracy-diff-chart',
-    sorted.map(d => ({
+    deviations.map(d => ({
       time: d.timestampMs,
       actual: d.actualSoc_percent,
       predicted: d.predictedSoc_percent,
@@ -644,6 +644,22 @@ function renderEfficiencyCurveChart(calibration) {
           pointRadius: 0,
           fill: false,
         },
+        {
+          label: 'SoC lifecycle',
+          data: Array.from({ length: totalPoints }, (_, i) => {
+            // Parabolic arch: 0→100 (charge half), 100→0 (discharge half)
+            const mid = totalPoints / 2; // 100
+            const normalized = i < mid ? i / mid : (totalPoints - i) / mid; // 0→1→0
+            // Scale to y-axis range: bottom of chart (50) to near top (108)
+            return 50 + normalized * 58;
+          }),
+          borderColor: 'rgba(100, 116, 139, 0.15)',
+          backgroundColor: 'rgba(100, 116, 139, 0.04)',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: true,
+        },
       ],
     },
     options: {
@@ -657,6 +673,7 @@ function renderEfficiencyCurveChart(calibration) {
               { text: 'Charge', fillStyle: 'rgb(34, 197, 94)', strokeStyle: 'rgb(34, 197, 94)', lineWidth: 2 },
               { text: 'Discharge', fillStyle: 'rgb(249, 115, 22)', strokeStyle: 'rgb(249, 115, 22)', lineWidth: 2 },
               { text: 'Baseline', fillStyle: 'transparent', strokeStyle: 'rgba(100,116,139,0.3)', lineWidth: 1, lineDash: [4, 4] },
+              { text: 'SoC lifecycle', fillStyle: 'rgba(100,116,139,0.04)', strokeStyle: 'rgba(100,116,139,0.15)', lineWidth: 2 },
             ],
           },
         },

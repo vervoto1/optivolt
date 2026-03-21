@@ -51,10 +51,12 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
 
   calculating = true;
   try {
-    // Sample actual SoC before computing the new plan (fire-and-forget on failure)
-    sampleAndStoreSoc().catch(err =>
-      console.warn('[auto-calculate] SoC sampling failed:', (err as Error).message),
-    );
+    // Sample actual SoC before computing the new plan
+    try {
+      await sampleAndStoreSoc();
+    } catch (err) {
+      console.warn('[auto-calculate] SoC sampling failed:', (err as Error).message);
+    }
 
     await planAndMaybeWrite({ updateData, writeToVictron });
     console.log('[auto-calculate] calculation completed');

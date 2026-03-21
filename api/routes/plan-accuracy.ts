@@ -2,25 +2,26 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { evaluateLatestPlan, evaluateRecentPlans } from '../services/plan-accuracy-service.ts';
 import { loadCalibration, resetCalibration, calibrate } from '../services/efficiency-calibrator.ts';
-import { loadPlanHistory } from '../services/plan-history-store.ts';
-import { getRecentSamples } from '../services/soc-tracker.ts';
+import { loadPlanHistory, clearPlanHistory } from '../services/plan-history-store.ts';
+import { getRecentSamples, clearSocSamples } from '../services/soc-tracker.ts';
 
 const router = Router();
 
 /**
- * GET /plan-accuracy?days=1
- * Returns a merged accuracy report across recent plans (default: last 24h).
- * Deviations are deduplicated by timestamp (latest plan wins for each slot).
+ * GET /plan-accuracy?days=7
+ * Returns a merged accuracy timeline from all plans in the given window (default: 7 days).
+ * Each plan contributes its elapsed slots; deviations are deduplicated by timestamp
+ * (latest plan wins for overlapping slot times).
  */
 router.get('/', async (req: Request, res: Response) => {
-  const days = Math.min(7, Math.max(0.5, Number(req.query.days) || 1));
+  const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
   const reports = await evaluateRecentPlans(days);
   if (reports.length === 0) {
     res.json({ message: 'No plan accuracy data available yet', report: null });
     return;
   }
 
-  // Merge deviations across plans: for each timestamp, keep the latest plan's deviation
+  // Merge: each plan contributes its elapsed slots, latest plan wins for shared timestamps
   const byTimestamp = new Map<number, (typeof reports)[0]['deviations'][0]>();
   for (const r of reports) {
     for (const d of r.deviations) {
@@ -29,10 +30,13 @@ router.get('/', async (req: Request, res: Response) => {
   }
   const deviations = [...byTimestamp.values()].sort((a, b) => a.timestampMs - b.timestampMs);
 
+  if (deviations.length === 0) {
+    res.json({ message: 'No plan accuracy data available yet', report: null });
+    return;
+  }
+
   const absDeviations = deviations.map(d => Math.abs(d.deviation_percent));
-  const meanDeviation = absDeviations.length > 0
-    ? absDeviations.reduce((a, b) => a + b, 0) / absDeviations.length
-    : 0;
+  const meanDeviation = absDeviations.reduce((a, b) => a + b, 0) / absDeviations.length;
 
   res.json({
     report: {
@@ -41,7 +45,7 @@ router.get('/', async (req: Request, res: Response) => {
       evaluatedAtMs: Date.now(),
       slotsCompared: deviations.length,
       meanDeviation_percent: Math.round(meanDeviation * 100) / 100,
-      maxDeviation_percent: absDeviations.length > 0 ? Math.round(Math.max(...absDeviations) * 100) / 100 : 0,
+      maxDeviation_percent: Math.round(Math.max(...absDeviations) * 100) / 100,
       deviations,
     },
   });
@@ -91,6 +95,15 @@ router.post('/calibrate', async (req: Request, res: Response) => {
 router.post('/calibration/reset', async (_req: Request, res: Response) => {
   await resetCalibration();
   res.json({ message: 'Calibration data reset' });
+});
+
+/**
+ * POST /plan-accuracy/reset-all
+ * Clears all adaptive learning data: calibration, plan history, and SoC samples.
+ */
+router.post('/reset-all', async (_req: Request, res: Response) => {
+  await Promise.all([resetCalibration(), clearPlanHistory(), clearSocSamples()]);
+  res.json({ message: 'All adaptive learning data cleared (calibration, plan history, SoC samples)' });
 });
 
 /**

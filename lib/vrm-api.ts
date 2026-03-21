@@ -382,7 +382,6 @@ function ensureWindow({ startSec, endSec, startMs, endMs }: Partial<VRMWindow> =
       endMs: endSec * 1000
     };
   }
-  // default: build horizon based on local time + 13:00 rule
   return VRMClient.windowOptimizationHorizon();
 }
 

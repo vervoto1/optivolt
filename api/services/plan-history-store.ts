@@ -46,6 +46,14 @@ export async function getLatestSnapshot(): Promise<PlanSnapshot | null> {
 }
 
 /**
+ * Clear all plan history.
+ */
+export async function clearPlanHistory(): Promise<void> {
+  await writeJson(HISTORY_PATH, []);
+  console.log('[plan-history] History cleared');
+}
+
+/**
  * Get snapshots from the last N days.
  */
 export async function getRecentSnapshots(days: number): Promise<PlanSnapshot[]> {

@@ -27,8 +27,10 @@ let highsPromise: Promise<HighsInstance> | undefined;
 async function getHighsInstance(): Promise<HighsInstance> {
   if (!highsPromise) {
     highsPromise = highsFactory({}).catch((error: unknown) => {
+      /* v8 ignore start */
       highsPromise = undefined;
       throw error;
+      /* v8 ignore stop */
     });
   }
   return highsPromise;
@@ -115,8 +117,10 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   try {
     result = highs.solve(lpText);
   } catch (err) {
+    /* v8 ignore start */
     highsPromise = undefined; // force re-initialisation on next call
     throw err;
+    /* v8 ignore stop */
   }
 
   const rows = parseSolution(result, cfg, timing);
@@ -151,9 +155,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     planId: `${timing.startMs}-${Date.now()}`,
     createdAtMs: Date.now(),
     initialSoc_percent: cfg.initialSoc_percent,
-    slots: rowsWithDess.map(r => ({
+    slots: rowsWithDess.map((r, i) => ({
       timestampMs: r.timestampMs,
-      predictedSoc_percent: r.soc_percent,
+      // soc_percent from the solver is end-of-slot (after flows); shift back
+      // so predictedSoc_percent represents start-of-slot (before flows),
+      // matching the actual SoC measurement taken at the slot start time.
+      predictedSoc_percent: i === 0 ? cfg.initialSoc_percent : rowsWithDess[i - 1].soc_percent,
       chargePower_W: r.g2b + r.pv2b,
       dischargePower_W: r.b2l + r.b2g,
       predictedLoad_W: r.load,

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { readVictronSocPercent } from './mqtt-service.ts';
 import { loadData } from './data-store.ts';
+import { getQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SocSample, TimeSeries } from '../types.ts';
 
 const DATA_DIR = resolveDataDir();
@@ -51,8 +52,8 @@ export async function sampleAndStoreSoc(): Promise<SocSample | null> {
     return null;
   }
 
-  // Sample actual load/PV from VRM data at current timestamp
-  const nowMs = Date.now();
+  // Align timestamp to quarter-hour boundary to match plan slot timestamps
+  const nowMs = getQuarterStart(new Date());
   let actualLoad_W: number | undefined;
   let actualPv_W: number | undefined;
   try {
@@ -102,6 +103,14 @@ export function findClosestSample(
   }
 
   return best && bestDist <= toleranceMs ? best : null;
+}
+
+/**
+ * Clear all SoC samples.
+ */
+export async function clearSocSamples(): Promise<void> {
+  await writeJson(SAMPLES_PATH, []);
+  console.log('[soc-tracker] Samples cleared');
 }
 
 /**

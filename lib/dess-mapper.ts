@@ -276,6 +276,7 @@ function getSegmentForIndex(segments: Segment[], index: number): Segment | null 
       return segment;
     }
   }
+  /* v8 ignore next — unreachable: segments always cover all row indices */
   return null;
 }
 

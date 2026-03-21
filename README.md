@@ -1,5 +1,8 @@
 # OptiVolt 🔋
 
+[![Tests](https://github.com/vervoto1/optivolt/actions/workflows/test.yml/badge.svg)](https://github.com/vervoto1/optivolt/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/vervoto1/optivolt/graph/badge.svg)](https://codecov.io/gh/vervoto1/optivolt)
+
 Plan and control a home energy system with forecasts, dynamic tariffs, and a day-ahead optimization pipeline. OptiVolt builds a linear program over 15-minute slots to decide how your **battery**, **PV**, **EV**, **heat pump**, and the **grid** should interact to minimize cost.
 
 - **Primary focus:** Victron Energy ESS systems via the **Victron VRM API** and MQTT Dynamic ESS schedule writing.
@@ -166,6 +169,7 @@ OptiVolt can learn from actual battery behavior to improve future plans. When en
   - `GET /plan-accuracy/history?days=7` — historical accuracy reports
   - `GET /plan-accuracy/soc-samples?days=1` — raw SoC/load/PV samples
   - `POST /plan-accuracy/calibration/reset` — clear all calibration data
+  - `POST /plan-accuracy/reset-all` — clear all adaptive learning data (calibration, plan history, SoC samples)
 
 ## Architecture & HTTP API
 
