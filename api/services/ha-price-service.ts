@@ -1,5 +1,6 @@
 import type { Settings } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
+import { resolveHaHttpConfig } from './ha-config.ts';
 
 interface PriceSlot {
   [key: string]: unknown;
@@ -17,14 +18,11 @@ export async function fetchPricesFromHA(settings: Settings): Promise<{ importPri
     return null;
   }
 
-  // Use supervisor proxy when running as HA add-on
-  const isAddon = !!process.env.SUPERVISOR_TOKEN;
-  const baseUrl = isAddon ? 'http://supervisor/core' : haWsToHttp(haUrl);
-  const token = isAddon ? process.env.SUPERVISOR_TOKEN! : haToken;
-
-  if (!token) {
+  const haConfig = resolveHaHttpConfig(haUrl, haToken);
+  if (!haConfig) {
     return null;
   }
+  const { baseUrl, token } = haConfig;
 
   try {
     const state = await fetchEntityState(baseUrl, token, haPriceConfig.sensor);
@@ -87,13 +85,6 @@ export async function fetchPricesFromHA(settings: Settings): Promise<{ importPri
     console.warn('[ha-price] Failed to fetch prices from HA:', (err as Error).message);
     return null;
   }
-}
-
-function haWsToHttp(wsUrl: string): string {
-  return wsUrl
-    .replace(/^wss:/, 'https:')
-    .replace(/^ws:/, 'http:')
-    .replace(/\/api\/websocket\/?$/, '');
 }
 
 async function fetchEntityState(

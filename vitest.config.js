@@ -8,14 +8,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
-      include: ['api/**', 'lib/**'],
+      include: ['api/**', 'lib/**', 'app/src/**'],
       exclude: [
         '**/node_modules/**',
         '**/AGENTS.md',
         '**/types.ts',
         'api/index.ts',
         'api/defaults/**',
-        'app/**',
       ],
     },
   },

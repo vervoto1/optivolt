@@ -1,5 +1,6 @@
 import type { Settings } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
+import { resolveHaHttpConfig } from './ha-config.ts';
 
 interface ChargingSlot {
   start: string;
@@ -18,14 +19,11 @@ export async function fetchEvLoadFromHA(settings: Settings): Promise<TimeSeries 
     return null;
   }
 
-  // Use supervisor proxy when running as HA add-on
-  const isAddon = !!process.env.SUPERVISOR_TOKEN;
-  const baseUrl = isAddon ? 'http://supervisor/core' : haWsToHttp(haUrl);
-  const token = isAddon ? process.env.SUPERVISOR_TOKEN! : haToken;
-
-  if (!token) {
+  const haConfig = resolveHaHttpConfig(haUrl, haToken);
+  if (!haConfig) {
     return null;
   }
+  const { baseUrl, token } = haConfig;
 
   try {
     // Check if EV is connected (skip check if alwaysApplySchedule is true)
@@ -53,15 +51,6 @@ export async function fetchEvLoadFromHA(settings: Settings): Promise<TimeSeries 
     console.warn('[ha-ev] Failed to fetch EV schedule from HA:', (err as Error).message);
     return null;
   }
-}
-
-function haWsToHttp(wsUrl: string): string {
-  // ws://host:port/api/websocket → http://host:port
-  // wss://host:port/api/websocket → https://host:port
-  return wsUrl
-    .replace(/^wss:/, 'https:')
-    .replace(/^ws:/, 'http:')
-    .replace(/\/api\/websocket\/?$/, '');
 }
 
 async function fetchEntityState(

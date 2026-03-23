@@ -77,6 +77,12 @@ export function buildSolverConfigFromSettings(
   // Pass through EV discharge constraint setting
   base.disableDischargeWhileEvCharging = settings.evConfig?.disableDischargeWhileCharging ?? false;
 
+  // Manual CV phase thresholds remain supported and act as the baseline.
+  if (settings.cvPhase?.enabled && settings.cvPhase.thresholds?.length) {
+    base.cvPhaseThresholds = settings.cvPhase.thresholds
+      .filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0)
+      .sort((a, b) => a.soc_percent - b.soc_percent);
+  }
 
   if (settings.rebalanceEnabled) {
     // Math.ceil ensures the hold is never shorter than requested; Math.max(1, …) prevents 0-slot holds

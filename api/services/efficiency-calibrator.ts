@@ -327,8 +327,10 @@ export function generateThresholdsFromCurve(
 ): { soc_percent: number; power_W: number }[] {
   const segmentWidth = Math.ceil(SOC_BANDS / NUM_SEGMENTS);
   const candidates: { soc_percent: number; power_W: number; reduction: number }[] = [];
+  const startSegment = direction === 'charge' ? Math.floor(NUM_SEGMENTS / 2) : 0;
+  const endSegment = direction === 'charge' ? NUM_SEGMENTS : Math.ceil(NUM_SEGMENTS / 2);
 
-  for (let seg = 0; seg < NUM_SEGMENTS; seg++) {
+  for (let seg = startSegment; seg < endSegment; seg++) {
     const lo = seg * segmentWidth;
     const hi = Math.min(lo + segmentWidth, SOC_BANDS);
 

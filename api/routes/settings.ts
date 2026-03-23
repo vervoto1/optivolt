@@ -4,13 +4,15 @@ import { assertCondition, toHttpError } from '../http-errors.ts';
 import { loadSettings, saveSettings } from '../services/settings-store.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
+import { mergeSettings, normalizeSettings, sanitizeSettingsResponse } from '../services/settings-schema.ts';
+import type { SettingsPatch } from '../services/settings-schema.ts';
 
 const router = express.Router();
 
 router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const settings = await loadSettings();
-    res.json({ ...settings, isAddon: !!process.env.SUPERVISOR_TOKEN });
+    res.json({ ...sanitizeSettingsResponse(settings), isAddon: !!process.env.SUPERVISOR_TOKEN });
   } catch (error) {
     next(toHttpError(error, 500, 'Failed to read settings'));
   }
@@ -26,7 +28,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     );
 
     const prevSettings = await loadSettings();
-    const mergedSettings = { ...prevSettings, ...incoming };
+    const mergedSettings = normalizeSettings(mergeSettings(prevSettings, incoming as SettingsPatch));
     await saveSettings(mergedSettings);
 
     // Restart timers with new settings
@@ -35,7 +37,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     stopDessPriceRefresh();
     startDessPriceRefresh(mergedSettings);
 
-    res.json({ message: 'Settings saved successfully.', settings: mergedSettings });
+    res.json({ message: 'Settings saved successfully.', settings: sanitizeSettingsResponse(mergedSettings) });
   } catch (error) {
     next(toHttpError(error, 500, 'Failed to save settings'));
   }

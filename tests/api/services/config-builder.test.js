@@ -191,6 +191,39 @@ describe('buildSolverConfigFromSettings — insufficient data', () => {
   });
 });
 
+describe('buildSolverConfigFromSettings — cvPhase thresholds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes cvPhase thresholds through filtered and sorted when cvPhase is enabled', () => {
+    const settings = {
+      ...mockSettings,
+      cvPhase: {
+        enabled: true,
+        thresholds: [
+          { soc_percent: 90, maxChargePower_W: 1000 },
+          { soc_percent: 80, maxChargePower_W: 2000 },
+          { soc_percent: 0, maxChargePower_W: 500 },
+          { soc_percent: 70, maxChargePower_W: 0 },
+        ],
+      },
+    };
+
+    const cfg = buildSolverConfigFromSettings(settings, makeData(), NOW_MS);
+
+    expect(cfg.cvPhaseThresholds).toBeDefined();
+    expect(cfg.cvPhaseThresholds).toHaveLength(2);
+    expect(cfg.cvPhaseThresholds[0].soc_percent).toBe(80);
+    expect(cfg.cvPhaseThresholds[1].soc_percent).toBe(90);
+  });
+});
+
 
 describe('buildSolverConfigFromSettings — EV', () => {
   beforeEach(() => {

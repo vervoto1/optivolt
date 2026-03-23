@@ -41,6 +41,8 @@ function makeDefaults(overrides = {}) {
     terminalSocCustomPrice_cents_per_kWh: 0,
     rebalanceHoldHours: 3,
     terminalSocValuation: 'zero',
+    haUrl: '',
+    haToken: '',
     dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
     ...overrides,
   };
@@ -108,7 +110,7 @@ describe('loadSettings — validateSettings edge cases', () => {
     readJson
       .mockResolvedValueOnce(makeDefaults({ chargeEfficiency_percent: NaN }));
 
-    await expect(loadSettings()).rejects.toThrow('Invalid numeric setting');
+    await expect(loadSettings()).rejects.toThrow('chargeEfficiency_percent must be a finite number');
   });
 
   it('swaps minSoc and maxSoc when minSoc > maxSoc after merge', async () => {
@@ -131,7 +133,7 @@ describe('saveSettings', () => {
     await saveSettings(settings);
     expect(writeJson).toHaveBeenCalledWith(
       expect.stringContaining('settings.json'),
-      settings,
+      expect.objectContaining(settings),
     );
   });
 });

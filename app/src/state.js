@@ -2,7 +2,7 @@ import { SOLUTION_COLORS } from "./charts.js";
 
 // ---------- UI <-> settings snapshot ----------
 export function snapshotUI(els) {
-  return {
+  const nextConfig = {
     // scalars (SYSTEM)
     stepSize_m: num(els.step?.value),
     batteryCapacity_Wh: num(els.cap?.value),
@@ -36,7 +36,6 @@ export function snapshotUI(els) {
 
     // HOME ASSISTANT
     haUrl: els.haUrl?.value ?? '',
-    haToken: els.haToken?.value ?? '',
 
     // EV CHARGING
     evConfig: {
@@ -49,6 +48,14 @@ export function snapshotUI(els) {
       alwaysApplySchedule: els.evAlwaysApply?.checked ?? false,
     },
 
+    // CV PHASE TUNING
+    cvPhase: {
+      enabled: els.cvEnabled?.checked ?? false,
+      thresholds: [
+        { soc_percent: +els.cvThreshold1Soc?.value, maxChargePower_W: +els.cvThreshold1Power?.value },
+        { soc_percent: +els.cvThreshold2Soc?.value, maxChargePower_W: +els.cvThreshold2Power?.value },
+      ].filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0),
+    },
 
     // Auto-Calculate — always send complete object (shallow merge safe)
     autoCalculate: {
@@ -81,6 +88,13 @@ export function snapshotUI(els) {
     tableShowKwh: !!els.tableKwh?.checked,
     // Note: updateDataBeforeRun / pushToVictron are not part of the persisted settings
   };
+
+  const nextToken = els.haToken?.value ?? '';
+  if (nextToken) {
+    nextConfig.haToken = nextToken;
+  }
+
+  return nextConfig;
 }
 
 export function hydrateUI(els, obj = {}) {
@@ -122,7 +136,9 @@ export function hydrateUI(els, obj = {}) {
 
   // HOME ASSISTANT
   setIfDef(els.haUrl, obj.haUrl);
-  setIfDef(els.haToken, obj.haToken);
+  if (els.haToken && typeof obj.haToken === 'string' && obj.haToken.length > 0) {
+    els.haToken.value = obj.haToken;
+  }
   if (els.haSettingsGroup) {
     els.haSettingsGroup.hidden = !!obj.isAddon;
   }
@@ -136,6 +152,14 @@ export function hydrateUI(els, obj = {}) {
   if (els.evConnectedSwitch) els.evConnectedSwitch.value = obj.evConfig?.connectedSwitch ?? '';
   if (els.evAlwaysApply) els.evAlwaysApply.checked = obj.evConfig?.alwaysApplySchedule ?? false;
 
+  // CV PHASE TUNING
+  if (els.cvEnabled) els.cvEnabled.checked = obj.cvPhase?.enabled ?? false;
+  const cvT1 = obj.cvPhase?.thresholds?.[0];
+  const cvT2 = obj.cvPhase?.thresholds?.[1];
+  if (els.cvThreshold1Soc) els.cvThreshold1Soc.value = cvT1?.soc_percent ?? 95;
+  if (els.cvThreshold1Power) els.cvThreshold1Power.value = cvT1?.maxChargePower_W ?? 9360;
+  if (els.cvThreshold2Soc) els.cvThreshold2Soc.value = cvT2?.soc_percent ?? 97;
+  if (els.cvThreshold2Power) els.cvThreshold2Power.value = cvT2?.maxChargePower_W ?? 2600;
 
   // Auto-Calculate
   if (els.autoCalcEnabled) els.autoCalcEnabled.checked = obj.autoCalculate?.enabled ?? false;

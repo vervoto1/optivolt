@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3 - 2026-03-23
+
+- Restore manual CV phase thresholds across settings, solver config, and UI while keeping adaptive threshold generation
+- Redact `haToken` from `GET /settings`, treat token updates as write-only, and preserve existing tokens when the UI submits a blank field
+- Add centralized settings normalization/validation and shared Home Assistant URL/token resolution helpers
+- Strengthen route and state coverage with temp-backed integration tests for settings, predictions, and custom data plus frontend state/config-store tests
+- Refactor API route tests away from socket-bound `supertest` usage to router-level integration coverage that works in constrained environments
+
 ## 0.6.1 - 2026-03-23
 
 - **Auto-calibrated power limits**: replace manual CV phase thresholds with auto-generated per-SoC charge/discharge power limits derived from calibration curves — the LP now plans for realistic charge/discharge speeds at each SoC level

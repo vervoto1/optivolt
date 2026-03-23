@@ -1002,6 +1002,36 @@
           </div>
         </section>
 
+        <!-- Constant Voltage Phase Tuning -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">CV Phase Tuning</h2>
+          </div>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input type="checkbox" id="cv-enabled">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Reduce charge power at high SoC</span>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: SoC (%)</span>
+              <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: Max charge power (W)</span>
+              <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: SoC (%)</span>
+              <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97" class="form-input">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: Max charge power (W)</span>
+              <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600" class="form-input">
+            </label>
+          </div>
+        </section>
+
 
         <!-- Auto-Calculate Card -->
         <section class="card">

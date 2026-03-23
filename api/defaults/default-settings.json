@@ -54,6 +54,13 @@
     "time": "23:00",
     "durationMinutes": 15
   },
+  "cvPhase": {
+    "enabled": false,
+    "thresholds": [
+      { "soc_percent": 95, "maxChargePower_W": 9360 },
+      { "soc_percent": 97, "maxChargePower_W": 2600 }
+    ]
+  },
 
   "adaptiveLearning": {
     "enabled": false,

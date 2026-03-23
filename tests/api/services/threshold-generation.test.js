@@ -178,9 +178,10 @@ describe('generateThresholdsFromCurve', () => {
   it('computes power_W as basePower_W * curveValue for each threshold', () => {
     // Different ratios per segment
     const curve = new Array(100).fill(1.0);
-    // Segment 0 (0-12): ratio 0.8
+    // Only high-SoC segments should become charge thresholds.
+    // Segment 0 (0-12): ratio 0.8 -> should be ignored for charge
     for (let i = 0; i < 13; i++) curve[i] = 0.8;
-    // Segment 6 (78-90): ratio 0.6
+    // Segment 6 (78-90): ratio 0.6 -> should become a threshold
     for (let i = 78; i < 91; i++) curve[i] = 0.6;
 
     const result = generateThresholdsFromCurve(
@@ -189,11 +190,9 @@ describe('generateThresholdsFromCurve', () => {
       5000,
       'charge',
     );
-    expect(result.length).toBe(2);
-    // First threshold (lower SoC segment)
-    expect(result[0].power_W).toBe(Math.round(5000 * 0.8));
-    // Second threshold (higher SoC segment)
-    expect(result[1].power_W).toBe(Math.round(5000 * 0.6));
+    expect(result.length).toBe(1);
+    expect(result[0].soc_percent).toBe(78);
+    expect(result[0].power_W).toBe(Math.round(5000 * 0.6));
   });
 
   it('limits output to max 8 thresholds when more candidates exist', () => {
@@ -229,6 +228,18 @@ describe('generateThresholdsFromCurve', () => {
     const samples = new Array(100).fill(3);
     // With minSamples=5, all bands fail
     const result = generateThresholdsFromCurve(curve, samples, 3600, 'charge', 5);
+    expect(result).toEqual([]);
+  });
+
+  it('does not create charge thresholds from low-SoC reductions', () => {
+    const curve = new Array(100).fill(1.0);
+    for (let i = 0; i < 13; i++) curve[i] = 0.6;
+    const result = generateThresholdsFromCurve(
+      curve,
+      flatSamples(10),
+      3600,
+      'charge',
+    );
     expect(result).toEqual([]);
   });
 });

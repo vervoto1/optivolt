@@ -7,6 +7,7 @@
  */
 
 import type { HaReading } from '../../lib/ha-postprocess.ts';
+import { resolveHaWsConfig } from './ha-config.ts';
 
 interface FetchHaStatsOptions {
   haUrl: string;
@@ -37,10 +38,12 @@ export async function fetchHaStats({
   period = 'hour',
   timeoutMs = 30000,
 }: FetchHaStatsOptions): Promise<Record<string, HaReading[]>> {
-  // If running as an add-on, always prioritize the supervisor proxy
-  const isAddon = !!process.env.SUPERVISOR_TOKEN;
-  const targetUrl = isAddon ? 'ws://supervisor/core/websocket' : haUrl;
-  const targetToken: string = isAddon ? process.env.SUPERVISOR_TOKEN! : haToken;
+  const haConfig = resolveHaWsConfig(haUrl, haToken);
+  if (!haConfig) {
+    throw new Error('Home Assistant connection is not configured');
+  }
+  const targetUrl = haConfig.url;
+  const targetToken = haConfig.token;
 
   const ws = new WebSocket(targetUrl);
 
