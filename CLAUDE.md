@@ -79,6 +79,15 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 - Units are explicit in variable names: `_W` (watts), `_Wh` (watt-hours), `_percent`, `_m` (minutes), `_cents_per_kWh`.
 - LP variable naming pattern: `{source}_to_{sink}_{slot_index}` (e.g., `grid_to_battery_3`).
 
+## Versioning
+
+The version must be updated in **3 locations** when bumping, plus the changelog:
+
+1. `package.json` — `"version": "X.Y.Z"`
+2. `package-lock.json` — run `npm install --package-lock-only` after updating package.json
+3. `optivolt/config.yaml` — `version: "X.Y.Z"` (triggers HA add-on Docker image build)
+4. `CHANGELOG.md` — add a new section at the top with the version, date, and changes
+
 ## Git remotes and CI
 
 - **origin**: `vervoto1/optivolt` (fork) — CI runs here (Tests + Builder workflows).
