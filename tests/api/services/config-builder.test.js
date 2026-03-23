@@ -22,6 +22,7 @@ import { loadData } from '../../../api/services/data-store.ts';
 import { loadCalibration } from '../../../api/services/efficiency-calibrator.ts';
 
 const NOW_STRING = '2024-01-01T12:00:00Z';
+const MID_SLOT_NOW_STRING = '2024-01-01T14:22:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
 
 const mockSettings = {
@@ -475,5 +476,24 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     expect(result.settings).toBeDefined();
     expect(result.data).toBeDefined();
     expect(result.timing.stepMin).toBe(mockSettings.stepSize_m);
+  });
+
+  it('starts live planning at the next slot boundary when called mid-slot', async () => {
+    vi.setSystemTime(new Date(MID_SLOT_NOW_STRING));
+    loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
+    loadData.mockResolvedValue({
+      load: { start: '2024-01-01T14:00:00.000Z', step: 15, values: [10, 20, 30, 40, 50, 60] },
+      pv: { start: '2024-01-01T14:00:00.000Z', step: 15, values: [0, 0, 0, 0, 0, 0] },
+      importPrice: { start: '2024-01-01T14:00:00.000Z', step: 15, values: [1, 2, 3, 4, 5, 6] },
+      exportPrice: { start: '2024-01-01T14:00:00.000Z', step: 15, values: [0, 0, 0, 0, 0, 0] },
+      soc: { timestamp: '2024-01-01T14:22:00.000Z', value: 50 },
+    });
+    loadCalibration.mockResolvedValue(null);
+
+    const result = await getSolverInputs();
+
+    expect(new Date(result.timing.startMs).toISOString()).toBe('2024-01-01T14:30:00.000Z');
+    expect(result.cfg.load_W.slice(0, 3)).toEqual([30, 40, 50]);
+    expect(result.cfg.importPrice.slice(0, 3)).toEqual([3, 4, 5]);
   });
 });

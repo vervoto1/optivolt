@@ -42,3 +42,11 @@ All routes are implemented in `api/`. Important ones:
 ## PR / testing notes
 - Prefer small, focused commits with descriptive messages.
 - Run `npm run lint` or relevant integration checks when modifying solver or API behaviour. Document executed commands in the final summary.
+
+## Versioning
+
+- Release version bumps must update all 3 version files plus the changelog:
+  - `package.json`
+  - `package-lock.json`
+  - `optivolt/config.yaml`
+  - `CHANGELOG.md`

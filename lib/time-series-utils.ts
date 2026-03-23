@@ -36,6 +36,17 @@ export function getQuarterStart(date: Date | number | string = new Date(), stepM
 }
 
 /**
+ * Rounds a date up to the next step boundary.
+ * If already aligned exactly to the step, the same timestamp is returned.
+ */
+export function getNextQuarterStart(date: Date | number | string = new Date(), stepMinutes = 15): number {
+  const d = new Date(date);
+  const alignedMs = getQuarterStart(d, stepMinutes);
+  if (d.getTime() === alignedMs) return alignedMs;
+  return alignedMs + stepMinutes * 60_000;
+}
+
+/**
  * Extracts a window of data from a source time series to match a target start time.
  * Missing slots are padded with 0.
  */

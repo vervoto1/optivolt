@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4 - 2026-03-23
+
+- Fix live plan timing alignment: plans created mid-slot now start at the next quarter-hour boundary instead of the already-partially-elapsed slot, preventing predicted SoC from appearing 15 minutes early during discharge accuracy comparisons
+
 ## 0.6.3 - 2026-03-23
 
 - Restore manual CV phase thresholds across settings, solver config, and UI while keeping adaptive threshold generation

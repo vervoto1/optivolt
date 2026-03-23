@@ -2,7 +2,7 @@ import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
 import { loadData } from './data-store.ts';
 import { loadCalibration, generateThresholdsFromCurve } from './efficiency-calibrator.ts';
-import { extractWindow, getQuarterStart } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getNextQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SolverConfig, TimeSeries } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult } from '../types.ts';
 
@@ -156,7 +156,7 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
 
 export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings }> {
   const [settings, data] = await Promise.all([loadSettings(), loadData()]);
-  const startMs = getQuarterStart(new Date(), settings.stepSize_m);
+  const startMs = getNextQuarterStart(new Date(), settings.stepSize_m);
   let cfg = buildSolverConfigFromSettings(settings, data, startMs);
 
   // Apply calibration when adaptive learning is in 'auto' mode

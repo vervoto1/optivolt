@@ -33,8 +33,11 @@ Home Assistant add-on packaging for OptiVolt. Contains the Dockerfile, add-on ma
 - The `image` field in `config.yaml` must match the GHCR image built by `.github/workflows/builder.yaml`
 - The Dockerfile expects source code (api/, app/, lib/, vendor/, package.json) to be copied into this directory by the builder workflow before Docker build
 - `rootfs/etc/services.d/optivolt/run` reads HA config via `bashio::config` and exports as env vars
-- Version in `config.yaml` must be updated for each release
-- Update `CHANGELOG.md` with each version change
+- Release version bumps must update all 3 version files plus the changelog:
+  - `../package.json`
+  - `../package-lock.json`
+  - `config.yaml`
+  - `../CHANGELOG.md`
 
 ### Testing Requirements
 

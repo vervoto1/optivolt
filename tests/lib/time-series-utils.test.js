@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractWindow, getQuarterStart, buildForecastSeries } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getNextQuarterStart, buildForecastSeries } from '../../lib/time-series-utils.ts';
 
 describe('Time Series Utils', () => {
   describe('getQuarterStart', () => {
@@ -12,6 +12,20 @@ describe('Time Series Utils', () => {
     it('handles exact 15 minute boundaries', () => {
       const d = new Date('2024-01-01T10:30:00.000Z');
       const start = getQuarterStart(d);
+      expect(new Date(start).toISOString()).toBe('2024-01-01T10:30:00.000Z');
+    });
+  });
+
+  describe('getNextQuarterStart', () => {
+    it('rounds up to the next 15 minutes when mid-slot', () => {
+      const d = new Date('2024-01-01T10:22:00Z');
+      const start = getNextQuarterStart(d);
+      expect(new Date(start).toISOString()).toBe('2024-01-01T10:30:00.000Z');
+    });
+
+    it('keeps exact 15 minute boundaries unchanged', () => {
+      const d = new Date('2024-01-01T10:30:00.000Z');
+      const start = getNextQuarterStart(d);
       expect(new Date(start).toISOString()).toBe('2024-01-01T10:30:00.000Z');
     });
   });
