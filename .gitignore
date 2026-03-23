@@ -6,3 +6,5 @@ app/lib/
 .env.local
 .claude/settings.local.json
 coverage/
+.omc/
+data/plan-history.json
