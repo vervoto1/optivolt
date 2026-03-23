@@ -256,10 +256,7 @@ function normalizeAdaptiveLearning(adaptiveLearning: AdaptiveLearningConfig): Ad
 }
 
 export function sanitizeSettingsResponse(settings: Settings): Omit<Settings, 'haToken'> & { hasHaToken: boolean } {
-  return {
-    ...settings,
-    hasHaToken: settings.haToken.length > 0,
-    haToken: undefined as never,
-  };
+  const { haToken, ...rest } = settings;
+  return { ...rest, hasHaToken: haToken.length > 0 };
 }
 
