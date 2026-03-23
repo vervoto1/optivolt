@@ -8,9 +8,13 @@ vi.mock('../../../api/services/data-store.ts', () => ({
   loadData: vi.fn(),
 }));
 
-vi.mock('../../../api/services/efficiency-calibrator.ts', () => ({
-  loadCalibration: vi.fn(),
-}));
+vi.mock('../../../api/services/efficiency-calibrator.ts', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loadCalibration: vi.fn(),
+  };
+});
 
 import { buildSolverConfigFromSettings, applyCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
@@ -187,39 +191,6 @@ describe('buildSolverConfigFromSettings — insufficient data', () => {
   });
 });
 
-describe('buildSolverConfigFromSettings — cvPhase thresholds', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(NOW_STRING));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('passes cvPhase thresholds through filtered and sorted when cvPhase is enabled', () => {
-    const settings = {
-      ...mockSettings,
-      cvPhase: {
-        enabled: true,
-        thresholds: [
-          { soc_percent: 90, maxChargePower_W: 1000 },
-          { soc_percent: 80, maxChargePower_W: 2000 },
-          { soc_percent: 0, maxChargePower_W: 500 },   // filtered: soc_percent = 0
-          { soc_percent: 70, maxChargePower_W: 0 },    // filtered: maxChargePower_W = 0
-        ],
-      },
-    };
-
-    const cfg = buildSolverConfigFromSettings(settings, makeData(), NOW_MS);
-
-    expect(cfg.cvPhaseThresholds).toBeDefined();
-    // Two valid thresholds (80 and 90), sorted ascending by soc_percent
-    expect(cfg.cvPhaseThresholds).toHaveLength(2);
-    expect(cfg.cvPhaseThresholds[0].soc_percent).toBe(80);
-    expect(cfg.cvPhaseThresholds[1].soc_percent).toBe(90);
-  });
-});
 
 describe('buildSolverConfigFromSettings — EV', () => {
   beforeEach(() => {
@@ -275,6 +246,8 @@ describe('applyCalibration', () => {
     return {
       chargeCurve: new Array(100).fill(1.0),
       dischargeCurve: new Array(100).fill(1.0),
+      chargeSamples: new Array(100).fill(10),
+      dischargeSamples: new Array(100).fill(10),
       effectiveChargeRate: 1.0,
       effectiveDischargeRate: 1.0,
       sampleCount: 100,
@@ -286,60 +259,71 @@ describe('applyCalibration', () => {
 
   it('does not modify config when confidence is below threshold', () => {
     const cal = makeCal({ confidence: 0.3 });
-    cal.chargeCurve[50] = 0.8;
+    // Even with low curve values, low confidence should skip calibration
+    cal.chargeCurve.fill(0.5);
+    const result = applyCalibration(baseCfg, cal);
+    expect(result.chargeEfficiency_percent).toBe(baseCfg.chargeEfficiency_percent);
+    expect(result.dischargeEfficiency_percent).toBe(baseCfg.dischargeEfficiency_percent);
+    expect(result.cvPhaseThresholds).toBeUndefined();
+    expect(result.dischargePhaseThresholds).toBeUndefined();
+  });
+
+  it('does NOT modify chargeEfficiency_percent or dischargeEfficiency_percent', () => {
+    const cal = makeCal();
+    // Set low curve values that would have changed efficiency in the old code
+    cal.chargeCurve.fill(0.7);
+    cal.dischargeCurve.fill(0.7);
     const result = applyCalibration(baseCfg, cal);
     expect(result.chargeEfficiency_percent).toBe(baseCfg.chargeEfficiency_percent);
     expect(result.dischargeEfficiency_percent).toBe(baseCfg.dischargeEfficiency_percent);
   });
 
-  it('uses per-SoC curve value at initialSoc_percent', () => {
-    // baseCfg.initialSoc_percent = 50 (from mockData.soc.value)
+  it('populates cvPhaseThresholds when charge curve has reductions', () => {
     const cal = makeCal();
-    cal.chargeCurve[50] = 0.8;
+    // Set a segment of the charge curve to show significant reduction
+    // Segment width = ceil(100/8) = 13, so bands 78-90 are segment 6
+    for (let i = 78; i < 91; i++) cal.chargeCurve[i] = 0.7;
     const result = applyCalibration(baseCfg, cal);
-    // 95% * 0.8 = 76%
-    expect(result.chargeEfficiency_percent).toBe(76);
-    expect(result.dischargeEfficiency_percent).toBe(baseCfg.dischargeEfficiency_percent);
+    expect(result.cvPhaseThresholds).toBeDefined();
+    expect(result.cvPhaseThresholds.length).toBeGreaterThan(0);
+    // Each threshold should have soc_percent and maxChargePower_W
+    for (const t of result.cvPhaseThresholds) {
+      expect(t).toHaveProperty('soc_percent');
+      expect(t).toHaveProperty('maxChargePower_W');
+      expect(t.maxChargePower_W).toBeLessThan(baseCfg.maxChargePower_W);
+    }
   });
 
-  it('scales discharge efficiency from curve', () => {
+  it('populates dischargePhaseThresholds when discharge curve has reductions', () => {
     const cal = makeCal();
-    cal.dischargeCurve[50] = 0.85;
+    // Set a segment of the discharge curve to show significant reduction
+    // Bands 0-12 are segment 0
+    for (let i = 0; i < 13; i++) cal.dischargeCurve[i] = 0.6;
     const result = applyCalibration(baseCfg, cal);
-    expect(result.chargeEfficiency_percent).toBe(baseCfg.chargeEfficiency_percent);
-    // 95% * 0.85 = 80.75
-    expect(result.dischargeEfficiency_percent).toBeCloseTo(80.75, 1);
+    expect(result.dischargePhaseThresholds).toBeDefined();
+    expect(result.dischargePhaseThresholds.length).toBeGreaterThan(0);
+    for (const t of result.dischargePhaseThresholds) {
+      expect(t).toHaveProperty('soc_percent');
+      expect(t).toHaveProperty('maxDischargePower_W');
+      expect(t.maxDischargePower_W).toBeLessThan(baseCfg.maxDischargePower_W);
+    }
   });
 
-  it('clamps calibrated efficiency to 50-99% bounds', () => {
+  it('does not set thresholds when all curve values are >= 0.95', () => {
+    // All values at 1.0 (default) — no meaningful reduction
     const cal = makeCal();
-    cal.chargeCurve[50] = 0.4;  // 95% * 0.4 = 38% → clamped to 50%
-    cal.dischargeCurve[50] = 1.2; // 95% * 1.2 = 114% → clamped to 99%
     const result = applyCalibration(baseCfg, cal);
-    expect(result.chargeEfficiency_percent).toBe(50);
-    expect(result.dischargeEfficiency_percent).toBe(99);
-  });
-
-  it('falls back to aggregate rate when curves are missing', () => {
-    const cal = makeCal({
-      chargeCurve: [], // empty = no curve
-      dischargeCurve: [],
-      effectiveChargeRate: 0.8,
-      effectiveDischargeRate: 0.9,
-    });
-    const result = applyCalibration(baseCfg, cal);
-    // 95% * 0.8 = 76%
-    expect(result.chargeEfficiency_percent).toBe(76);
-    // 95% * 0.9 = 85.5
-    expect(result.dischargeEfficiency_percent).toBeCloseTo(85.5, 1);
+    expect(result.cvPhaseThresholds).toBeUndefined();
+    expect(result.dischargePhaseThresholds).toBeUndefined();
   });
 
   it('does not mutate the original config', () => {
     const original = { ...baseCfg };
     const cal = makeCal();
-    cal.chargeCurve[50] = 0.8;
+    for (let i = 78; i < 91; i++) cal.chargeCurve[i] = 0.7;
     applyCalibration(baseCfg, cal);
     expect(baseCfg.chargeEfficiency_percent).toBe(original.chargeEfficiency_percent);
+    expect(baseCfg.cvPhaseThresholds).toBeUndefined();
   });
 });
 
@@ -367,6 +351,8 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     return {
       chargeCurve,
       dischargeCurve,
+      chargeSamples: new Array(100).fill(10),
+      dischargeSamples: new Array(100).fill(10),
       effectiveChargeRate: chargeRate,
       effectiveDischargeRate: dischargeRate,
       sampleCount: 100,
@@ -378,26 +364,31 @@ describe('getSolverInputs — adaptive learning calibration', () => {
   it('applies calibration to solver config when mode is auto and calibration exists', async () => {
     loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
     loadData.mockResolvedValue(makeData());
-    loadCalibration.mockResolvedValue(makeCalibration(0.8, 0.9));
+    loadCalibration.mockResolvedValue(makeCalibration(0.7, 0.6));
 
     const { cfg } = await getSolverInputs();
 
-    // chargeEfficiency: 95% * 0.8 = 76%
-    expect(cfg.chargeEfficiency_percent).toBe(76);
-    // dischargeEfficiency: 95% * 0.9 = 85.5
-    expect(cfg.dischargeEfficiency_percent).toBeCloseTo(85.5, 1);
+    // Efficiencies should NOT be modified
+    expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
+    expect(cfg.dischargeEfficiency_percent).toBe(mockSettings.dischargeEfficiency_percent);
+    // With curve values < 0.95, thresholds should be generated
+    expect(cfg.cvPhaseThresholds).toBeDefined();
+    expect(cfg.cvPhaseThresholds.length).toBeGreaterThan(0);
+    expect(cfg.dischargePhaseThresholds).toBeDefined();
+    expect(cfg.dischargePhaseThresholds.length).toBeGreaterThan(0);
   });
 
   it('skips calibration when mode is suggest', async () => {
     loadSettings.mockResolvedValue(makeSettingsWithAdaptive('suggest'));
     loadData.mockResolvedValue(makeData());
-    loadCalibration.mockResolvedValue(makeCalibration(0.8, 0.9));
+    loadCalibration.mockResolvedValue(makeCalibration(0.7, 0.6));
 
     const { cfg } = await getSolverInputs();
 
     // No calibration applied — efficiencies should match settings values
     expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
     expect(cfg.dischargeEfficiency_percent).toBe(mockSettings.dischargeEfficiency_percent);
+    expect(cfg.cvPhaseThresholds).toBeUndefined();
     expect(loadCalibration).not.toHaveBeenCalled();
   });
 

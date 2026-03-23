@@ -47,11 +47,19 @@ export interface SolverConfig {
 
   // Constant Voltage phase: reduced charge power at high SoC
   cvPhaseThresholds?: CvPhaseThreshold[];
+
+  // Discharge phase: reduced discharge power at low SoC
+  dischargePhaseThresholds?: DischargePhaseThreshold[];
 }
 
 export interface CvPhaseThreshold {
   soc_percent: number;       // SoC % above which charge power is reduced
   maxChargePower_W: number;  // reduced max charge power in watts
+}
+
+export interface DischargePhaseThreshold {
+  soc_percent: number;          // SoC % below which discharge power is reduced
+  maxDischargePower_W: number;  // reduced max discharge power in watts
 }
 
 /**

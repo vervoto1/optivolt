@@ -782,6 +782,92 @@ describe('mapRowsToDessV2', () => {
     });
   });
 
+  describe('auto-generated thresholds', () => {
+    function makeRow(overrides = {}) {
+      return {
+        g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+        soc: 500, soc_percent: 50,
+        load: 0, pv: 0,
+        ic: 20, ec: 5,
+        ...overrides,
+      };
+    }
+
+    it('caps SoC boost at auto-generated CV threshold (e.g. 85%)', () => {
+      const rows = [
+        makeRow({ g2b: 100, ic: 15, soc_percent: 82 }),
+        makeRow({ ic: 10, ec: 5, soc_percent: 82, g2l: 1000, g2b: 4000 }), // saturated
+      ];
+      const autoCfg = {
+        ...cfg,
+        maxSoc_percent: 100,
+        cvPhaseThresholds: [
+          { soc_percent: 85, maxChargePower_W: 2000 },
+          { soc_percent: 92, maxChargePower_W: 1000 },
+        ],
+      };
+      const { perSlot } = mapRowsToDessV2(rows, autoCfg);
+      // 82+5=87 capped to first applicable CV threshold 85
+      expect(perSlot[1].socTarget_percent).toBe(85);
+    });
+
+    it('skips low CV thresholds below current SoC and uses first applicable', () => {
+      const rows = [
+        makeRow({ g2b: 100, ic: 15, soc_percent: 88 }),
+        makeRow({ ic: 10, ec: 5, soc_percent: 88, g2l: 1000, g2b: 4000 }), // saturated
+      ];
+      const autoCfg = {
+        ...cfg,
+        maxSoc_percent: 100,
+        cvPhaseThresholds: [
+          { soc_percent: 40, maxChargePower_W: 3000 },  // below current SoC, skipped
+          { soc_percent: 85, maxChargePower_W: 2000 },  // below current SoC, skipped
+          { soc_percent: 92, maxChargePower_W: 1000 },  // first applicable
+        ],
+      };
+      const { perSlot } = mapRowsToDessV2(rows, autoCfg);
+      // 88+5=93 capped to first applicable CV threshold 92
+      expect(perSlot[1].socTarget_percent).toBe(92);
+    });
+
+    it('falls back to maxSoc_percent when all CV thresholds are below current SoC', () => {
+      const rows = [
+        makeRow({ g2b: 100, ic: 15, soc_percent: 93 }),
+        makeRow({ ic: 10, ec: 5, soc_percent: 93, g2l: 1000, g2b: 4000 }), // saturated
+      ];
+      const autoCfg = {
+        ...cfg,
+        maxSoc_percent: 100,
+        cvPhaseThresholds: [
+          { soc_percent: 40, maxChargePower_W: 3000 },
+          { soc_percent: 85, maxChargePower_W: 2000 },
+        ],
+      };
+      const { perSlot } = mapRowsToDessV2(rows, autoCfg);
+      // 93+5=98, no applicable CV cap, capped at maxSoc-1=99 → 98
+      expect(perSlot[1].socTarget_percent).toBe(98);
+    });
+
+    it('maps correctly when dischargePhaseThresholds is present in config', () => {
+      // dischargePhaseThresholds should be ignored by the DESS mapper — it only
+      // affects the LP. Verify the mapper doesn't break when the field is set.
+      const rows = [
+        makeRow({ g2b: 100, ic: 15, soc_percent: 50 }),
+        makeRow({ ic: 10, ec: 5, soc_percent: 50 }),
+      ];
+      const dpCfg = {
+        ...cfg,
+        dischargePhaseThresholds: [
+          { soc_percent: 30, maxDischargePower_W: 2000 },
+          { soc_percent: 20, maxDischargePower_W: 1000 },
+        ],
+      };
+      const { perSlot } = mapRowsToDessV2(rows, dpCfg);
+      expect(perSlot[1].strategy).toBe(Strategy.proBattery);
+      expect(perSlot[1].restrictions).toBe(Restrictions.batteryToGrid);
+    });
+  });
+
   describe('EV discharge constraint', () => {
     function makeRow(overrides = {}) {
       return {

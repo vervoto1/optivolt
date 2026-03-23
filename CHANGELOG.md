@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1 - 2026-03-23
+
+- **Auto-calibrated power limits**: replace manual CV phase thresholds with auto-generated per-SoC charge/discharge power limits derived from calibration curves — the LP now plans for realistic charge/discharge speeds at each SoC level
+- **Discharge power thresholds**: new MILP mechanism mirrors existing charge phase — reduces discharge power when SoC drops below calibrated thresholds (e.g. battery discharges slower at low SoC)
+- **Remove manual CV phase**: manual CV tuning removed from settings, UI, and defaults — manual thresholds biased calibration measurements, preventing the system from learning true battery behavior
+- **Rewired adaptive learning auto mode**: `applyCalibration` now generates MILP power thresholds instead of multiplying efficiency percentages (efficiency settings are correct and should not be adjusted by calibration)
+- **Conservative confidence scaling**: confidence denominator changed from /100 to /500, requiring ~3-5 days of data before auto-calibration activates
+- Fix DESS price refresh race: `isPriceRefreshWindowActive()` now checks configured time window directly, closing ~60s gap where auto-calculate could restore Mode 4 before tick fired
+- DESS mapper: SoC target cap now uses first threshold above current SoC instead of always using lowest threshold
+- 795 tests across 41 test files
+- **Note**: clear calibration data after upgrading (`POST /plan-accuracy/calibration/reset`) — old calibration was built against manual CV thresholds and will produce incorrect power limits
+
 ## 0.6.0 - 2026-03-21
 
 - **Fix predicted SoC alignment**: predicted SoC in plan snapshots now represents start-of-slot (before energy flows) instead of end-of-slot (after flows), matching actual SoC measurements taken at slot start — previously showed e.g. 31% predicted at 11:00 when charging hadn't started, which was the 11:15 end-of-slot value

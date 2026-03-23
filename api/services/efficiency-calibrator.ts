@@ -161,7 +161,7 @@ export async function calibrate(
   }
 
   const totalSamples = chargeCount + dischargeCount;
-  const confidence = Math.min(1.0, totalSamples / 100);
+  const confidence = Math.min(1.0, totalSamples / 500);
 
   // Compute aggregate rates (weighted average, only from bands with data)
   const effectiveChargeRate = clamp(weightedAvg(chargeCurve, chargeSamples), MIN_RATE, MAX_RATE);
@@ -290,4 +290,82 @@ function weightedAvg(curve: AccuracyCurve, samples: number[]): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+/** Maximum number of MILP thresholds per direction. */
+const MAX_THRESHOLDS = 8;
+
+/** Number of equal-width SoC segments to partition the curve into. */
+const NUM_SEGMENTS = 8;
+
+/** Minimum curve ratio to consider "meaningful reduction" (5% drop). */
+const REDUCTION_THRESHOLD = 0.95;
+
+/**
+ * Convert a 100-band calibration curve into discrete power thresholds for the MILP.
+ *
+ * For charge: thresholds are SoC values ABOVE which power is reduced (ascending SoC order).
+ * For discharge: thresholds are SoC values BELOW which power is reduced (descending SoC order).
+ *
+ * Algorithm: divide SoC range into 8 equal segments, compute weighted-average
+ * curve value per segment, and emit a threshold at the segment boundary when
+ * the average shows a meaningful reduction (>= 5%).
+ *
+ * @param curve - 100-entry array (index = SoC%), values are ratios like 0.85 = 85% of nominal
+ * @param sampleCounts - 100-entry array of sample counts per band
+ * @param basePower_W - nominal max power (maxChargePower_W or maxDischargePower_W)
+ * @param direction - 'charge' or 'discharge'
+ * @param minSamples - minimum samples per band to trust (default 2)
+ * @returns array of thresholds, max 8 entries
+ */
+export function generateThresholdsFromCurve(
+  curve: AccuracyCurve,
+  sampleCounts: number[],
+  basePower_W: number,
+  direction: 'charge' | 'discharge',
+  minSamples = 2,
+): { soc_percent: number; power_W: number }[] {
+  const segmentWidth = Math.ceil(SOC_BANDS / NUM_SEGMENTS);
+  const candidates: { soc_percent: number; power_W: number; reduction: number }[] = [];
+
+  for (let seg = 0; seg < NUM_SEGMENTS; seg++) {
+    const lo = seg * segmentWidth;
+    const hi = Math.min(lo + segmentWidth, SOC_BANDS);
+
+    let weightedSum = 0;
+    let weightTotal = 0;
+
+    for (let i = lo; i < hi; i++) {
+      const count = sampleCounts[i] ?? 0;
+      if (count < minSamples) continue;
+      weightedSum += curve[i] * count;
+      weightTotal += count;
+    }
+
+    if (weightTotal < minSamples) continue; // not enough data in this segment
+
+    const avgRatio = weightedSum / weightTotal;
+    if (avgRatio >= REDUCTION_THRESHOLD) continue; // no meaningful reduction
+
+    // Threshold sits at the segment boundary
+    const socBoundary = direction === 'charge' ? lo : hi - 1;
+    const power_W = Math.round(basePower_W * clamp(avgRatio, MIN_RATE, MAX_RATE));
+
+    candidates.push({ soc_percent: socBoundary, power_W, reduction: 1 - avgRatio });
+  }
+
+  // Cap at MAX_THRESHOLDS, keeping the largest reductions
+  if (candidates.length > MAX_THRESHOLDS) {
+    candidates.sort((a, b) => b.reduction - a.reduction);
+    candidates.length = MAX_THRESHOLDS;
+  }
+
+  // Sort by soc_percent: ascending for charge, descending for discharge
+  if (direction === 'charge') {
+    candidates.sort((a, b) => a.soc_percent - b.soc_percent);
+  } else {
+    candidates.sort((a, b) => b.soc_percent - a.soc_percent);
+  }
+
+  return candidates.map(({ soc_percent, power_W }) => ({ soc_percent, power_W }));
 }

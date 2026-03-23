@@ -377,7 +377,12 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
         // (e.g. 93%→98%), then next slot CV throttles charge power, the saturation
         // check fails, and the target drops back (98%→96%). Capping at the CV
         // threshold keeps the target smooth (93%→95%, 95%→95%, 96%→96%).
-        const cvCap = cfg.cvPhaseThresholds?.[0]?.soc_percent ?? cfg.maxSoc_percent;
+        // Use the first CV threshold that is above the current SoC target as the
+        // cap.  Auto-calibrated thresholds may start well below the current SoC
+        // (e.g. 40%) — using such a low cap would reduce the target instead of
+        // boosting it.  Fall back to maxSoc_percent when no applicable threshold.
+        const applicableCv = cfg.cvPhaseThresholds?.find(th => th.soc_percent > socTarget_percent);
+        const cvCap = applicableCv?.soc_percent ?? cfg.maxSoc_percent;
         socTarget_percent = Math.min(socTarget_percent + 5, cvCap, cfg.maxSoc_percent - 1);
       }
     } else if (importCost <= gridBatteryTp) {

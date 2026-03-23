@@ -76,12 +76,6 @@ export function getElements() {
     evConnectedSwitch: document.getElementById('ev-connected-switch'),
     evAlwaysApply: document.getElementById('ev-always-apply'),
 
-    // CV Phase Tuning (Settings tab)
-    cvEnabled: document.getElementById('cv-enabled'),
-    cvThreshold1Soc: document.getElementById('cv-threshold1-soc'),
-    cvThreshold1Power: document.getElementById('cv-threshold1-power'),
-    cvThreshold2Soc: document.getElementById('cv-threshold2-soc'),
-    cvThreshold2Power: document.getElementById('cv-threshold2-power'),
 
     // Auto-Calculate
     autoCalcEnabled: document.getElementById('auto-calc-enabled'),

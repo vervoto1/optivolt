@@ -41,6 +41,9 @@ export function buildLP({
 
   // CV phase
   cvPhaseThresholds,
+
+  // Discharge phase
+  dischargePhaseThresholds,
 }: SolverConfig): string {
   const T = load_W.length;
   if (pv_W.length !== T || importPrice.length !== T || exportPrice.length !== T) {
@@ -99,6 +102,16 @@ export function buildLP({
   }
   const cvThresholdWh: number[] = cvThresholds.map(t => (t.soc_percent / 100) * batteryCapacity_Wh);
 
+  // Discharge phase: sorted thresholds (descending soc_percent) with decremental power reductions
+  const dpThresholds = dischargePhaseThresholds ?? [];
+  const dpK = dpThresholds.length; // number of discharge thresholds
+  const dpPowerSteps: number[] = [];
+  for (let k = 0; k < dpK; k++) {
+    const prevPower = k === 0 ? maxDischargePower_W : dpThresholds[k - 1].maxDischargePower_W;
+    dpPowerSteps.push(prevPower - dpThresholds[k].maxDischargePower_W);
+  }
+  const dpThresholdWh: number[] = dpThresholds.map(t => (t.soc_percent / 100) * batteryCapacity_Wh);
+
   // Variable name helpers
   const gridToLoad = (t: number) => `grid_to_load_${t}`;
   const gridToBattery = (t: number) => `grid_to_battery_${t}`;
@@ -110,6 +123,7 @@ export function buildLP({
   const soc = (t: number) => `soc_${t}`;
   const socShortfall = (t: number) => `soc_shortfall_${t}`;
   const cvBin = (k: number, t: number) => `cv_${k}_${t}`;
+  const dpBin = (k: number, t: number) => `dp_${k}_${t}`;
 
   const lines: string[] = [];
 
@@ -180,7 +194,13 @@ export function buildLP({
     } else {
       lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} <= ${maxChargePower_W}`);
     }
-    lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)} <= ${maxDischargePower_W}`);
+    // Discharge constraint: with discharge phase binaries, the effective limit decreases as SoC drops
+    if (dpK > 0) {
+      const dpTerms = dpPowerSteps.map((step, k) => ` + ${toNum(step)} ${dpBin(k, t)}`).join('');
+      lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${dpTerms} <= ${maxDischargePower_W}`);
+    } else {
+      lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)} <= ${maxDischargePower_W}`);
+    }
 
     // Grid import/export limits
     lines.push(` c_grid_import_cap_${t}: ${gridToLoad(t)} + ${gridToBattery(t)} <= ${maxGridImport_W}`);
@@ -205,6 +225,42 @@ export function buildLP({
         lines.push(` c_cv_${k}_${t}: ${soc(t - 1)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
         // Reverse: threshold * cv <= soc_{t-1} (cv=1 only if soc >= threshold)
         lines.push(` c_cv_rev_${k}_${t}: ${toNum(cvThresholdWh[k])} ${cvBin(k, t)} - ${soc(t - 1)} <= 0`);
+      }
+    }
+
+    // Discharge phase: dp_k_t = 1 if and only if start-of-slot SoC <= threshold.
+    // Forward constraint: forces dp=1 when SoC < threshold.
+    //   soc + M * dp >= threshold  →  if soc < threshold, dp must be 1
+    // Reverse constraint: forces dp=0 when SoC > threshold.
+    //   soc - threshold + M * (1 - dp) >= 0  →  rearranged: -M * dp + soc >= threshold - M
+    for (let k = 0; k < dpK; k++) {
+      const tightM = dpThresholdWh[k] - minSoc_Wh;
+      if (t === 0) {
+        // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant
+        // Forward: initialSoc + M * dp >= threshold  →  M * dp >= threshold - initialSoc
+        //   rearranged: -M * dp <= initialSoc - threshold  →  same form as CV but inverted
+        lines.push(` c_dp_${k}_${t}: ${toNum(-tightM)} ${dpBin(k, t)} <= ${toNum(initialSoc_Wh - dpThresholdWh[k])}`);
+        // Reverse: dp=1 only if initialSoc <= threshold
+        //   threshold * (1 - dp) <= initialSoc  →  threshold - threshold * dp <= initialSoc
+        //   rearranged: -threshold * dp <= initialSoc - threshold ... always true when initialSoc >= threshold
+        //   Instead: initialSoc * dp <= threshold  (dp=1 only allowed when initialSoc <= threshold)
+        //   But initialSoc is constant, so: if initialSoc > threshold → dp must be 0
+        //   Use: (capacity - threshold) * dp <= capacity - initialSoc
+        //   When initialSoc > threshold: RHS < capacity - threshold, so dp=0 forced
+        //   When initialSoc <= threshold: RHS >= capacity - threshold, so dp free
+        const revM = maxSoc_Wh - dpThresholdWh[k];
+        lines.push(` c_dp_rev_${k}_${t}: ${toNum(revM)} ${dpBin(k, t)} <= ${toNum(maxSoc_Wh - initialSoc_Wh)}`);
+      } else {
+        // Slot t>0: start-of-slot SoC is soc_{t-1}
+        // Forward: soc_{t-1} + M * dp >= threshold  →  -soc_{t-1} - M * dp <= -threshold
+        //   rearranged: -M * dp - soc_{t-1} <= -threshold  →  or: -M * dp + soc_{t-1} >= threshold - ... no
+        //   Cleaner: soc_{t-1} + tightM * dp >= threshold
+        //   LP form: -soc_{t-1} - tightM * dp <= -threshold
+        lines.push(` c_dp_${k}_${t}: - ${soc(t - 1)} - ${toNum(tightM)} ${dpBin(k, t)} <= ${toNum(-dpThresholdWh[k])}`);
+        // Reverse: (maxSoc - threshold) * dp <= maxSoc - soc_{t-1}
+        //   rearranged: (maxSoc - threshold) * dp + soc_{t-1} <= maxSoc
+        const revM = maxSoc_Wh - dpThresholdWh[k];
+        lines.push(` c_dp_rev_${k}_${t}: ${toNum(revM)} ${dpBin(k, t)} + ${soc(t - 1)} <= ${toNum(maxSoc_Wh)}`);
       }
     }
   }
@@ -258,7 +314,7 @@ export function buildLP({
   }
   lines.push("");
 
-  const hasBinaries = D > 0 || cvK > 0;
+  const hasBinaries = D > 0 || cvK > 0 || dpK > 0;
   if (hasBinaries) {
     lines.push("Binaries");
     // Rebalancing binaries
@@ -269,6 +325,12 @@ export function buildLP({
     for (let k = 0; k < cvK; k++) {
       for (let t = 0; t < T; t++) {
         lines.push(` ${cvBin(k, t)}`);
+      }
+    }
+    // Discharge phase binaries
+    for (let k = 0; k < dpK; k++) {
+      for (let t = 0; t < T; t++) {
+        lines.push(` ${dpBin(k, t)}`);
       }
     }
     lines.push("");

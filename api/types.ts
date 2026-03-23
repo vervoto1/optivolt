@@ -46,7 +46,7 @@ export interface Settings {
   autoCalculate?: AutoCalculateConfig;
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
-  cvPhase?: CvPhaseConfig;
+
   adaptiveLearning?: AdaptiveLearningConfig;
 }
 
@@ -60,10 +60,6 @@ export interface EvConfig {
   alwaysApplySchedule: boolean;
 }
 
-export interface CvPhaseConfig {
-  enabled: boolean;
-  thresholds: { soc_percent: number; maxChargePower_W: number }[];
-}
 
 export interface AutoCalculateConfig {
   enabled: boolean;

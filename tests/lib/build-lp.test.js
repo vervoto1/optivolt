@@ -319,6 +319,137 @@ describe('buildLP — CV phase', () => {
   });
 });
 
+describe('buildLP — discharge phase', () => {
+  const T = 4;
+  const mockData = {
+    load_W: Array(T).fill(500),
+    pv_W: Array(T).fill(0),
+    importPrice: Array(T).fill(10),
+    exportPrice: Array(T).fill(5),
+    batteryCapacity_Wh: 10000,
+    minSoc_percent: 10,
+    maxSoc_percent: 100,
+    maxDischargePower_W: 5000,
+    initialSoc_percent: 50,
+  };
+
+  const twoThresholds = [
+    { soc_percent: 30, maxDischargePower_W: 3000 },
+    { soc_percent: 20, maxDischargePower_W: 1000 },
+  ];
+
+  it('does NOT include dp_ variables when dischargePhaseThresholds is undefined', () => {
+    const lp = buildLP(mockData);
+    expect(lp).not.toContain('dp_');
+  });
+
+  it('does NOT include dp_ variables when dischargePhaseThresholds is empty', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: [] });
+    expect(lp).not.toContain('dp_');
+  });
+
+  it('generates dp_ binaries for each threshold and slot', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    expect(lp).toContain('Binaries');
+    // 2 thresholds x 4 slots = 8 binaries
+    for (let k = 0; k < 2; k++) {
+      for (let t = 0; t < T; t++) {
+        expect(lp).toContain(`dp_${k}_${t}`);
+      }
+    }
+  });
+
+  it('modifies discharge constraint with power step terms', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // power step 0: 5000 - 3000 = 2000
+    // power step 1: 3000 - 1000 = 2000
+    expect(lp).toMatch(/c_discharge_cap_0:.*\+ 2000 dp_0_0.*\+ 2000 dp_1_0 <= 5000/);
+  });
+
+  it('generates big-M forcing constraints referencing SoC thresholds', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // threshold 0: 30% of 10000 = 3000 Wh
+    // threshold 1: 20% of 10000 = 2000 Wh
+    expect(lp).toContain('c_dp_0_0:');
+    expect(lp).toContain('c_dp_1_0:');
+    // Slot t>0 should reference soc_{t-1}
+    expect(lp).toMatch(/c_dp_0_1:.*soc_0/);
+  });
+
+  it('slot 0 uses initialSoc_Wh constant (not soc variable) in big-M constraint', () => {
+    // initialSoc_percent = 50, capacity = 10000, so initialSoc_Wh = 5000
+    // threshold 0: 30% = 3000 Wh
+    // Forward: -tightM * dp <= initialSoc - threshold = 5000 - 3000 = 2000
+    // tightM = threshold - minSoc = 3000 - 1000 = 2000
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // c_dp_0_0 should NOT contain soc_ variable
+    expect(lp).not.toMatch(/c_dp_0_0:.*soc_/);
+    // Forward constraint for slot 0: -2000 dp_0_0 <= 2000
+    expect(lp).toMatch(/c_dp_0_0: -2000 dp_0_0 <= 2000/);
+  });
+
+  it('generates reverse constraints for slot 0 with initialSoc constant', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // Reverse for k=0: revM = maxSoc - threshold = 10000 - 3000 = 7000
+    // 7000 * dp <= maxSoc - initialSoc = 10000 - 5000 = 5000
+    expect(lp).toMatch(/c_dp_rev_0_0: 7000 dp_0_0 <= 5000/);
+  });
+
+  it('generates forward and reverse constraints for slot t>0', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // Forward for k=0, t=1: -soc_0 - tightM * dp <= -threshold
+    // tightM = 3000 - 1000 = 2000, threshold = 3000
+    expect(lp).toMatch(/c_dp_0_1: - soc_0 - 2000 dp_0_1 <= -3000/);
+    // Reverse for k=0, t=1: revM * dp + soc_{t-1} <= maxSoc
+    // revM = 10000 - 3000 = 7000
+    expect(lp).toMatch(/c_dp_rev_0_1: 7000 dp_0_1 \+ soc_0 <= 10000/);
+  });
+
+  it('works with a single threshold', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: [twoThresholds[0]] });
+    expect(lp).toContain('dp_0_0');
+    expect(lp).not.toContain('dp_1_0');
+    // power step: 5000 - 3000 = 2000
+    expect(lp).toMatch(/c_discharge_cap_0:.*\+ 2000 dp_0_0 <= 5000/);
+  });
+
+  it('works with multiple thresholds', () => {
+    const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
+    // Both thresholds should appear in discharge cap
+    expect(lp).toMatch(/c_discharge_cap_0:.*dp_0_0.*dp_1_0/);
+    // Both thresholds should have big-M constraints
+    expect(lp).toContain('c_dp_0_0:');
+    expect(lp).toContain('c_dp_1_0:');
+    expect(lp).toContain('c_dp_rev_0_0:');
+    expect(lp).toContain('c_dp_rev_1_0:');
+  });
+
+  it('produces identical LP when dischargePhaseThresholds is undefined vs absent', () => {
+    const baselineLP = buildLP(mockData);
+    const withUndefinedLP = buildLP({ ...mockData, dischargePhaseThresholds: undefined });
+    expect(withUndefinedLP).toBe(baselineLP);
+  });
+
+  it('works alongside cvPhaseThresholds simultaneously', () => {
+    const lp = buildLP({
+      ...mockData,
+      cvPhaseThresholds: [{ soc_percent: 95, maxChargePower_W: 3000 }],
+      dischargePhaseThresholds: [{ soc_percent: 30, maxDischargePower_W: 3000 }],
+      maxChargePower_W: 5000,
+    });
+    // Both cv and dp binaries should exist
+    expect(lp).toContain('cv_0_0');
+    expect(lp).toContain('dp_0_0');
+    // Charge cap has cv terms
+    expect(lp).toMatch(/c_charge_cap_0:.*cv_0_0/);
+    // Discharge cap has dp terms
+    expect(lp).toMatch(/c_discharge_cap_0:.*dp_0_0/);
+    // Both have big-M constraints
+    expect(lp).toContain('c_cv_0_0:');
+    expect(lp).toContain('c_dp_0_0:');
+  });
+});
+
 describe('buildLP — zero-coefficient objective terms', () => {
   // Lines 135-140: the `if (coeff !== 0)` guards skip adding terms when coeff is exactly 0.
   // With importPrice=0, exportPrice=0, batteryCost=0, tiebreaks non-zero, most coeffs stay.

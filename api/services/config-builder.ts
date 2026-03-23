@@ -1,7 +1,7 @@
 import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
 import { loadData } from './data-store.ts';
-import { loadCalibration } from './efficiency-calibrator.ts';
+import { loadCalibration, generateThresholdsFromCurve } from './efficiency-calibrator.ts';
 import { extractWindow, getQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SolverConfig, TimeSeries } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult } from '../types.ts';
@@ -77,12 +77,6 @@ export function buildSolverConfigFromSettings(
   // Pass through EV discharge constraint setting
   base.disableDischargeWhileEvCharging = settings.evConfig?.disableDischargeWhileCharging ?? false;
 
-  // CV phase thresholds: pass through if enabled
-  if (settings.cvPhase?.enabled && settings.cvPhase.thresholds?.length) {
-    base.cvPhaseThresholds = settings.cvPhase.thresholds
-      .filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0)
-      .sort((a, b) => a.soc_percent - b.soc_percent);
-  }
 
   if (settings.rebalanceEnabled) {
     // Math.ceil ensures the hold is never shorter than requested; Math.max(1, …) prevents 0-slot holds
@@ -105,42 +99,53 @@ export function buildSolverConfigFromSettings(
 
 /**
  * Apply calibration to the solver config.
- * Uses the per-SoC efficiency curve evaluated at the current initial SoC,
- * or falls back to the aggregate rate for backward compatibility.
+ * Converts calibration curves into MILP power thresholds instead of
+ * adjusting efficiency percentages — the curves measure charge/discharge
+ * speed deviation (power), not energy conversion efficiency.
  * Only applies when confidence exceeds 0.5 threshold.
  */
 export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): SolverConfig {
   if (cal.confidence < 0.5) return cfg;
 
-  // Look up the curve value at the current SoC, or use the aggregate rate
-  const socBand = Math.min(99, Math.max(0, Math.round(cfg.initialSoc_percent)));
-  const chargeRate = cal.chargeCurve?.length === 100
-    ? cal.chargeCurve[socBand]
-    : cal.effectiveChargeRate;
-  const dischargeRate = cal.dischargeCurve?.length === 100
-    ? cal.dischargeCurve[socBand]
-    : cal.effectiveDischargeRate;
-
-  const calibratedChargeEff = Math.min(
-    99,
-    Math.max(50, cfg.chargeEfficiency_percent * chargeRate),
+  // Generate charge thresholds from calibration curve
+  const chargeThresholds = generateThresholdsFromCurve(
+    cal.chargeCurve,
+    cal.chargeSamples ?? [],
+    cfg.maxChargePower_W,
+    'charge',
   );
-  const calibratedDischargeEff = Math.min(
-    99,
-    Math.max(50, cfg.dischargeEfficiency_percent * dischargeRate),
+
+  // Generate discharge thresholds from calibration curve
+  const dischargeThresholds = generateThresholdsFromCurve(
+    cal.dischargeCurve,
+    cal.dischargeSamples ?? [],
+    cfg.maxDischargePower_W,
+    'discharge',
   );
 
   console.log(
-    `[config-builder] Applying calibration @${socBand}% SoC: chargeEff ${cfg.chargeEfficiency_percent}% → ${calibratedChargeEff.toFixed(1)}%, ` +
-    `dischargeEff ${cfg.dischargeEfficiency_percent}% → ${calibratedDischargeEff.toFixed(1)}% ` +
-    `(confidence=${cal.confidence})`,
+    `[config-builder] Applying calibration: ${chargeThresholds.length} charge thresholds, ` +
+    `${dischargeThresholds.length} discharge thresholds (confidence=${cal.confidence})`,
   );
 
-  return {
-    ...cfg,
-    chargeEfficiency_percent: calibratedChargeEff,
-    dischargeEfficiency_percent: calibratedDischargeEff,
-  };
+  // Map to the SolverConfig threshold format
+  const result = { ...cfg };
+
+  if (chargeThresholds.length > 0) {
+    result.cvPhaseThresholds = chargeThresholds.map(t => ({
+      soc_percent: t.soc_percent,
+      maxChargePower_W: t.power_W,
+    }));
+  }
+
+  if (dischargeThresholds.length > 0) {
+    result.dischargePhaseThresholds = dischargeThresholds.map(t => ({
+      soc_percent: t.soc_percent,
+      maxDischargePower_W: t.power_W,
+    }));
+  }
+
+  return result;
 }
 
 export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings }> {
