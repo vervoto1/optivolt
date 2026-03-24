@@ -4,13 +4,6 @@ import type { PlanRowWithDess } from '../types.ts';
 
 let victronClient: VictronMqttClient | null = null;
 
-function toVictronStrategy(strategy: number): number {
-  // GX stable releases document 0=follow target SoC and 1=self-consume.
-  // Keep our richer internal planner strategies, but publish a compatible
-  // subset so TargetSoc is honored consistently on the device.
-  return strategy === 1 ? 1 : 0;
-}
-
 function getVictronClient(): VictronMqttClient {
   if (!victronClient) {
     const host = process.env.MQTT_HOST ?? 'venus.local';
@@ -140,7 +133,7 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
     const slot = {
       startEpoch: Math.round(row.timestampMs / 1000),
       durationSeconds: stepSeconds,
-      strategy: toVictronStrategy(row.dess.strategy),
+      strategy: row.dess.strategy,
       flags: row.dess.flags,
       socTarget: Math.round(row.dess.socTarget_percent),
       restrictions: row.dess.restrictions,

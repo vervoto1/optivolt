@@ -12,6 +12,7 @@ import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { extractWindow } from '../../lib/time-series-utils.ts';
+import { getNextQuarterStart } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 
@@ -151,22 +152,29 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   );
 
   // Persist plan snapshot for adaptive learning (fire-and-forget)
-  const snapshot: PlanSnapshot = {
-    planId: `${timing.startMs}-${Date.now()}`,
-    createdAtMs: Date.now(),
-    initialSoc_percent: cfg.initialSoc_percent,
-    slots: rowsWithDess.map((r, i) => ({
-      timestampMs: r.timestampMs,
+  const snapshotCreatedAtMs = Date.now();
+  const snapshotStartMs = getNextQuarterStart(snapshotCreatedAtMs, cfg.stepSize_m);
+  const snapshotSlots = rowsWithDess
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.timestampMs >= snapshotStartMs)
+    .map(({ row, index }) => ({
+      timestampMs: row.timestampMs,
       // soc_percent from the solver is end-of-slot (after flows); shift back
       // so predictedSoc_percent represents start-of-slot (before flows),
       // matching the actual SoC measurement taken at the slot start time.
-      predictedSoc_percent: i === 0 ? cfg.initialSoc_percent : rowsWithDess[i - 1].soc_percent,
-      chargePower_W: r.g2b + r.pv2b,
-      dischargePower_W: r.b2l + r.b2g,
-      predictedLoad_W: r.load,
-      predictedPv_W: r.pv,
-      strategy: r.dess.strategy,
-    })),
+      predictedSoc_percent: index === 0 ? cfg.initialSoc_percent : rowsWithDess[index - 1].soc_percent,
+      chargePower_W: row.g2b + row.pv2b,
+      dischargePower_W: row.b2l + row.b2g,
+      predictedLoad_W: row.load,
+      predictedPv_W: row.pv,
+      strategy: row.dess.strategy,
+    }));
+
+  const snapshot: PlanSnapshot = {
+    planId: `${timing.startMs}-${snapshotCreatedAtMs}`,
+    createdAtMs: snapshotCreatedAtMs,
+    initialSoc_percent: cfg.initialSoc_percent,
+    slots: snapshotSlots,
     config: {
       chargeEfficiency_percent: cfg.chargeEfficiency_percent,
       dischargeEfficiency_percent: cfg.dischargeEfficiency_percent,

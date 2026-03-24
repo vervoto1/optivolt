@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7 - 2026-03-24
+
+- Fix Dynamic ESS target SoC spiking introduced in `0.6.4` by restoring live steering to the current slot boundary while keeping plan-history snapshots aligned to the next full slot for reporting
+- Revert the `0.6.6` MQTT strategy remap that flattened Dynamic ESS behavior and prevented expected discharge periods from executing
+- Keep the single-slot DESS schedule duration fallback so isolated slot writes still use the default 15-minute duration safely
+
 ## 0.6.6 - 2026-03-24
 
 - Fix Dynamic ESS target SoC writes by publishing Victron-compatible strategy codes in MQTT schedule slots, so non-zero `TargetSoc` values are honored again and charging/discharging follows the planned target

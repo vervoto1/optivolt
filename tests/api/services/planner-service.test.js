@@ -17,6 +17,7 @@ import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
+const MID_SLOT_NOW_STRING = '2024-01-01T00:22:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
 
 // Minimal settings — use 60-min slots for a smaller LP
@@ -201,6 +202,38 @@ describe('computePlan — error handling', () => {
     );
 
     errorSpy.mockRestore();
+  });
+});
+
+describe('computePlan — plan snapshot timing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(MID_SLOT_NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('excludes the partially elapsed current slot from saved plan snapshots', async () => {
+    const result = await computePlan();
+
+    expect(result.rows.length).toBeGreaterThan(1);
+    expect(savePlanSnapshot).toHaveBeenCalledTimes(1);
+
+    const snapshot = savePlanSnapshot.mock.calls[0][0];
+    expect(snapshot.slots.length).toBe(result.rows.length - 1);
+    expect(new Date(snapshot.slots[0].timestampMs).toISOString()).toBe('2024-01-01T01:00:00.000Z');
+    expect(snapshot.slots[0].predictedSoc_percent).toBeCloseTo(result.rows[0].soc_percent, 5);
   });
 });
 

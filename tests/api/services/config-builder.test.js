@@ -478,7 +478,7 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     expect(result.timing.stepMin).toBe(mockSettings.stepSize_m);
   });
 
-  it('starts live planning at the next slot boundary when called mid-slot', async () => {
+  it('starts live planning at the current slot boundary when called mid-slot', async () => {
     vi.setSystemTime(new Date(MID_SLOT_NOW_STRING));
     loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
     loadData.mockResolvedValue({
@@ -492,8 +492,8 @@ describe('getSolverInputs — adaptive learning calibration', () => {
 
     const result = await getSolverInputs();
 
-    expect(new Date(result.timing.startMs).toISOString()).toBe('2024-01-01T14:30:00.000Z');
-    expect(result.cfg.load_W.slice(0, 3)).toEqual([30, 40, 50]);
-    expect(result.cfg.importPrice.slice(0, 3)).toEqual([3, 4, 5]);
+    expect(new Date(result.timing.startMs).toISOString()).toBe('2024-01-01T14:15:00.000Z');
+    expect(result.cfg.load_W.slice(0, 3)).toEqual([20, 30, 40]);
+    expect(result.cfg.importPrice.slice(0, 3)).toEqual([2, 3, 4]);
   });
 });
