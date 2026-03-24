@@ -4,6 +4,13 @@ import type { PlanRowWithDess } from '../types.ts';
 
 let victronClient: VictronMqttClient | null = null;
 
+function toVictronStrategy(strategy: number): number {
+  // GX stable releases document 0=follow target SoC and 1=self-consume.
+  // Keep our richer internal planner strategies, but publish a compatible
+  // subset so TargetSoc is honored consistently on the device.
+  return strategy === 1 ? 1 : 0;
+}
+
 function getVictronClient(): VictronMqttClient {
   if (!victronClient) {
     const host = process.env.MQTT_HOST ?? 'venus.local';
@@ -60,6 +67,7 @@ export async function readVictronSocLimits({ timeoutMs }: { timeoutMs?: number }
 // DESS Mode 4 = Custom/Node-RED mode: VRM cloud stops sending schedules
 // and the local GX daemon watches our schedule slots instead.
 const DESS_MODE_CUSTOM = 4;
+const DEFAULT_SLOT_SECONDS = 15 * 60;
 
 /**
  * Ensure Dynamic ESS is in Mode 4 (Custom).
@@ -122,7 +130,9 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
 
   const nSlots = Math.min(slotCount, rows.length);
   const tasks = [];
-  const stepSeconds = (rows[1].timestampMs - rows[0].timestampMs) / 1000;
+  const stepSeconds = rows.length > 1
+    ? (rows[1].timestampMs - rows[0].timestampMs) / 1000
+    : DEFAULT_SLOT_SECONDS;
 
   for (let i = 0; i < nSlots; i += 1) {
     const row = rows[i];
@@ -130,7 +140,7 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
     const slot = {
       startEpoch: Math.round(row.timestampMs / 1000),
       durationSeconds: stepSeconds,
-      strategy: row.dess.strategy,
+      strategy: toVictronStrategy(row.dess.strategy),
       flags: row.dess.flags,
       socTarget: Math.round(row.dess.socTarget_percent),
       restrictions: row.dess.restrictions,

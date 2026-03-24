@@ -138,12 +138,24 @@ describe('mqtt-service — schedule slot writing', () => {
       expect.objectContaining({
         startEpoch: Math.round(rows[0].timestampMs / 1000),
         durationSeconds: 900, // 15-min slots
-        strategy: 3,
+        strategy: 0, // proGrid is down-mapped to Victron's target-SOC strategy
         flags: 0,
         socTarget: 86, // rounded from 85.7
         restrictions: 1,
         allowGridFeedIn: 0,
       }),
+      { serial: 'test-serial-123' },
+    );
+  });
+
+  it('keeps selfConsumption as strategy 1 for Victron', async () => {
+    const rows = [makeRow(0, { dess: { feedin: 1, restrictions: 0, strategy: 1, flags: 0, socTarget_percent: 50 } })];
+
+    await setDynamicEssSchedule(rows, 1);
+
+    expect(mockWriteScheduleSlot).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ strategy: 1 }),
       { serial: 'test-serial-123' },
     );
   });

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.6 - 2026-03-24
+
+- Fix Dynamic ESS target SoC writes by publishing Victron-compatible strategy codes in MQTT schedule slots, so non-zero `TargetSoc` values are honored again and charging/discharging follows the planned target
+- Fix single-slot DESS schedule writes by falling back to the default 15-minute duration when only one row is available
+
 ## 0.6.5 - 2026-03-24
 
 - Align auto-calculate to real wall-clock boundaries so 15-minute runs happen on `:00`, `:15`, `:30`, and `:45` instead of drifting from startup time
