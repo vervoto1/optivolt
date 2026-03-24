@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { getRecentSnapshots } from './plan-history-store.ts';
-import { loadSocSamples, findClosestSample } from './soc-tracker.ts';
+import { loadSocSamples, findLatestSampleAtOrBefore } from './soc-tracker.ts';
 import type { CalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
 
 const DATA_DIR = resolveDataDir();
@@ -237,8 +237,8 @@ function collectRatios(
     if (slot.timestampMs > now) break;
 
     // Find actual SoC samples at both slot boundaries
-    const prevSample = findClosestSample(samples, prevSlot.timestampMs);
-    const curSample = findClosestSample(samples, slot.timestampMs);
+    const prevSample = findLatestSampleAtOrBefore(samples, prevSlot.timestampMs);
+    const curSample = findLatestSampleAtOrBefore(samples, slot.timestampMs);
     if (!prevSample || !curSample) continue;
 
     // Skip slots where load or PV deviated from prediction (confound filter)

@@ -33,7 +33,14 @@ vi.mock('../../../api/services/data-store.ts', () => ({
   })),
 }));
 
-import { loadSocSamples, findClosestSample, sampleAndStoreSoc, getRecentSamples, clearSocSamples } from '../../../api/services/soc-tracker.ts';
+import {
+  loadSocSamples,
+  findClosestSample,
+  findLatestSampleAtOrBefore,
+  sampleAndStoreSoc,
+  getRecentSamples,
+  clearSocSamples,
+} from '../../../api/services/soc-tracker.ts';
 import { _reset, readJson } from '../../../api/services/json-store.ts';
 import { loadData } from '../../../api/services/data-store.ts';
 import { readVictronSocPercent } from '../../../api/services/mqtt-service.ts';
@@ -78,6 +85,18 @@ describe('soc-tracker', () => {
     expect(stored[0].soc_percent).toBe(65);
   });
 
+  it('stores the actual measurement timestamp instead of flooring to slot start', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T12:03:00.000Z'));
+
+    const sample = await sampleAndStoreSoc();
+
+    expect(sample).not.toBeNull();
+    expect(new Date(sample.timestampMs).toISOString()).toBe('2024-01-01T12:03:00.000Z');
+
+    vi.useRealTimers();
+  });
+
   it('accumulates multiple samples', async () => {
     await sampleAndStoreSoc();
     await sampleAndStoreSoc();
@@ -113,6 +132,29 @@ describe('findClosestSample', () => {
 
   it('returns null for empty samples', () => {
     const result = findClosestSample([], 1000);
+    expect(result).toBeNull();
+  });
+});
+
+describe('findLatestSampleAtOrBefore', () => {
+  const samples = [
+    { timestampMs: 1000, soc_percent: 50 },
+    { timestampMs: 2000, soc_percent: 55 },
+    { timestampMs: 3000, soc_percent: 60 },
+  ];
+
+  it('returns the latest sample at or before the target', () => {
+    const result = findLatestSampleAtOrBefore(samples, 2500, 1000);
+    expect(result).toEqual({ timestampMs: 2000, soc_percent: 55 });
+  });
+
+  it('returns null when only future samples exist', () => {
+    const result = findLatestSampleAtOrBefore(samples, 500, 1000);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the latest prior sample is outside max lag', () => {
+    const result = findLatestSampleAtOrBefore(samples, 4500, 1000);
     expect(result).toBeNull();
   });
 });

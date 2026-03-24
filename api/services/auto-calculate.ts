@@ -5,6 +5,7 @@ import { calibrate } from './efficiency-calibrator.ts';
 import { loadSettings } from './settings-store.ts';
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
+let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 let calculating = false;
 
 const MIN_INTERVAL_MINUTES = 1;
@@ -21,26 +22,32 @@ export function startAutoCalculate(settings: Settings): void {
 
   const minutes = Math.max(MIN_INTERVAL_MINUTES, config.intervalMinutes ?? 15);
   const intervalMs = minutes * 60_000;
+  const initialDelayMs = getDelayToNextBoundary(Date.now(), intervalMs);
 
-  console.log(`[auto-calculate] started (every ${minutes} min)`);
+  console.log(`[auto-calculate] started (every ${minutes} min, first run in ${Math.round(initialDelayMs / 1000)}s)`);
 
-  // Fire first calculation immediately (non-blocking)
-  runTick(config.updateData, config.writeToVictron);
-
-  intervalHandle = setInterval(() => {
+  timeoutHandle = setTimeout(() => {
+    timeoutHandle = null;
     runTick(config.updateData, config.writeToVictron);
-  }, intervalMs);
+    intervalHandle = setInterval(() => {
+      runTick(config.updateData, config.writeToVictron);
+    }, intervalMs);
+  }, initialDelayMs);
 }
 
 /**
  * Stop the auto-calculate timer if running.
  */
 export function stopAutoCalculate(): void {
+  if (timeoutHandle !== null) {
+    clearTimeout(timeoutHandle);
+    timeoutHandle = null;
+  }
   if (intervalHandle !== null) {
     clearInterval(intervalHandle);
     intervalHandle = null;
-    console.log('[auto-calculate] stopped');
   }
+  console.log('[auto-calculate] stopped');
 }
 
 async function runTick(updateData: boolean, writeToVictron: boolean): Promise<void> {
@@ -86,5 +93,10 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
  * Check if the timer is currently running (for testing).
  */
 export function isAutoCalculateRunning(): boolean {
-  return intervalHandle !== null;
+  return timeoutHandle !== null || intervalHandle !== null;
+}
+
+function getDelayToNextBoundary(nowMs: number, intervalMs: number): number {
+  const remainder = nowMs % intervalMs;
+  return remainder === 0 ? intervalMs : intervalMs - remainder;
 }

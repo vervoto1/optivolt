@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.5 - 2026-03-24
+
+- Align auto-calculate to real wall-clock boundaries so 15-minute runs happen on `:00`, `:15`, `:30`, and `:45` instead of drifting from startup time
+- Preserve actual SoC measurement timestamps and only match plan-accuracy/calibration slots to samples at or before the slot boundary, preventing later readings from being attributed to earlier timestamps
+
 ## 0.6.4 - 2026-03-23
 
 - Fix live plan timing alignment: plans created mid-slot now start at the next quarter-hour boundary instead of the already-partially-elapsed slot, preventing predicted SoC from appearing 15 minutes early during discharge accuracy comparisons

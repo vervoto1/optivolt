@@ -52,20 +52,20 @@ export async function sampleAndStoreSoc(): Promise<SocSample | null> {
     return null;
   }
 
-  // Align timestamp to quarter-hour boundary to match plan slot timestamps
-  const nowMs = getQuarterStart(new Date());
+  const measuredAtMs = Date.now();
+  const slotStartMs = getQuarterStart(measuredAtMs);
   let actualLoad_W: number | undefined;
   let actualPv_W: number | undefined;
   try {
     const data = await loadData();
-    actualLoad_W = lookupTimeSeriesValue(data.load, nowMs) ?? undefined;
-    actualPv_W = lookupTimeSeriesValue(data.pv, nowMs) ?? undefined;
+    actualLoad_W = lookupTimeSeriesValue(data.load, slotStartMs) ?? undefined;
+    actualPv_W = lookupTimeSeriesValue(data.pv, slotStartMs) ?? undefined;
   } catch {
     // Non-critical: proceed without actual load/PV
   }
 
   const sample: SocSample = {
-    timestampMs: nowMs,
+    timestampMs: measuredAtMs,
     soc_percent,
     actualLoad_W,
     actualPv_W,
@@ -103,6 +103,29 @@ export function findClosestSample(
   }
 
   return best && bestDist <= toleranceMs ? best : null;
+}
+
+/**
+ * Find the latest sample at or before a target timestamp.
+ * Used for slot-boundary comparisons so a measurement taken after the boundary
+ * does not get attributed to an earlier slot.
+ */
+export function findLatestSampleAtOrBefore(
+  samples: SocSample[],
+  targetMs: number,
+  maxLagMs = 10 * 60_000,
+): SocSample | null {
+  let best: SocSample | null = null;
+
+  for (const s of samples) {
+    if (s.timestampMs > targetMs) continue;
+    if (targetMs - s.timestampMs > maxLagMs) continue;
+    if (!best || s.timestampMs > best.timestampMs) {
+      best = s;
+    }
+  }
+
+  return best;
 }
 
 /**

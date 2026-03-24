@@ -12,17 +12,14 @@ vi.mock('../../../api/services/plan-history-store.ts', () => ({
 
 vi.mock('../../../api/services/soc-tracker.ts', () => ({
   loadSocSamples: vi.fn(async () => mockSamples),
-  findClosestSample: vi.fn((samples, targetMs, toleranceMs = 10 * 60_000) => {
+  findLatestSampleAtOrBefore: vi.fn((samples, targetMs, maxLagMs = 10 * 60_000) => {
     let best = null;
-    let bestDist = Infinity;
     for (const s of samples) {
-      const dist = Math.abs(s.timestampMs - targetMs);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = s;
-      }
+      if (s.timestampMs > targetMs) continue;
+      if (targetMs - s.timestampMs > maxLagMs) continue;
+      if (!best || s.timestampMs > best.timestampMs) best = s;
     }
-    return best && bestDist <= toleranceMs ? best : null;
+    return best;
   }),
 }));
 

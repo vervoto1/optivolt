@@ -1,5 +1,5 @@
 import { getLatestSnapshot, getRecentSnapshots } from './plan-history-store.ts';
-import { loadSocSamples, findClosestSample } from './soc-tracker.ts';
+import { loadSocSamples, findLatestSampleAtOrBefore } from './soc-tracker.ts';
 import type { PlanAccuracyReport, SlotDeviation, PlanSnapshot, SocSample } from '../types.ts';
 
 /**
@@ -31,7 +31,7 @@ export function evaluatePlan(
     // Only evaluate elapsed slots
     if (slot.timestampMs > now) break;
 
-    const sample = findClosestSample(samples, slot.timestampMs);
+    const sample = findLatestSampleAtOrBefore(samples, slot.timestampMs);
     if (!sample) continue;
 
     const deviation = sample.soc_percent - slot.predictedSoc_percent;
