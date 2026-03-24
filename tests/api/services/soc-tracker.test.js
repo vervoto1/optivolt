@@ -143,19 +143,34 @@ describe('findLatestSampleAtOrBefore', () => {
     { timestampMs: 3000, soc_percent: 60 },
   ];
 
-  it('returns the latest sample at or before the target', () => {
+  it('returns the closest sample near the target, preferring prior samples when appropriate', () => {
     const result = findLatestSampleAtOrBefore(samples, 2500, 1000);
     expect(result).toEqual({ timestampMs: 2000, soc_percent: 55 });
   });
 
   it('returns null when only future samples exist', () => {
-    const result = findLatestSampleAtOrBefore(samples, 500, 1000);
+    const result = findLatestSampleAtOrBefore(samples, 500, 1000, 200);
     expect(result).toBeNull();
   });
 
   it('returns null when the latest prior sample is outside max lag', () => {
     const result = findLatestSampleAtOrBefore(samples, 4500, 1000);
     expect(result).toBeNull();
+  });
+
+  it('accepts a sample taken shortly after the slot boundary', () => {
+    const result = findLatestSampleAtOrBefore(samples, 2000, 1000, 1500);
+    expect(result).toEqual({ timestampMs: 2000, soc_percent: 55 });
+  });
+
+  it('uses a slightly late boundary sample when no recent prior sample exists', () => {
+    const result = findLatestSampleAtOrBefore(samples, 2800, 500, 500);
+    expect(result).toEqual({ timestampMs: 3000, soc_percent: 60 });
+  });
+
+  it('rejects samples taken too far after the slot boundary', () => {
+    const result = findLatestSampleAtOrBefore(samples, 1500, 1000, 200);
+    expect(result).toEqual({ timestampMs: 1000, soc_percent: 50 });
   });
 });
 

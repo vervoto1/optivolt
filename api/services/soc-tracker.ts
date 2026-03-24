@@ -114,18 +114,29 @@ export function findLatestSampleAtOrBefore(
   samples: SocSample[],
   targetMs: number,
   maxLagMs = 10 * 60_000,
+  maxLeadMs = 2 * 60_000,
 ): SocSample | null {
-  let best: SocSample | null = null;
+  let bestPrior: SocSample | null = null;
+  let bestNearFuture: SocSample | null = null;
 
   for (const s of samples) {
-    if (s.timestampMs > targetMs) continue;
-    if (targetMs - s.timestampMs > maxLagMs) continue;
-    if (!best || s.timestampMs > best.timestampMs) {
-      best = s;
+    const deltaMs = s.timestampMs - targetMs;
+    if (deltaMs <= 0) {
+      if (deltaMs < -maxLagMs) continue;
+      if (!bestPrior || s.timestampMs > bestPrior.timestampMs) {
+        bestPrior = s;
+      }
+      continue;
+    }
+
+    if (deltaMs <= maxLeadMs) {
+      if (!bestNearFuture || s.timestampMs < bestNearFuture.timestampMs) {
+        bestNearFuture = s;
+      }
     }
   }
 
-  return best;
+  return bestPrior ?? bestNearFuture;
 }
 
 /**

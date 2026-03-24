@@ -11,8 +11,7 @@ import { saveData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
-import { extractWindow } from '../../lib/time-series-utils.ts';
-import { getNextQuarterStart } from '../../lib/time-series-utils.ts';
+import { extractWindow, getNextQuarterStart } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 
@@ -155,14 +154,17 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const snapshotCreatedAtMs = Date.now();
   const snapshotStartMs = getNextQuarterStart(snapshotCreatedAtMs, cfg.stepSize_m);
   const snapshotSlots = rowsWithDess
-    .map((row, index) => ({ row, index }))
+    .map((row, index) => ({
+      row,
+      predictedSoc_percent: index === 0 ? cfg.initialSoc_percent : rowsWithDess[index - 1].soc_percent,
+    }))
     .filter(({ row }) => row.timestampMs >= snapshotStartMs)
-    .map(({ row, index }) => ({
+    .map(({ row, predictedSoc_percent }) => ({
       timestampMs: row.timestampMs,
       // soc_percent from the solver is end-of-slot (after flows); shift back
       // so predictedSoc_percent represents start-of-slot (before flows),
       // matching the actual SoC measurement taken at the slot start time.
-      predictedSoc_percent: index === 0 ? cfg.initialSoc_percent : rowsWithDess[index - 1].soc_percent,
+      predictedSoc_percent,
       chargePower_W: row.g2b + row.pv2b,
       dischargePower_W: row.b2l + row.b2g,
       predictedLoad_W: row.load,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.8 - 2026-03-24
+
+- Fix charge/discharge prediction accuracy data collection after the boundary-aligned scheduler change by accepting slight post-boundary SoC samples for slot comparisons while still preferring valid prior samples
+- Restore adaptive-learning calibration updates for quarter-boundary ticks by applying the same near-boundary SoC matching rule during ratio collection
+- Clean up plan snapshot code in the planner by simplifying the predicted SoC mapping and consolidating the duplicated time-series import
+
 ## 0.6.7 - 2026-03-24
 
 - Fix Dynamic ESS target SoC spiking introduced in `0.6.4` by restoring live steering to the current slot boundary while keeping plan-history snapshots aligned to the next full slot for reporting

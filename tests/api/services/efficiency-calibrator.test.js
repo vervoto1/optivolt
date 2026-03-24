@@ -12,14 +12,21 @@ vi.mock('../../../api/services/plan-history-store.ts', () => ({
 
 vi.mock('../../../api/services/soc-tracker.ts', () => ({
   loadSocSamples: vi.fn(async () => mockSamples),
-  findLatestSampleAtOrBefore: vi.fn((samples, targetMs, maxLagMs = 10 * 60_000) => {
-    let best = null;
+  findLatestSampleAtOrBefore: vi.fn((samples, targetMs, maxLagMs = 10 * 60_000, maxLeadMs = 2 * 60_000) => {
+    let bestPrior = null;
+    let bestNearFuture = null;
     for (const s of samples) {
-      if (s.timestampMs > targetMs) continue;
-      if (targetMs - s.timestampMs > maxLagMs) continue;
-      if (!best || s.timestampMs > best.timestampMs) best = s;
+      const deltaMs = s.timestampMs - targetMs;
+      if (deltaMs <= 0) {
+        if (deltaMs < -maxLagMs) continue;
+        if (!bestPrior || s.timestampMs > bestPrior.timestampMs) bestPrior = s;
+        continue;
+      }
+      if (deltaMs <= maxLeadMs) {
+        if (!bestNearFuture || s.timestampMs < bestNearFuture.timestampMs) bestNearFuture = s;
+      }
     }
-    return best;
+    return bestPrior ?? bestNearFuture;
   }),
 }));
 
@@ -235,6 +242,27 @@ describe('efficiency-calibrator', () => {
     expect(savedCalibration.chargeCurve).toHaveLength(100);
     expect(savedCalibration.dischargeCurve).toHaveLength(100);
     expect(savedCalibration.lastCalibratedMs).toBeGreaterThan(0);
+  });
+
+  it('accepts SoC samples taken shortly after each slot boundary', async () => {
+    const base = Date.now() - 5 * 24 * 60 * 60_000;
+    const step = 15 * 60_000;
+
+    mockSnapshots.push(makeSnapshot([
+      { timestampMs: base, predictedSoc_percent: 50, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+      { timestampMs: base + step, predictedSoc_percent: 55, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+      { timestampMs: base + 2 * step, predictedSoc_percent: 60, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+    ], base));
+
+    mockSamples.push(
+      { timestampMs: base + 30_000, soc_percent: 50, actualLoad_W: 500, actualPv_W: 0 },
+      { timestampMs: base + step + 30_000, soc_percent: 54, actualLoad_W: 500, actualPv_W: 0 },
+      { timestampMs: base + 2 * step + 30_000, soc_percent: 58, actualLoad_W: 500, actualPv_W: 0 },
+    );
+
+    const result = await calibrate(1);
+    expect(result).not.toBeNull();
+    expect(result.sampleCount).toBeGreaterThan(0);
   });
 });
 

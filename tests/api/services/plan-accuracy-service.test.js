@@ -11,14 +11,21 @@ vi.mock('../../../api/services/plan-history-store.ts', () => ({
 
 vi.mock('../../../api/services/soc-tracker.ts', () => ({
   loadSocSamples: vi.fn(async () => mockSocSamples),
-  findLatestSampleAtOrBefore: vi.fn((samples, targetMs, maxLagMs = 10 * 60_000) => {
-    let best = null;
+  findLatestSampleAtOrBefore: vi.fn((samples, targetMs, maxLagMs = 10 * 60_000, maxLeadMs = 2 * 60_000) => {
+    let bestPrior = null;
+    let bestNearFuture = null;
     for (const s of samples) {
-      if (s.timestampMs > targetMs) continue;
-      if (targetMs - s.timestampMs > maxLagMs) continue;
-      if (!best || s.timestampMs > best.timestampMs) best = s;
+      const deltaMs = s.timestampMs - targetMs;
+      if (deltaMs <= 0) {
+        if (deltaMs < -maxLagMs) continue;
+        if (!bestPrior || s.timestampMs > bestPrior.timestampMs) bestPrior = s;
+        continue;
+      }
+      if (deltaMs <= maxLeadMs) {
+        if (!bestNearFuture || s.timestampMs < bestNearFuture.timestampMs) bestNearFuture = s;
+      }
     }
-    return best;
+    return bestPrior ?? bestNearFuture;
   }),
 }));
 
@@ -114,12 +121,36 @@ describe('plan-accuracy-service', () => {
     expect(report.deviations[0].actualSoc_percent).toBe(58);
   });
 
-  it('does not use a sample taken after the slot timestamp', () => {
+  it('accepts a sample taken shortly after the slot timestamp', () => {
     const now = Date.now();
     const step = 15 * 60_000;
 
     const snapshot = {
-      planId: 'future-sample',
+      planId: 'near-boundary-sample',
+      createdAtMs: now - 2 * step,
+      initialSoc_percent: 50,
+      slots: [
+        { timestampMs: now - step, predictedSoc_percent: 55 },
+      ],
+      config: {},
+    };
+
+    const samples = [
+      { timestampMs: now - step + 30_000, soc_percent: 58 },
+    ];
+
+    const report = evaluatePlan(snapshot, samples);
+    expect(report).not.toBeNull();
+    expect(report.slotsCompared).toBe(1);
+    expect(report.deviations[0].actualSoc_percent).toBe(58);
+  });
+
+  it('still rejects a sample taken too far after the slot timestamp', () => {
+    const now = Date.now();
+    const step = 15 * 60_000;
+
+    const snapshot = {
+      planId: 'late-sample',
       createdAtMs: now - 2 * step,
       initialSoc_percent: 50,
       slots: [
