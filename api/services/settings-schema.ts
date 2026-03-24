@@ -172,13 +172,13 @@ export function normalizeSettings(settings: Settings): Settings {
 function normalizeDataSources(dataSources: DataSources): DataSources {
   assertObject(dataSources, 'dataSources');
   return {
-    load: expectEnum(dataSources.load, ['vrm', 'api', 'ha'], 'dataSources.load'),
-    pv: expectEnum(dataSources.pv, ['vrm', 'api', 'ha'], 'dataSources.pv'),
-    prices: expectEnum(dataSources.prices, ['vrm', 'api', 'ha'], 'dataSources.prices'),
-    soc: expectEnum(dataSources.soc, ['mqtt', 'api'], 'dataSources.soc'),
+    load: expectEnum(dataSources.load, ['vrm', 'api', 'ha'] as const, 'dataSources.load'),
+    pv: expectEnum(dataSources.pv, ['vrm', 'api', 'ha'] as const, 'dataSources.pv'),
+    prices: expectEnum(dataSources.prices, ['vrm', 'api', 'ha'] as const, 'dataSources.prices'),
+    soc: expectEnum(dataSources.soc, ['mqtt', 'api'] as const, 'dataSources.soc'),
     evLoad: dataSources.evLoad == null
       ? undefined
-      : expectEnum(dataSources.evLoad, ['vrm', 'api', 'ha'], 'dataSources.evLoad'),
+      : expectEnum(dataSources.evLoad, ['vrm', 'api', 'ha'] as const, 'dataSources.evLoad'),
   };
 }
 
@@ -259,4 +259,3 @@ export function sanitizeSettingsResponse(settings: Settings): Omit<Settings, 'ha
   const { haToken, ...rest } = settings;
   return { ...rest, hasHaToken: haToken.length > 0 };
 }
-
