@@ -15,6 +15,7 @@ export default defineConfig({
         '**/types.ts',
         'api/index.ts',
         'api/defaults/**',
+        'tests/**',
       ],
     },
   },
