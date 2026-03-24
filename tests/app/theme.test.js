@@ -149,8 +149,6 @@ describe('theme.js', () => {
   it('works without themeToggle button', async () => {
     setupDOM({ prefersDark: true });
     document.body.innerHTML = ''; // remove button
-    // Re-add without button
-    const newBtn = null; // no button
     await loadTheme();
     expect(root.classList.contains('dark')).toBe(true);
   });
