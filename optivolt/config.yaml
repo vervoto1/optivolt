@@ -1,6 +1,6 @@
 name: Optivolt
 slug: optivolt
-version: "0.6.8"
+version: "0.6.9"
 description: Plan and control Victron ESS with forecasts & dynamic tariffs!
 url: https://github.com/vervoto1/optivolt
 image: "ghcr.io/vervoto1/{arch}-addon-optivolt"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.9 - 2026-03-25
+
+- Add totals row (Σ) to schedule table showing per-column energy totals in kWh with color-tinted chips
+- Move power flows chart to full-width layout above sidebar for better day-view readability
+- Cherry-picked from upstream PR #83, adapted to preserve 15m bars toggle
+
 ## 0.6.8 - 2026-03-24
 
 - Fix charge/discharge prediction accuracy data collection after the boundary-aligned scheduler change by accepting slight post-boundary SoC samples for slot comparisons while still preferring valid prior samples
