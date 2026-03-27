@@ -324,6 +324,7 @@ export function generateThresholdsFromCurve(
   basePower_W: number,
   direction: 'charge' | 'discharge',
   minSamples = 2,
+  maxThresholds = MAX_THRESHOLDS,
 ): { soc_percent: number; power_W: number }[] {
   const segmentWidth = Math.ceil(SOC_BANDS / NUM_SEGMENTS);
   const candidates: { soc_percent: number; power_W: number; reduction: number }[] = [];
@@ -357,9 +358,9 @@ export function generateThresholdsFromCurve(
   }
 
   // Cap at MAX_THRESHOLDS, keeping the largest reductions
-  if (candidates.length > MAX_THRESHOLDS) {
+  if (candidates.length > maxThresholds) {
     candidates.sort((a, b) => b.reduction - a.reduction);
-    candidates.length = MAX_THRESHOLDS;
+    candidates.length = maxThresholds;
   }
 
   // Sort by soc_percent: ascending for charge, descending for discharge

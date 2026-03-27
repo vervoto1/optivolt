@@ -126,4 +126,80 @@ describe('Prediction route contracts', () => {
     expect(res.status).toBe(200);
     expect(runForecast).toHaveBeenCalledWith(expect.objectContaining({ includeRecent: false }));
   });
+
+  it('POST /predictions/pv/forecast returns PV forecast data', async () => {
+    const res = await post(predictionsRouter, '/pv/forecast', {});
+    expect(res.status).toBe(200);
+    expect(res.body.forecast.values).toHaveLength(96);
+    expect(runPvForecast).toHaveBeenCalled();
+  });
+
+  it('POST /predictions/forecast with ?recent=false passes includeRecent=false to load forecast', async () => {
+    const res = await post(predictionsRouter, '/forecast?recent=false', {});
+    expect(res.status).toBe(200);
+    expect(runForecast).toHaveBeenCalledWith(expect.objectContaining({ includeRecent: false }));
+  });
+
+  it('POST /predictions/forecast returns null PV when pvConfig has invalid coordinates', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      pvConfig: { latitude: NaN, longitude: NaN, azimuth: 180, tilt: 35 },
+    });
+
+    const res = await post(predictionsRouter, '/forecast', {});
+    expect(res.status).toBe(200);
+    expect(res.body.pv).toBeNull();
+    expect(res.body.load).toBeTruthy();
+    expect(runPvForecast).not.toHaveBeenCalled();
+  });
+
+  it('POST /predictions/load/forecast passes through generic non-connection errors as 500', async () => {
+    runForecast.mockRejectedValueOnce(new Error('data processing failed'));
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/load/forecast maps connection refused to 502', async () => {
+    runForecast.mockRejectedValueOnce(new Error('connection refused'));
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(502);
+  });
+
+  // --- Coverage: predictions.ts catch blocks and branches ---
+
+  it('GET /predictions/config returns 500 when loadPredictionConfig rejects', async () => {
+    loadPredictionConfig.mockRejectedValueOnce(new Error('disk read failed'));
+    const res = await get(predictionsRouter, '/config');
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/config returns 500 when savePredictionConfig rejects', async () => {
+    savePredictionConfig.mockRejectedValueOnce(new Error('disk write failed'));
+    const res = await post(predictionsRouter, '/config', { sensors: [] });
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/validate re-throws non-connection errors from runValidation', async () => {
+    runValidation.mockRejectedValueOnce(new Error('unexpected parse error'));
+    const res = await post(predictionsRouter, '/validate', {});
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/validate handles non-Error throwable from runValidation', async () => {
+    runValidation.mockRejectedValueOnce('string error');
+    const res = await post(predictionsRouter, '/validate', {});
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/load/forecast with ?recent=false passes includeRecent=false', async () => {
+    const res = await post(predictionsRouter, '/load/forecast?recent=false', {});
+    expect(res.status).toBe(200);
+    expect(runForecast).toHaveBeenCalledWith(expect.objectContaining({ includeRecent: false }));
+  });
+
+  it('POST /predictions/validate maps auth errors from runValidation to 502', async () => {
+    runValidation.mockRejectedValueOnce(new Error('HA authentication failed'));
+    const res = await post(predictionsRouter, '/validate', {});
+    expect(res.status).toBe(502);
+  });
 });

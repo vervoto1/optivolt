@@ -468,6 +468,64 @@ describe('updateSummaryUI', () => {
     updateSummaryUI(els, null); // no error
     updateSummaryUI(els, { loadTotal_kWh: 10 }); // no error
   });
+
+  it('updateStackedBarContainer creates no segments when total <= 0', () => {
+    document.body.innerHTML = `
+      <div id="load-split-bar" style="display:flex"></div>
+      <div id="flow-split-bar" style="display:flex"></div>
+    `;
+    const els = makeSummaryEls();
+    updateSummaryUI(els, {
+      loadTotal_kWh: 0, pvTotal_kWh: 0, evLoadTotal_kWh: 0,
+      loadFromGrid_kWh: 0, loadFromBattery_kWh: 0, loadFromPv_kWh: 0,
+      avgImportPrice_cents_per_kWh: 0,
+      gridBatteryTippingPoint_cents_per_kWh: 0,
+      gridChargeTippingPoint_cents_per_kWh: 0,
+      batteryExportTippingPoint_cents_per_kWh: 0,
+      gridToBattery_kWh: 0, batteryToGrid_kWh: 0,
+    });
+    const loadBar = document.getElementById('load-split-bar');
+    expect(loadBar.children.length).toBe(0);
+    document.body.innerHTML = '';
+  });
+
+  it('updateStackedBarContainer skips segments with pct <= 0', () => {
+    document.body.innerHTML = `
+      <div id="load-split-bar" style="display:flex"></div>
+      <div id="flow-split-bar" style="display:flex"></div>
+    `;
+    const els = makeSummaryEls();
+    // Only grid contributes, battery and PV are zero
+    updateSummaryUI(els, {
+      loadTotal_kWh: 10, pvTotal_kWh: 0, evLoadTotal_kWh: 0,
+      loadFromGrid_kWh: 10, loadFromBattery_kWh: 0, loadFromPv_kWh: 0,
+      avgImportPrice_cents_per_kWh: 10,
+      gridBatteryTippingPoint_cents_per_kWh: 5,
+      gridChargeTippingPoint_cents_per_kWh: 3,
+      batteryExportTippingPoint_cents_per_kWh: 12,
+      gridToBattery_kWh: 0, batteryToGrid_kWh: 0,
+    });
+    const loadBar = document.getElementById('load-split-bar');
+    // Only grid segment should appear (battery=0 and pv=0 are skipped)
+    expect(loadBar.children.length).toBe(1);
+    document.body.innerHTML = '';
+  });
+
+  it('setIfDef skips null values via hydrateUI', () => {
+    const els = makeEls();
+    els.idleDrain.value = 'original';
+    // hydrateUI calls setIfDef; null/undefined values should be skipped
+    hydrateUI(els, { idleDrain_W: null });
+    expect(els.idleDrain.value).toBe('original');
+  });
+
+  it('setIfDef skips undefined values via hydrateUI', () => {
+    const els = makeEls();
+    els.step.value = 'original';
+    // When the property is not in the object, setIfDef receives undefined and skips
+    hydrateUI(els, {});
+    expect(els.step.value).toBe('original');
+  });
 });
 
 describe('updateTerminalCustomUI', () => {

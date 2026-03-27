@@ -232,6 +232,69 @@ describe('predictions-validation', () => {
     expect(document.getElementById('pred-chart-section').hidden).toBe(false);
   });
 
+  it('Chart button clicked twice destroys previous charts before recreating', async () => {
+    // Setup: mock data with validationPredictions so charts get created
+    savePredictionConfig.mockResolvedValue({});
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        {
+          sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean',
+          mae: 50, rmse: 60, mape: 10, n: 96,
+          validationPredictions: [
+            { date: '2024-01-15', hour: 8, actual: 1000, predicted: 1050 },
+            { date: '2024-01-15', hour: 9, actual: 1200, predicted: 1100 },
+          ],
+        },
+      ],
+    });
+
+    const readFormValues = vi.fn(() => ({}));
+    initValidation({ readFormValues, renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.btn-chart')).toBeTruthy();
+    });
+
+    // First click creates charts
+    document.querySelector('.btn-chart').click();
+
+    // Second click should destroy existing charts then recreate
+    document.querySelector('.btn-chart').click();
+
+    // Charts should still be visible (recreated after destroy)
+    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  });
+
+  it('sorts metrics table with NaN mae entries pushed to the end', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 2, dayFilter: 'all', aggregation: 'mean', mae: NaN, rmse: NaN, mape: NaN, n: 0, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 100, rmse: 120, mape: 15, n: 96, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 8, dayFilter: 'same', aggregation: 'median', mae: 50, rmse: 60, mape: 10, n: 192, validationPredictions: [] },
+      ],
+    });
+
+    const readFormValues = vi.fn(() => ({}));
+    initValidation({ readFormValues, renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      const rows = document.querySelectorAll('#pred-metrics-body tr');
+      expect(rows.length).toBe(3);
+      // Sorted by mae ascending: 50, 100, NaN
+      // mae is in 4th column (index 3) — first row should be lowest mae
+      const firstMae = rows[0].querySelectorAll('td')[3]?.textContent;
+      expect(firstMae).toContain('50');
+      // Last row should be NaN (rendered as —)
+      const lastMae = rows[2].querySelectorAll('td')[3]?.textContent;
+      expect(lastMae).toBe('—');
+    });
+  });
+
   it('works when pred-run-validation button missing', () => {
     document.body.innerHTML = '';
     initValidation({ readFormValues: vi.fn(), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });

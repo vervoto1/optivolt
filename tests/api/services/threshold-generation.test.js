@@ -228,6 +228,41 @@ describe('generateThresholdsFromCurve', () => {
     expect(result).toEqual([]);
   });
 
+  it('truncates candidates to maxThresholds, keeping the largest reductions', () => {
+    // All 4 charge segments (4–7) produce candidates with different reductions.
+    // By passing maxThresholds=2 we force the truncation branch (lines 360-362).
+    // Segment boundaries (width=13): seg4=52-64, seg5=65-77, seg6=78-90, seg7=91-99
+    const curve = new Array(100).fill(1.0);
+    // Assign distinct reduction levels per segment so we can verify which survive:
+    // seg4 (52-64): ratio 0.90 → reduction 0.10 (smallest, should be dropped)
+    for (let i = 52; i < 65; i++) curve[i] = 0.90;
+    // seg5 (65-77): ratio 0.80 → reduction 0.20
+    for (let i = 65; i < 78; i++) curve[i] = 0.80;
+    // seg6 (78-90): ratio 0.60 → reduction 0.40 (largest, should be kept)
+    for (let i = 78; i < 91; i++) curve[i] = 0.60;
+    // seg7 (91-99): ratio 0.70 → reduction 0.30
+    for (let i = 91; i < 100; i++) curve[i] = 0.70;
+
+    const result = generateThresholdsFromCurve(
+      curve,
+      flatSamples(10),
+      4000,
+      'charge',
+      2,    // minSamples
+      2,    // maxThresholds — forces truncation since 4 candidates > 2
+    );
+
+    // Should be truncated to exactly 2
+    expect(result).toHaveLength(2);
+
+    // The two largest reductions are seg6 (0.40) and seg7 (0.30).
+    // After truncation they are re-sorted ascending by soc_percent for charge.
+    expect(result[0].soc_percent).toBe(78);  // seg6 boundary
+    expect(result[0].power_W).toBe(Math.round(4000 * 0.60));
+    expect(result[1].soc_percent).toBe(91);  // seg7 boundary
+    expect(result[1].power_W).toBe(Math.round(4000 * 0.70));
+  });
+
   it('does not create charge thresholds from low-SoC reductions', () => {
     const curve = new Array(100).fill(1.0);
     for (let i = 0; i < 13; i++) curve[i] = 0.6;

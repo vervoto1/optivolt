@@ -596,4 +596,56 @@ describe('Route contracts', () => {
       details: { field: 'x' },
     });
   });
+
+  it('app.ts error handler includes details when expose=true and details set', async () => {
+    // Import fresh app.ts and its HttpError to avoid class identity issues
+    vi.resetModules();
+    const { default: app } = await import('../../api/app.ts');
+    const { HttpError: FreshHttpError } = await import('../../api/http-errors.ts');
+
+    // Extract the error handler (last 4-arg middleware in Express 5 router stack)
+    const errLayer = [...app.router.stack].reverse().find(l => l.handle && l.handle.length === 4);
+
+    const mockReq = { method: 'POST', originalUrl: '/test' };
+    const captured = {};
+    const mockRes = {
+      status(code) { captured.status = code; return mockRes; },
+      json(body) { captured.body = body; },
+    };
+
+    errLayer.handle(
+      new FreshHttpError(422, 'Validation failed', { expose: true, details: { field: 'email' } }),
+      mockReq, mockRes, () => {},
+    );
+
+    expect(captured.status).toBe(422);
+    expect(captured.body.error).toBe('Validation failed');
+    expect(captured.body.details).toEqual({ field: 'email' });
+  });
+
+  it('app.ts error handler omits details when expose=false', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.resetModules();
+    const { default: app } = await import('../../api/app.ts');
+    const { HttpError: FreshHttpError } = await import('../../api/http-errors.ts');
+
+    const errLayer = [...app.router.stack].reverse().find(l => l.handle && l.handle.length === 4);
+
+    const mockReq = { method: 'POST', originalUrl: '/test' };
+    const captured = {};
+    const mockRes = {
+      status(code) { captured.status = code; return mockRes; },
+      json(body) { captured.body = body; },
+    };
+
+    errLayer.handle(
+      new FreshHttpError(500, 'Internal error', { expose: false, details: { secret: 'hidden' } }),
+      mockReq, mockRes, () => {},
+    );
+
+    expect(captured.status).toBe(500);
+    expect(captured.body.error).toBe('Internal error');
+    expect(captured.body.details).toBeUndefined();
+    consoleSpy.mockRestore();
+  });
 });

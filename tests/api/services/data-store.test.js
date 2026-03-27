@@ -80,6 +80,26 @@ describe('validateData', () => {
     });
     expect(() => validateData(data)).toThrow(/evLoad/);
   });
+
+  it('throws when step is zero', () => {
+    const data = makeValidData({ load: { start: NOW_STRING, step: 0, values: [100] } });
+    expect(() => validateData(data)).toThrow(/load.*step.*positive/i);
+  });
+
+  it('throws when step is negative', () => {
+    const data = makeValidData({ load: { start: NOW_STRING, step: -1, values: [100] } });
+    expect(() => validateData(data)).toThrow(/load.*step.*positive/i);
+  });
+
+  it('throws when step is NaN', () => {
+    const data = makeValidData({ load: { start: NOW_STRING, step: NaN, values: [100] } });
+    expect(() => validateData(data)).toThrow(/load.*step.*positive/i);
+  });
+
+  it('accepts data without step property', () => {
+    const data = makeValidData({ load: { start: NOW_STRING, values: [100] } });
+    expect(validateData(data)).toBe(data);
+  });
 });
 
 describe('loadData', () => {

@@ -355,6 +355,15 @@ describe('fetchHaStats', () => {
     expect(data).toEqual(fakeResult);
   });
 
+  it('rejects when HA connection is not configured (no URL, no token, no SUPERVISOR_TOKEN)', async () => {
+    await expect(fetchHaStats({
+      haUrl: '',
+      haToken: '',
+      entityIds: ['sensor.soc'],
+      startTime: '2024-01-01T00:00:00Z',
+    })).rejects.toThrow('Home Assistant connection is not configured');
+  });
+
   it('uses supervisor token instead of haToken when running as add-on', async () => {
     process.env.SUPERVISOR_TOKEN = 'supervisor-tok';
 

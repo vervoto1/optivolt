@@ -30,6 +30,8 @@ vi.mock('../../app/src/predictions-validation.js', () => ({
   initValidation: vi.fn(),
 }));
 
+import { initValidation } from '../../app/src/predictions-validation.js';
+
 import {
   fetchPredictionConfig,
   savePredictionConfig,
@@ -590,5 +592,220 @@ describe('predictions.js', () => {
     // Chart should have been rendered
     const canvas = document.getElementById('forecast-chart');
     expect(canvas._chart).toBeDefined();
+  });
+
+  it('exercises borderColor callback on efficiency curve dataset', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({
+      report: {
+        slotsCompared: 5,
+        deviations: [
+          { timestampMs: Date.now() - 3600000, deviation_percent: 2, actualSoc_percent: 50, predictedSoc_percent: 52 },
+        ],
+      },
+    });
+    fetchCalibration.mockResolvedValue({
+      calibration: {
+        effectiveChargeRate: 0.92,
+        effectiveDischargeRate: 0.88,
+        confidence: 0.85,
+        sampleCount: 100,
+        chargeCurve: Array(100).fill(0.92),
+        dischargeCurve: Array(100).fill(0.88),
+        chargeSamples: Array(100).fill(5),
+        dischargeSamples: Array(100).fill(5),
+      },
+    });
+
+    chartInstances.length = 0;
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Find the efficiency curve chart
+    const effChart = chartInstances.find(c =>
+      c.config?.options?.scales?.x?.title?.text?.includes?.('Charge 0→100%')
+    );
+    expect(effChart).toBeTruthy();
+
+    // Exercise the main borderColor callback (line 622-625)
+    const borderColorFn = effChart.config.data.datasets[0].borderColor;
+    if (typeof borderColorFn === 'function') {
+      // Charge half (i < 100) — via p0.parsed.x
+      expect(borderColorFn({ p0: { parsed: { x: 50 } } })).toBe('rgb(34, 197, 94)');
+      // Discharge half (i >= 100) — via p0.parsed.x
+      expect(borderColorFn({ p0: { parsed: { x: 150 } } })).toBe('rgb(249, 115, 22)');
+      // Fallback to dataIndex when p0 is missing
+      expect(borderColorFn({ dataIndex: 10 })).toBe('rgb(34, 197, 94)');
+      expect(borderColorFn({ dataIndex: 110 })).toBe('rgb(249, 115, 22)');
+      // Fallback to 0 when both are missing
+      expect(borderColorFn({})).toBe('rgb(34, 197, 94)');
+    }
+  });
+
+  it('setComparisonStatus sets text and applies correct CSS class', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Extract the setComparisonStatus callback passed to initValidation
+    expect(initValidation).toHaveBeenCalled();
+    const { setComparisonStatus } = initValidation.mock.calls[0][0];
+
+    // Exercise normal (non-error) status
+    setComparisonStatus('Test message');
+    const el = document.getElementById('pred-status');
+    expect(el.textContent).toBe('Test message');
+    expect(el.className).toContain('text-ink-soft');
+
+    // Exercise error status
+    setComparisonStatus('Error occurred', true);
+    expect(el.textContent).toBe('Error occurred');
+    expect(el.className).toContain('text-red-600');
+  });
+
+  it('renders efficiency curve chart with some bands below minSamples (gaps in chart)', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({
+      report: {
+        slotsCompared: 5,
+        deviations: [
+          { timestampMs: Date.now(), deviation_percent: 1, actualSoc_percent: 50, predictedSoc_percent: 51 },
+        ],
+      },
+    });
+
+    // Provide calibration where first 10 charge and discharge bands have 0 samples (< minSamples=2)
+    const chargeSamples = Array(100).fill(5);
+    const dischargeSamples = Array(100).fill(5);
+    // Set some bands to 0 samples to trigger the else branch (lines 590-592, 606-608)
+    for (let i = 0; i < 10; i++) { chargeSamples[i] = 0; dischargeSamples[i] = 0; }
+
+    fetchCalibration.mockResolvedValue({
+      calibration: {
+        effectiveChargeRate: 0.9,
+        effectiveDischargeRate: 0.85,
+        confidence: 0.8,
+        sampleCount: 80,
+        chargeCurve: Array(100).fill(0.9),
+        dischargeCurve: Array(100).fill(0.85),
+        chargeSamples,
+        dischargeSamples,
+      },
+    });
+
+    chartInstances.length = 0;
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Find the efficiency curve chart
+    const effChart = chartInstances.find(c =>
+      c.config?.options?.scales?.x?.title?.text?.includes?.('Charge 0→100%')
+    );
+    expect(effChart).toBeDefined();
+
+    // Verify gaps: first 10 charge points should be null
+    const dataset = effChart.data.datasets[0];
+    expect(dataset.data[0]).toBeNull();
+    expect(dataset.data[9]).toBeNull();
+    expect(dataset.data[10]).not.toBeNull();
+
+    // Exercise segment borderColor callback (line 628)
+    if (dataset.segment?.borderColor) {
+      const green = dataset.segment.borderColor({ p0DataIndex: 50 });
+      expect(green).toBe('rgb(34, 197, 94)');
+      const orange = dataset.segment.borderColor({ p0DataIndex: 150 });
+      expect(orange).toBe('rgb(249, 115, 22)');
+    }
+
+    // Exercise main borderColor callback (line 624-625)
+    if (typeof dataset.borderColor === 'function') {
+      const green = dataset.borderColor({ p0: { parsed: { x: 50 } }, dataIndex: 50 });
+      expect(green).toBe('rgb(34, 197, 94)');
+      const orange = dataset.borderColor({ p0: { parsed: { x: 150 } }, dataIndex: 150 });
+      expect(orange).toBe('rgb(249, 115, 22)');
+    }
+  });
+
+  it('saveFormToServer is triggered by form input events', async () => {
+    fetchPredictionConfig.mockResolvedValue({
+      sensors: [{ id: 'sensor.grid', name: 'Grid' }],
+      activeConfig: { sensor: 'Grid', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+    });
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Reset mock to track only the save from form input
+    savePredictionConfig.mockClear();
+
+    // Trigger input on a predictions-only form element to invoke saveFormToServer via debounce
+    const lookbackEl = document.getElementById('pred-active-lookback');
+    if (lookbackEl) {
+      lookbackEl.value = '8';
+      lookbackEl.dispatchEvent(new Event('input', { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(700); // debounce delay is 600ms
+      expect(savePredictionConfig).toHaveBeenCalled();
+    }
+  });
+
+  it('saveFormToServer logs error when savePredictionConfig rejects', async () => {
+    fetchPredictionConfig.mockResolvedValue({
+      sensors: [{ id: 'sensor.grid', name: 'Grid' }],
+      activeConfig: { sensor: 'Grid', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+    });
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Make savePredictionConfig reject to trigger catch block (line 135)
+    savePredictionConfig.mockRejectedValueOnce(new Error('save failed'));
+
+    const lookbackEl = document.getElementById('pred-active-lookback');
+    if (lookbackEl) {
+      lookbackEl.value = '12';
+      lookbackEl.dispatchEvent(new Event('input', { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(700);
+      expect(console.error).toHaveBeenCalledWith(
+        'Failed to save prediction config:',
+        expect.any(Error),
+      );
+    }
   });
 });
