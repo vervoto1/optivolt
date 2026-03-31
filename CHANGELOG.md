@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0 - 2026-03-31
+
+- Fix adaptive learning calibration never producing results when `minDataDays` matched the snapshot fetch window size (boundary race condition)
+- Prevent JSON data file corruption from interrupted writes during add-on restarts by using atomic write-then-rename
+
 ## 0.6.9 - 2026-03-25
 
 - Add totals row (Σ) to schedule table showing per-column energy totals in kWh with color-tinted chips

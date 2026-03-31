@@ -98,7 +98,7 @@ export async function resetCalibration(): Promise<void> {
 export async function calibrate(
   minDataDays = DEFAULT_MIN_DATA_DAYS,
 ): Promise<CalibrationResult | null> {
-  const snapshots = await getRecentSnapshots(Math.max(minDataDays, 3));
+  const snapshots = await getRecentSnapshots(Math.max(minDataDays + 1, 7));
   const samples = await loadSocSamples();
 
   if (snapshots.length === 0 || samples.length === 0) {

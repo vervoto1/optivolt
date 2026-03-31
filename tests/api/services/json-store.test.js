@@ -9,17 +9,19 @@ describe('json-store — writeJson', () => {
     vi.clearAllMocks();
     fs.mkdir.mockResolvedValue(undefined);
     fs.writeFile.mockResolvedValue(undefined);
+    fs.rename.mockResolvedValue(undefined);
   });
 
-  it('creates parent directory and writes formatted JSON', async () => {
+  it('creates parent directory and writes formatted JSON atomically', async () => {
     await writeJson('/tmp/test/data.json', { key: 'value' });
 
     expect(fs.mkdir).toHaveBeenCalledWith('/tmp/test', { recursive: true });
     expect(fs.writeFile).toHaveBeenCalledWith(
-      '/tmp/test/data.json',
+      '/tmp/test/data.json.tmp',
       expect.stringContaining('"key": "value"'),
       'utf8',
     );
+    expect(fs.rename).toHaveBeenCalledWith('/tmp/test/data.json.tmp', '/tmp/test/data.json');
   });
 
   it('writes JSON with a trailing newline', async () => {
@@ -39,6 +41,12 @@ describe('json-store — writeJson', () => {
     fs.writeFile.mockRejectedValue(new Error('disk full'));
 
     await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('disk full');
+  });
+
+  it('propagates rename errors', async () => {
+    fs.rename.mockRejectedValue(new Error('cross-device link'));
+
+    await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('cross-device link');
   });
 });
 
