@@ -8,6 +8,7 @@ const DATA_DIR = resolveDataDir();
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 const DEFAULT_PATH = fileURLToPath(new URL('../defaults/default-settings.json', import.meta.url));
 
+
 /**
  * Load stored settings or fall back to defaults.
  * This is the canonical way to read settings everywhere.

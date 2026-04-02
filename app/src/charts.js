@@ -1,4 +1,8 @@
 /* global Chart */
+import {
+  createTooltipHandler, fmtKwh, getChartAnimations,
+  ttHeader, ttRow, ttSection, ttDivider, ttPrices,
+} from './chart-tooltip.js';
 
 export const SOLUTION_COLORS = {
   b2g: "rgb(15, 192, 216)",   // Battery to Grid (teal-ish)
@@ -9,8 +13,62 @@ export const SOLUTION_COLORS = {
   g2l: "rgb(233, 122, 131)",  // Grid to Consumption (red)
   g2b: "rgb(225, 142, 233)",  // Grid to Battery (purple)
   ev: "rgb(245, 158, 11)",    // EV Charging (orange/amber)
-  soc: "rgb(71, 144, 208)"    // SoC line color = battery-ish blue
+  soc: "rgb(71, 144, 208)",   // SoC line color = battery-ish blue
+  g2ev: "rgb(185, 38, 55)",   // Grid to EV (dark red — variant of g2l)
+  pv2ev: "rgb(142, 158, 22)", // Solar to EV (dark yellow-green — variant of pv2l)
+  b2ev: "rgb(20, 78, 160)",   // Battery to EV (dark blue — variant of b2l)
+  ev_charge: "rgb(16, 185, 129)", // EV total (emerald — distinct EV colour)
 };
+
+// Short labels used in the flows tooltip (→ instead of "to", "Load" instead of "Consumption")
+const FLOWS_TOOLTIP_LABELS = {
+  pv2l:  "Solar → Load",
+  pv2ev: "Solar → EV",
+  pv2b:  "Solar → Battery",
+  pv2g:  "Solar → Grid",
+  b2g:   "Battery → Grid",
+  b2l:   "Battery → Load",
+  b2ev:  "Battery → EV",
+  g2l:   "Grid → Load",
+  g2ev:  "Grid → EV",
+  g2b:   "Grid → Battery",
+};
+
+function makeFlowsTooltip(rows, flowSpecs, h) {
+  const W2kWh = (x) => (x || 0) * h / 1000;
+
+  return createTooltipHandler({
+    renderContent: (idx, tooltip) => {
+      const row = rows[idx];
+      const time = tooltip.title?.[0] ?? "";
+
+      const posRows = flowSpecs.filter(s => s.sign === 1  && (row[s.key] || 0) !== 0);
+      const negRows = flowSpecs.filter(s => s.sign === -1 && (row[s.key] || 0) !== 0);
+
+      let html = ttHeader(time, `SoC <strong>${Math.round(row.soc_percent)}%</strong>`);
+
+      if (posRows.length) {
+        html += ttSection("↑ Sources");
+        for (const s of posRows) {
+          html += ttRow(s.color, FLOWS_TOOLTIP_LABELS[s.key] ?? s.label, `${fmtKwh(W2kWh(row[s.key]))} kWh`);
+        }
+      }
+
+      if (posRows.length && negRows.length) html += ttDivider();
+
+      if (negRows.length) {
+        html += ttSection("↓ Draws");
+        for (const s of negRows) {
+          html += ttRow(s.color, FLOWS_TOOLTIP_LABELS[s.key] ?? s.label, `${fmtKwh(W2kWh(row[s.key]))} kWh`);
+        }
+      }
+
+      html += ttDivider();
+      html += ttPrices(`${row.ic.toFixed(1)}¢`, `${row.ec.toFixed(1)}¢`);
+      return html;
+    },
+  });
+}
 
 export const toRGBA = (rgb, alpha = 1) => {
   const m = /rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/.exec(rgb);
@@ -20,7 +78,7 @@ const dim = (rgb) => toRGBA(rgb, 0.6);
 
 // ---------------------- Time & Axis Helpers ----------------------
 
-function fmtHHMM(dt) {
+export function fmtHHMM(dt) {
   const HH = String(dt.getHours()).padStart(2, "0");
   const MM = String(dt.getMinutes()).padStart(2, "0");
   return `${HH}:${MM}`;
@@ -143,10 +201,7 @@ export function getBaseOptions({ ticksCb, tooltipTitleCb, gridCb, yTitle, stacke
       pointStyle: "rect",
       boxWidth: 10,
       padding: 12,
-      font: (_ctx) => ({
-        size: 12,
-        family: getComputedStyle(document.documentElement).fontFamily
-      })
+      font: () => ({ size: 12, family: getComputedStyle(document.documentElement).fontFamily })
     }
   };
 
@@ -155,8 +210,10 @@ export function getBaseOptions({ ticksCb, tooltipTitleCb, gridCb, yTitle, stacke
     maintainAspectRatio: false,
     responsive: true,
     interaction: { mode: "index", intersect: false },
+    layout: { padding: { bottom: overrides.layout?.padding?.bottom ?? -6 } },
+    ...('animation' in overrides ? { animation: overrides.animation } : {}),
     plugins: {
-      legend: legendSquare, // default, can be overridden
+      legend: legendSquare,
       tooltip: {
         mode: "index",
         intersect: false,
@@ -216,6 +273,8 @@ export function getChartTheme() {
 export function renderChart(canvas, config) {
   if (canvas._chart) canvas._chart.destroy();
   canvas._chart = new Chart(canvas.getContext("2d"), config);
+  const overlay = canvas.parentElement?.querySelector('.chart-empty');
+  if (overlay) overlay.style.display = 'none';
 }
 
 // Helper for signed stacked bars
@@ -263,7 +322,7 @@ function aggregateRows(rows, inputStep_m, targetStep_m) {
     });
 }
 
-export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, { aggregateMinutes } = {}) {
+export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, { aggregateMinutes, evSettings } = {}) {
   // Aggregate rows into larger buckets if requested (e.g. 60 for hourly)
   const effectiveRows = aggregateMinutes && aggregateMinutes > stepSize_m
     ? aggregateRows(rows, stepSize_m, aggregateMinutes)
@@ -286,32 +345,39 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   // Define structure: key -> params
   const flowSpecs = [
     // Positive Stack
-    { key: "pv2l", color: SOLUTION_COLORS.pv2l, label: "Solar to Consumption", sign: 1 },
-    { key: "pv2b", color: SOLUTION_COLORS.pv2b, label: "Solar to Battery", sign: 1 },
-    { key: "pv2g", color: SOLUTION_COLORS.pv2g, label: "Solar to Grid", sign: 1 },
-    { key: "b2g", color: SOLUTION_COLORS.b2g, label: "Battery to Grid", sign: 1 },
+    { key: "pv2l",  color: SOLUTION_COLORS.pv2l,  label: "Solar → Load",     sign: 1 },
+    { key: "pv2ev", color: SOLUTION_COLORS.pv2ev, label: "Solar → EV",       sign: 1 },
+    { key: "pv2b",  color: SOLUTION_COLORS.pv2b,  label: "Solar → Battery",  sign: 1 },
+    { key: "pv2g",  color: SOLUTION_COLORS.pv2g,  label: "Solar → Grid",     sign: 1 },
+    { key: "b2g",   color: SOLUTION_COLORS.b2g,   label: "Battery → Grid",   sign: 1 },
     // Negative Stack
-    { key: "b2l", color: SOLUTION_COLORS.b2l, label: "Battery to Consumption", sign: -1 },
-    { key: "g2l", color: SOLUTION_COLORS.g2l, label: "Grid to Consumption", sign: -1 },
-    { key: "g2b", color: SOLUTION_COLORS.g2b, label: "Grid to Battery", sign: -1 }
+    { key: "b2l",   color: SOLUTION_COLORS.b2l,   label: "Battery → Load",   sign: -1 },
+    { key: "b2ev",  color: SOLUTION_COLORS.b2ev,  label: "Battery → EV",     sign: -1 },
+    { key: "g2l",   color: SOLUTION_COLORS.g2l,   label: "Grid → Load",      sign: -1 },
+    { key: "g2ev",  color: SOLUTION_COLORS.g2ev,  label: "Grid → EV",        sign: -1 },
+    { key: "g2b",   color: SOLUTION_COLORS.g2b,   label: "Grid → Battery",   sign: -1 },
   ];
 
-  const datasets = flowSpecs.map(spec =>
-    dsBar(
-      spec.label,
-      effectiveRows.map(r => {
-        const val = Math.abs(W2kWh(r[spec.key]));
-        // Subtract EV load from g2l so it's not double-counted
-        if (spec.key === "g2l" && hasEvLoad) {
-          const evPart = Math.abs(W2kWh(r.evLoad ?? 0));
-          return spec.sign * Math.max(0, val - evPart);
-        }
-        return spec.sign * val;
-      }),
-      spec.color,
-      stackId
-    )
-  );
+  const nonZeroKeys = new Set();
+  for (const r of effectiveRows) for (const { key } of flowSpecs) if ((r[key] || 0) !== 0) nonZeroKeys.add(key);
+  const datasets = flowSpecs
+    .filter(spec => nonZeroKeys.has(spec.key))
+    .map(spec =>
+      dsBar(
+        spec.label,
+        effectiveRows.map(r => {
+          const val = Math.abs(W2kWh(r[spec.key]));
+          // Subtract EV load from g2l so it's not double-counted
+          if (spec.key === "g2l" && hasEvLoad) {
+            const evPart = Math.abs(W2kWh(r.evLoad ?? 0));
+            return spec.sign * Math.max(0, val - evPart);
+          }
+          return spec.sign * val;
+        }),
+        spec.color,
+        stackId
+      )
+    );
 
   // Add EV Charging as a separate orange bar in the negative stack
   if (hasEvLoad) {
@@ -326,11 +392,26 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   const plugins = rebalanceWindow
     ? [makeRebalancingPlugin(rebalanceWindow.startIdx, rebalanceWindow.endIdx)]
     : [];
+  const depPlugin = evSettings?.departureTime
+    ? makeEvDeparturePlugin(rows, evSettings.departureTime)
+    : null;
+  if (depPlugin) plugins.push(depPlugin);
 
   renderChart(canvas, {
     type: "bar",
     data: { labels: axis.labels, datasets },
-    options: getBaseOptions({ ...axis, yTitle: "kWh", stacked: true }),
+    options: getBaseOptions({ ...axis, yTitle: "kWh", stacked: true }, {
+      ...getChartAnimations('bar', rows.length),
+      plugins: {
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          enabled: false,
+          external: makeFlowsTooltip(rows, flowSpecs, h),
+          callbacks: { title: axis.tooltipTitleCb },
+        }
+      }
+    }),
     plugins,
   });
 }
@@ -339,30 +420,82 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
 // 2) SoC line chart (%)
 // -----------------------------------------------------------------------------
 
-export function drawSocChart(canvas, rows, _stepSize_m = 15) {
+export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null) {
   const timestampsMs = rows.map(r => r.timestampMs);
   const axis = buildTimeAxisFromTimestamps(timestampsMs);
 
+  const hasEvSoc = rows.some(r => (r.ev_soc_percent ?? 0) > 0);
+
+  const makeSocGradient = (color) => (context) => {
+    const { chart } = context;
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return toRGBA(color, 0.15);
+    const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    gradient.addColorStop(0, toRGBA(color, 0.25));
+    gradient.addColorStop(1, toRGBA(color, 0));
+    return gradient;
+  };
+
+  const datasets = [{
+    label: "SoC (%)",
+    data: rows.map(r => r.soc_percent),
+    borderColor: SOLUTION_COLORS.soc,
+    backgroundColor: makeSocGradient(SOLUTION_COLORS.soc),
+    fill: 'origin',
+    borderWidth: 2,
+    tension: 0.2,
+    pointRadius: 0,
+    hoverBorderColor: dim(SOLUTION_COLORS.soc),
+    clip: false
+  }];
+
+  if (hasEvSoc) {
+    datasets.push({
+      label: "EV SoC (%)",
+      data: rows.map(r => r.ev_soc_percent ?? 0),
+      borderColor: SOLUTION_COLORS.ev_charge,
+      backgroundColor: makeSocGradient(SOLUTION_COLORS.ev_charge),
+      fill: 'origin',
+      borderWidth: 2,
+      tension: 0.2,
+      pointRadius: 0,
+      hoverBorderColor: dim(SOLUTION_COLORS.ev_charge),
+      clip: false
+    });
+  }
+
+  const evTargetPlugin = evSettings
+    ? makeEvTargetPlugin(rows, evSettings.departureTime, evSettings.targetSoc_percent)
+    : null;
+
   renderChart(canvas, {
     type: "line",
-    data: {
-      labels: axis.labels,
-      datasets: [{
-        label: "SoC (%)",
-        data: rows.map(r => r.soc_percent),
-        borderColor: SOLUTION_COLORS.soc,
-        backgroundColor: SOLUTION_COLORS.soc,
-        borderWidth: 2,
-        tension: 0.2,
-        pointRadius: 0,
-        hoverBorderColor: dim(SOLUTION_COLORS.soc),
-        clip: false
-      }]
-    },
+    data: { labels: axis.labels, datasets },
     options: getBaseOptions({ ...axis, yTitle: "%" }, {
-      plugins: { legend: { display: false } }, // Hide legend for this chart
+      ...getChartAnimations('line', rows.length),
+      plugins: {
+        ...(hasEvSoc ? {} : { legend: { display: false } }),
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? "";
+              let html = ttHeader(time);
+              for (const pt of (tooltip.dataPoints ?? [])) {
+                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${Math.round(pt.raw)}%`);
+              }
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+      layout: hasEvSoc ? undefined : { padding: { bottom: 0 } },
       scales: { y: { max: 100 } }
-    })
+    }),
+    plugins: evTargetPlugin ? [evTargetPlugin] : [],
   });
 }
 
@@ -403,7 +536,27 @@ export function drawPricesStepLines(canvas, rows, _stepSize_m = 15) {
         }
       ]
     },
-    options: getBaseOptions({ ...axis, yTitle: "c€/kWh" })
+    options: getBaseOptions({ ...axis, yTitle: "c€/kWh" }, {
+      ...getChartAnimations('line', rows.length),
+      plugins: {
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? "";
+              let html = ttHeader(time);
+              for (const pt of (tooltip.dataPoints ?? [])) {
+                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${pt.raw.toFixed(1)} c€/kWh`);
+              }
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+    })
   });
 }
 
@@ -464,6 +617,255 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
       labels: axis.labels,
       datasets
     },
-    options: getBaseOptions({ ...axis, yTitle: "kWh" })
+    options: getBaseOptions({ ...axis, yTitle: "kWh" }, {
+      ...getChartAnimations('bar', buckets.length),
+      plugins: {
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? "";
+              let html = ttHeader(time);
+              for (const pt of (tooltip.dataPoints ?? [])) {
+                if (pt.raw == null) continue;
+                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`);
+              }
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+    })
   });
+}
+
+// -----------------------------------------------------------------------------
+// EV tab charts
+// -----------------------------------------------------------------------------
+
+export function drawEvPowerChart(canvas, rows, stepSize_m = 15, evSettings = {}) {
+  const timestampsMs = rows.map(r => r.timestampMs);
+  const axis = buildTimeAxisFromTimestamps(timestampsMs);
+
+  const theme = getChartTheme();
+
+  const toSourceAmps = (r, key) => {
+    const total_W = (r.g2ev || 0) + (r.pv2ev || 0) + (r.b2ev || 0);
+    const ev_A = r.ev_charge_A || 0;
+    return total_W > 0 ? ev_A * (r[key] || 0) / total_W : 0;
+  };
+
+  const datasets = [
+    dsBar("Grid", rows.map(r => toSourceAmps(r, "g2ev")), SOLUTION_COLORS.g2ev, "ev"),
+    dsBar("Solar", rows.map(r => toSourceAmps(r, "pv2ev")), SOLUTION_COLORS.pv2ev, "ev"),
+    dsBar("Battery", rows.map(r => toSourceAmps(r, "b2ev")), SOLUTION_COLORS.b2ev, "ev"),
+    {
+      label: "Price",
+      data: rows.map(r => r.ic ?? 0),
+      type: "line",
+      yAxisID: "y2",
+      borderColor: "rgba(251, 191, 36, 0.5)",
+      backgroundColor: "transparent",
+      borderWidth: 1.5,
+      borderDash: [3, 3],
+      pointRadius: 0,
+      tension: 0.3,
+      order: 0,
+    },
+  ];
+
+  const evTooltip = createTooltipHandler({
+    renderContent: (idx, tooltip) => {
+      const time = tooltip.title?.[0] ?? "";
+      const row = rows[idx];
+      const sources = [
+        { key: "g2ev", color: SOLUTION_COLORS.g2ev, label: "Grid" },
+        { key: "pv2ev", color: SOLUTION_COLORS.pv2ev, label: "Solar" },
+        { key: "b2ev", color: SOLUTION_COLORS.b2ev, label: "Battery" },
+      ].filter(s => toSourceAmps(row, s.key) > 0);
+
+      let html = ttHeader(time);
+      if (sources.length) {
+        html += ttSection(`Charging — ${(row.ev_charge_A || 0).toFixed(1)} A total`);
+        for (const s of sources) {
+          html += ttRow(s.color, s.label, `${toSourceAmps(row, s.key).toFixed(1)} A`);
+        }
+      }
+      html += ttDivider();
+      html += ttPrices(`${(row.ic ?? 0).toFixed(1)}¢`);
+      return html;
+    },
+  });
+
+  const options = getBaseOptions({ ...axis, yTitle: "A", stacked: true }, {
+    ...getChartAnimations('bar', rows.length),
+    plugins: {
+      tooltip: {
+        mode: "index",
+        intersect: false,
+        enabled: false,
+        external: evTooltip,
+        callbacks: { title: axis.tooltipTitleCb },
+      },
+    },
+  });
+  options.scales.y2 = {
+    type: "linear",
+    position: "right",
+    beginAtZero: false,
+    ticks: {
+      color: "rgba(251, 191, 36, 0.65)",
+      font: { size: 10 },
+      callback: (v) => `${v.toFixed(0)}¢`,
+      maxTicksLimit: 4,
+    },
+    grid: { drawOnChartArea: false, color: theme.gridColor },
+    title: { display: false },
+  };
+
+  const depPlugin = makeEvDeparturePlugin(rows, evSettings.departureTime);
+
+  renderChart(canvas, {
+    type: "bar",
+    data: { labels: axis.labels, datasets },
+    options,
+    plugins: depPlugin ? [depPlugin] : [],
+  });
+}
+
+export function drawEvSocChartTab(canvas, rows, evSettings = {}) {
+  const timestampsMs = rows.map(r => r.timestampMs);
+  const axis = buildTimeAxisFromTimestamps(timestampsMs);
+
+  const { departureTime, targetSoc_percent } = evSettings;
+  const targetPlugin = makeEvTargetPlugin(rows, departureTime, targetSoc_percent);
+  const plugins = targetPlugin ? [targetPlugin] : [];
+
+  renderChart(canvas, {
+    type: "line",
+    data: {
+      labels: axis.labels,
+      datasets: [{
+        label: "EV SoC (%)",
+        data: rows.map(r => r.ev_soc_percent ?? 0),
+        borderColor: SOLUTION_COLORS.ev_charge,
+        backgroundColor: SOLUTION_COLORS.ev_charge,
+        borderWidth: 2,
+        tension: 0.2,
+        pointRadius: 0,
+        hoverBorderColor: dim(SOLUTION_COLORS.ev_charge),
+        clip: false,
+      }]
+    },
+    options: getBaseOptions({ ...axis, yTitle: "%" }, {
+      ...getChartAnimations('line', rows.length),
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? "";
+              const pt = tooltip.dataPoints?.[0];
+              let html = ttHeader(time);
+              if (pt) html += ttRow(SOLUTION_COLORS.ev_charge, "EV SoC", `${Math.round(pt.raw)}%`);
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+      layout: { padding: { bottom: 0 } },
+      scales: { y: { min: 0, max: 100 } },
+    }),
+    plugins,
+  });
+}
+
+function findDepartureSlotIdx(rows, departureTime) {
+  if (!departureTime) return -1;
+  const depMs = new Date(departureTime).getTime();
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].timestampMs >= depMs) return i;
+  }
+  return -1;
+}
+
+function makeEvDeparturePlugin(rows, departureTime) {
+  const depIdx = findDepartureSlotIdx(rows, departureTime);
+  if (depIdx < 0) return null;
+
+  const color = 'rgba(16, 185, 129, 0.75)';
+  const label = fmtHHMM(new Date(departureTime));
+
+  return {
+    id: 'evDeparture',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const xPx = scales.x.getPixelForValue(depIdx);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(xPx, chartArea.top);
+      ctx.lineTo(xPx, chartArea.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.font = '500 10px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(label, xPx, chartArea.top + 10);
+      ctx.restore();
+    }
+  };
+}
+
+function makeEvTargetPlugin(rows, departureTime, targetSoc_percent) {
+  if (!departureTime || !(targetSoc_percent > 0)) return null;
+
+  const depIdx = findDepartureSlotIdx(rows, departureTime);
+  const color = 'rgba(16, 185, 129, 0.75)';
+
+  return {
+    id: 'evTarget',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      if (!chartArea) return;
+      const { x: xScale, y: yScale } = scales;
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+
+      const yPx = yScale.getPixelForValue(targetSoc_percent);
+      ctx.beginPath();
+      ctx.moveTo(chartArea.left, yPx);
+      ctx.lineTo(chartArea.right, yPx);
+      ctx.stroke();
+
+      if (depIdx >= 0) {
+        const xPx = xScale.getPixelForValue(depIdx);
+        ctx.beginPath();
+        ctx.moveTo(xPx, chartArea.top);
+        ctx.lineTo(xPx, chartArea.bottom);
+        ctx.stroke();
+      }
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.font = '500 10px system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${targetSoc_percent}%`, chartArea.right - 4, yPx - 4);
+
+      ctx.restore();
+    }
+  };
 }

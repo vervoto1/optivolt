@@ -61,10 +61,18 @@
       { "soc_percent": 97, "maxChargePower_W": 2600 }
     ]
   },
-
   "adaptiveLearning": {
     "enabled": false,
     "mode": "suggest",
     "minDataDays": 3
-  }
+  },
+  "evEnabled": false,
+  "evMinChargeCurrent_A": 6,
+  "evMaxChargeCurrent_A": 16,
+  "evBatteryCapacity_kWh": 60,
+  "evSocSensor": "",
+  "evPlugSensor": "",
+  "evDepartureTime": "",
+  "evTargetSoc_percent": 80,
+  "evChargeEfficiency_percent": 90
 }

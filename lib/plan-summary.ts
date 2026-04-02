@@ -39,6 +39,10 @@ export function buildPlanSummary(
       pvExportTippingPoint_cents_per_kWh:
         dessDiagnostics.pvExportTippingPoint_cents_per_kWh ?? null,
       rebalanceStatus,
+      evChargeTotal_kWh:       0,
+      evChargeFromGrid_kWh:    0,
+      evChargeFromPv_kWh:      0,
+      evChargeFromBattery_kWh: 0,
     };
   }
 
@@ -57,6 +61,9 @@ export function buildPlanSummary(
   let batteryToGrid = 0;
   let importEnergy = 0;
   let priceTimesEnergy = 0;
+  let evFromGrid = 0;
+  let evFromPv   = 0;
+  let evFromBat  = 0;
 
   for (const row of rows) {
     const loadK = W2kWh(row.load);
@@ -82,6 +89,9 @@ export function buildPlanSummary(
     if (impK > 0) {
       priceTimesEnergy += row.ic * impK;
     }
+    evFromGrid += W2kWh(row.g2ev ?? 0);
+    evFromPv   += W2kWh(row.pv2ev ?? 0);
+    evFromBat  += W2kWh(row.b2ev ?? 0);
   }
 
   const avgImportPrice =
@@ -115,5 +125,9 @@ export function buildPlanSummary(
         ? dessDiagnostics.pvExportTippingPoint_cents_per_kWh!
         : null,
     rebalanceStatus,
+    evChargeTotal_kWh:       evFromGrid + evFromPv + evFromBat,
+    evChargeFromGrid_kWh:    evFromGrid,
+    evChargeFromPv_kWh:      evFromPv,
+    evChargeFromBattery_kWh: evFromBat,
   };
 }

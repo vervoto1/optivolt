@@ -19,12 +19,13 @@ async function importRouter() {
 }
 
 const mockConfig = {
-  historyStart: '2025-11-01T00:00:00Z',
   sensors: [{ id: 'sensor.grid', name: 'Grid Import', unit: 'kWh' }],
   derived: [],
   validationWindow: { start: '2026-01-18T00:00:00Z', end: '2026-01-25T00:00:00Z' },
   activeConfig: { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'weekday-weekend', aggregation: 'mean' },
   pvConfig: { latitude: 51.0, longitude: 3.7, azimuth: 180, tilt: 35 },
+  activeType: 'historical',
+  historicalPredictor: { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'weekday-weekend', aggregation: 'mean' },
 };
 
 const mockSettings = {
@@ -79,6 +80,17 @@ describe('Prediction route contracts', () => {
     );
   });
 
+  it('merges and saves config (historicalPredictor)', async () => {
+    loadPredictionConfig.mockResolvedValue({ ...structuredClone(mockConfig), activeType: 'historical' });
+    savePredictionConfig.mockResolvedValue();
+    const res = await post(predictionsRouter, '/config', {
+      historicalPredictor: { sensor: 'Total Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(savePredictionConfig).toHaveBeenCalled();
+  });
+
   it('POST /predictions/validate returns validation results', async () => {
     const res = await post(predictionsRouter, '/validate', {});
     expect(res.status).toBe(200);
@@ -121,6 +133,14 @@ describe('Prediction route contracts', () => {
     expect(res.body.pv).toBeTruthy();
   });
 
+  it('returns load=null when activeType missing (graceful fallback)', async () => {
+    loadPredictionConfig.mockResolvedValue({ ...mockConfig, activeType: undefined });
+    const res = await post(predictionsRouter, '/forecast', {});
+    expect(res.status).toBe(200);
+    expect(res.body.load).toBeNull();
+    expect(res.body.pv).toBeTruthy();
+  });
+
   it('GET /predictions/forecast/now forces includeRecent=false', async () => {
     const res = await get(predictionsRouter, '/forecast/now');
     expect(res.status).toBe(200);
@@ -138,6 +158,12 @@ describe('Prediction route contracts', () => {
     const res = await post(predictionsRouter, '/forecast?recent=false', {});
     expect(res.status).toBe(200);
     expect(runForecast).toHaveBeenCalledWith(expect.objectContaining({ includeRecent: false }));
+  });
+
+  it('returns 400 when activeType missing for load forecast', async () => {
+    loadPredictionConfig.mockResolvedValue({ ...mockConfig, activeType: undefined });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(400);
   });
 
   it('POST /predictions/forecast returns null PV when pvConfig has invalid coordinates', async () => {

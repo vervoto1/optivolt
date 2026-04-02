@@ -46,12 +46,13 @@ describe('Predictions route integration', () => {
 
   it('POST /predictions/config persists config through the real store', async () => {
     const res = await post(predictionsRouter, '/config', {
-      activeConfig: { sensor: 'Grid Import', lookbackWeeks: 6, dayFilter: 'same', aggregation: 'mean' },
+      historicalPredictor: { sensor: 'Grid Import', lookbackWeeks: 6, dayFilter: 'same', aggregation: 'mean' },
+      activeType: 'historical',
     });
 
     const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'prediction-config.json'), 'utf8'));
     expect(res.status).toBe(200);
-    expect(saved.activeConfig.lookbackWeeks).toBe(6);
+    expect(saved.historicalPredictor.lookbackWeeks).toBe(6);
   });
 
   it('GET /predictions/config reads persisted config through the real store', async () => {
@@ -62,7 +63,8 @@ describe('Predictions route integration', () => {
 
     const res = await get(predictionsRouter, '/config');
     expect(res.status).toBe(200);
-    expect(res.body.activeConfig.lookbackWeeks).toBe(3);
+    // activeConfig is migrated to historicalPredictor on load
+    expect(res.body.historicalPredictor?.lookbackWeeks ?? res.body.activeConfig?.lookbackWeeks).toBe(3);
   });
 
   it('POST /predictions/validate reads HA credentials from real settings storage', async () => {

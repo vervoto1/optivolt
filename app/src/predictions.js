@@ -17,6 +17,7 @@ import {
 } from './api/api.js';
 import { debounce } from './utils.js';
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from './charts.js';
+import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from './chart-tooltip.js';
 import { initValidation } from './predictions-validation.js';
 
 let lastLoadForecast = null;
@@ -87,8 +88,18 @@ function applyConfigToForm(config) {
     }
   }
 
-  renderLoadConfig(config.activeConfig ?? null);
+  setVal('pred-active-type', config.activeType ?? 'historical');
+  setVal('pred-fixed-load-w', config.fixedPredictor?.load_W ?? '');
+  renderHistoricalConfig(config.historicalPredictor ?? null);
   renderPvConfig(config.pvConfig ?? null);
+  updatePredictorFieldVisibility();
+}
+
+function updatePredictorFieldVisibility() {
+  const type = getVal('pred-active-type') || 'historical';
+  const isFixed = type === 'fixed';
+  document.getElementById('pred-fixed-fields')?.classList.toggle('hidden', !isFixed);
+  document.getElementById('pred-historical-fields')?.classList.toggle('hidden', isFixed);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +114,10 @@ function wireForm() {
     el.addEventListener('change', debouncedSave);
   }
 
-  initValidation({ readFormValues, renderLoadConfig, setComparisonStatus });
+  document.getElementById('pred-active-type')
+    ?.addEventListener('change', updatePredictorFieldVisibility);
+
+  initValidation({ readFormValues, renderHistoricalConfig, setComparisonStatus });
 
   document.getElementById('pred-load-forecast')
     ?.addEventListener('click', onForecastAll);
@@ -140,15 +154,21 @@ function readFormValues() {
   const sensors = parseSilently(getVal('pred-sensors'));
   const derived = parseSilently(getVal('pred-derived'));
 
+  const activeType = getVal('pred-active-type') || 'historical';
+
   const activeSensor = getVal('pred-active-sensor');
   const activeLookback = getVal('pred-active-lookback');
 
-  const activeConfig = activeSensor ? {
+  const historicalPredictor = activeSensor ? {
     sensor: activeSensor,
     lookbackWeeks: activeLookback ? parseInt(activeLookback, 10) : 4,
     dayFilter: getVal('pred-active-filter') || 'same',
     aggregation: getVal('pred-active-agg') || 'mean',
   } : null;
+
+  const fixedLoadW = getVal('pred-fixed-load-w');
+  const fixedLoadWParsed = fixedLoadW !== '' ? parseFloat(fixedLoadW) : NaN;
+  const fixedPredictor = Number.isFinite(fixedLoadWParsed) && fixedLoadWParsed >= 0 ? { load_W: fixedLoadWParsed } : null;
 
   const pvConfig = {
     pvSensor: getVal('pred-pv-sensor') || 'Solar Generation',
@@ -161,7 +181,9 @@ function readFormValues() {
   return {
     ...(sensors !== null ? { sensors } : {}),
     ...(derived !== null ? { derived } : {}),
-    ...(activeConfig ? { activeConfig } : {}),
+    activeType,
+    ...(historicalPredictor ? { historicalPredictor } : {}),
+    ...(fixedPredictor ? { fixedPredictor } : {}),
     pvConfig,
   };
 }
@@ -303,7 +325,28 @@ function renderCombinedForecastChart() {
         },
       ],
     },
-    options: getBaseOptions({ ...axis, yTitle: 'kWh' }),
+    options: getBaseOptions({ ...axis, yTitle: 'kWh' }, {
+      ...getChartAnimations('bar', allTs.length),
+      plugins: {
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? '';
+              let html = ttHeader(time);
+              for (const pt of (tooltip.dataPoints ?? [])) {
+                if (pt.raw == null) continue;
+                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`);
+              }
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+    }),
   });
 }
 
@@ -311,6 +354,7 @@ function renderLoadAccuracyChart(recentData) {
   renderAccuracyCharts(
     'load-accuracy-chart',
     'load-accuracy-diff-chart',
+    'load-daily-net-error',
     recentData,
     {
       actualLabel: 'Actual',
@@ -333,6 +377,7 @@ function renderPvAccuracyChart(recentData) {
   renderAccuracyCharts(
     'pv-accuracy-chart',
     'pv-accuracy-diff-chart',
+    'pv-daily-net-error',
     recentData,
     {
       actualLabel: 'Actual',
@@ -345,7 +390,72 @@ function renderPvAccuracyChart(recentData) {
   );
 }
 
-function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options, extra = {}) {
+function buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId) {
+  const daySpans = new Map();
+  for (let i = 0; i < timestamps.length; i++) {
+    const dateStr = new Date(timestamps[i]).toLocaleDateString('en-CA');
+    if (!daySpans.has(dateStr)) daySpans.set(dateStr, { first: i, last: i });
+    else daySpans.get(dateStr).last = i;
+  }
+  const days = [...daySpans.entries()];
+  let lastChartGeometry = null; // skip HTML rebuild when horizontal geometry hasn't changed
+
+  return {
+    id: 'dayDividers',
+    afterDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      if (!scales.x || !chartArea) return;
+
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(148,163,184,0.3)';
+      ctx.lineWidth = 1;
+      ctx.font = '9px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(148,163,184,0.5)';
+      ctx.textAlign = 'center';
+
+      for (let i = 0; i < days.length; i++) {
+        const [_dateStr, { first, last }] = days[i];
+        if (i > 0) {
+          const x = scales.x.getPixelForValue(first);
+          ctx.beginPath();
+          ctx.moveTo(x, chartArea.top);
+          ctx.lineTo(x, chartArea.bottom);
+          ctx.stroke();
+        }
+        const midX = (scales.x.getPixelForValue(first) + scales.x.getPixelForValue(last)) / 2;
+        const dayName = new Date(timestamps[first]).toLocaleDateString('en-US', { weekday: 'short' });
+        ctx.fillText(dayName, midX, chartArea.top + 10);
+      }
+
+      ctx.restore();
+
+      const geometry = `${chartArea.left},${chartArea.right}`;
+      if (!netErrorContainerId || !dayNetWh || geometry === lastChartGeometry) return;
+      lastChartGeometry = geometry;
+
+      const container = document.getElementById(netErrorContainerId);
+      if (!container) return;
+
+      let html = `<div style="position:absolute;top:2px;left:${chartArea.left}px;font-size:9px;font-weight:600;letter-spacing:0.08em;color:rgba(148,163,184,0.45);text-transform:uppercase;">net error (kWh)</div>`;
+
+      for (const [dateStr, { first, last }] of days) {
+        const midX = (scales.x.getPixelForValue(first) + scales.x.getPixelForValue(last)) / 2;
+        const netKwh = (dayNetWh.get(dateStr) ?? 0) / 1000;
+        const color = netKwh >= 0 ? 'rgb(139,201,100)' : 'rgb(233,122,131)';
+        const sign = netKwh >= 0 ? '+' : '−';
+        html += `<div style="position:absolute;top:16px;left:${midX}px;transform:translateX(-50%);font-size:11px;font-weight:600;color:${color};white-space:nowrap">${sign}${fmtKwh(Math.abs(netKwh))}</div>`;
+      }
+
+      container.style.position = 'relative';
+      container.style.height = '32px';
+      container.innerHTML = html;
+      container.classList.remove('hidden');
+    },
+  };
+}
+
+function renderAccuracyCharts(overlayCanvasId, diffCanvasId, netErrorContainerId, recentData, options, extra = {}) {
   const overlayCanvas = document.getElementById(overlayCanvasId);
   const diffCanvas = document.getElementById(diffCanvasId);
   if (!overlayCanvas || !recentData || recentData.length === 0) return;
@@ -356,6 +466,20 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
   const scale = extra.noKwhConversion ? 1 : 1 / 1000;
   const yTitle = extra.yTitle || 'kWh';
   const yTitleDiff = extra.yTitleDiff || 'kWh diff';
+
+  const timestamps = sorted.map(d => d.time);
+
+  const dayNetWh = new Map();
+  for (const d of sorted) {
+    const actual = options.valueActual(d);
+    const pred = options.valuePred(d);
+    if (actual == null || pred == null) continue;
+    const dateStr = new Date(d.time).toLocaleDateString('en-CA');
+    dayNetWh.set(dateStr, (dayNetWh.get(dateStr) ?? 0) + (pred - actual));
+  }
+
+  const dayDividersPlugin = buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId);
+  const dayDividersPluginDiff = buildDayDividersPlugin(timestamps, null, null);
 
   // Chart 1: two clean lines, solid legend swatch (backgroundColor = line color, fill: false)
   renderChart(overlayCanvas, {
@@ -385,7 +509,28 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
         },
       ],
     },
-    options: getBaseOptions({ ...axis, yTitle }),
+    options: getBaseOptions({ ...axis, yTitle }, {
+      ...getChartAnimations('line', sorted.length),
+      plugins: {
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? '';
+              let html = ttHeader(time);
+              for (const pt of (tooltip.dataPoints ?? [])) {
+                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`);
+              }
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+    }),
+    plugins: [dayDividersPlugin],
   });
 
   // Chart 2: predicted − actual difference area, no legend
@@ -407,7 +552,32 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, recentData, options
         },
       ],
     },
-    options: getBaseOptions({ ...axis, yTitle: yTitleDiff }, { plugins: { legend: { display: false } } }),
+    options: getBaseOptions({ ...axis, yTitle: yTitleDiff }, {
+      ...getChartAnimations('line', sorted.length),
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          enabled: false,
+          external: createTooltipHandler({
+            renderContent: (_idx, tooltip) => {
+              const time = tooltip.title?.[0] ?? '';
+              const pt = tooltip.dataPoints?.[0];
+              if (!pt) return ttHeader(time);
+              const v = pt.raw;
+              const color = v >= 0 ? 'rgb(139,201,100)' : 'rgb(233,122,131)';
+              let html = ttHeader(time);
+              html += ttDivider();
+              html += ttRow(color, 'Pred − Actual', `${v >= 0 ? '+' : ''}${fmtKwh(Math.abs(v))} kWh`);
+              return html;
+            },
+          }),
+          callbacks: { title: axis.tooltipTitleCb },
+        },
+      },
+    }),
+    plugins: [dayDividersPluginDiff],
   });
 }
 
@@ -538,6 +708,7 @@ function renderSocAccuracyCharts(report) {
   renderAccuracyCharts(
     'soc-accuracy-chart',
     'soc-accuracy-diff-chart',
+    null,
     deviations.map(d => ({
       time: d.timestampMs,
       actual: d.actualSoc_percent,
@@ -722,12 +893,12 @@ function renderEfficiencyCurveChart(calibration) {
 // Config display
 // ---------------------------------------------------------------------------
 
-function renderLoadConfig(activeConfig) {
-  if (!activeConfig) return;
-  setVal('pred-active-sensor', activeConfig.sensor ?? '');
-  setVal('pred-active-lookback', activeConfig.lookbackWeeks ?? '');
-  setVal('pred-active-filter', activeConfig.dayFilter ?? '');
-  setVal('pred-active-agg', activeConfig.aggregation ?? '');
+function renderHistoricalConfig(historicalPredictor) {
+  if (!historicalPredictor) return;
+  setVal('pred-active-sensor', historicalPredictor.sensor ?? '');
+  setVal('pred-active-lookback', historicalPredictor.lookbackWeeks ?? '');
+  setVal('pred-active-filter', historicalPredictor.dayFilter ?? '');
+  setVal('pred-active-agg', historicalPredictor.aggregation ?? '');
 }
 
 function renderPvConfig(pvConfig) {

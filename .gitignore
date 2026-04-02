@@ -8,3 +8,5 @@ app/lib/
 coverage/
 .omc/
 data/plan-history.json
+.superpowers/
+docs/superpowers/

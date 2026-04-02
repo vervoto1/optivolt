@@ -1,5 +1,5 @@
 import type { TimeSeries, PlanRow, DessSlot, TerminalSocValuation } from '../lib/types.ts';
-import type { DayFilter, Aggregation } from '../lib/predict-load.ts';
+import type { DayFilter, Aggregation } from '../lib/load-predictor-historical.ts';
 import type { HaSensor, HaDerivedSensor } from '../lib/ha-postprocess.ts';
 
 export type { TimeSeries };
@@ -47,8 +47,16 @@ export interface Settings {
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
   cvPhase?: CvPhaseConfig;
-
   adaptiveLearning?: AdaptiveLearningConfig;
+  evEnabled: boolean;
+  evMinChargeCurrent_A: number;
+  evMaxChargeCurrent_A: number;
+  evBatteryCapacity_kWh: number;
+  evSocSensor: string;
+  evPlugSensor: string;
+  evDepartureTime: string;
+  evTargetSoc_percent: number;
+  evChargeEfficiency_percent: number;
 }
 
 export interface EvConfig {
@@ -65,7 +73,6 @@ export interface CvPhaseConfig {
   enabled: boolean;
   thresholds: { soc_percent: number; maxChargePower_W: number }[];
 }
-
 
 export interface AutoCalculateConfig {
   enabled: boolean;
@@ -205,13 +212,6 @@ export interface CalibrationResult {
 
 // ----------------------------- Prediction config ------------------------
 
-export interface PredictionActiveConfig {
-  sensor: string;
-  lookbackWeeks: number;
-  dayFilter: DayFilter;
-  aggregation: Aggregation;
-}
-
 export interface PredictionValidationWindow {
   start: string;
   end: string;
@@ -233,7 +233,9 @@ export interface PvPredictionConfig {
 export interface PredictionConfig {
   sensors: HaSensor[];
   derived: HaDerivedSensor[];
-  activeConfig?: PredictionActiveConfig;
+  activeType?: 'historical' | 'fixed';
+  historicalPredictor?: { sensor: string; lookbackWeeks: number; dayFilter: DayFilter; aggregation: Aggregation };
+  fixedPredictor?: { load_W: number };
   validationWindow?: PredictionValidationWindow;
   includeRecent?: boolean;
   pvConfig?: PvPredictionConfig;

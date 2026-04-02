@@ -6,7 +6,7 @@
 Plan and control a home energy system with forecasts, dynamic tariffs, and a day-ahead optimization pipeline. OptiVolt builds a linear program over 15-minute slots to decide how your **battery**, **PV**, **EV**, **heat pump**, and the **grid** should interact to minimize cost.
 
 - **Primary focus:** Victron Energy ESS systems via the **Victron VRM API** and MQTT Dynamic ESS schedule writing.
-- **How to run:** as a **Home Assistant add-on** (recommended) _or_ as a **standalone Node.js server** that serves the web UI and API from the same port.
+- **How to run:** as a **Home Assistant App** (recommended) _or_ as a **standalone Node.js server** that serves the web UI and API from the same port.
 
 ## Features
 
@@ -14,6 +14,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - Built-in load forecasting based on Home Assistant historical sensor data
 - Server-side VRM integration for forecasts/prices and system limits
 - Dynamic ESS schedule pushes over MQTT using Mode 4 (Custom/Node-RED) with all 48 schedule slots
+- EV charging integration: LP-optimized schedule with departure deadline, target SoC, and per-slot charge mode classification
 - Static, build-free web UI served by the same Express process
 - Persistent settings + time-series data under a configurable data directory
 - EV charging integration: reads EV Smart Charging schedule from Home Assistant, adds EV load as separate demand in the optimizer, optional battery discharge constraint during charging, visible as orange bar in charts
@@ -24,7 +25,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 
 ## Installation
 
-### Home Assistant Add-on (Recommended)
+### Home Assistant App (Recommended)
 
 1. **Add the repository:**
    Go to **Settings → Add-ons → Add-on Store**, click the **⋮** menu (top right), select **Repositories**, and add:
@@ -38,6 +39,12 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
    *(Note: OptiVolt automatically connects to the internal HA WebSocket API using the supervisor token to fetch historical sensor data.)*
 4. **Start and verify:**
    Start the OptiVolt add-on, open the UI, and verify that data (time series, prices, SoC, etc.) is being fetched correctly.
+
+**Alternative: manual rsync deployment** — If you prefer to deploy from a local clone rather than using the GHCR image, expose the HA `/addons` directory via the Samba share add-on, mount it on your computer, and sync with:
+```bash
+rsync -av --delete --exclude 'node_modules' --exclude '.git' --exclude '.DS_Store' --exclude 'tests' --exclude 'vendor/highs-js' ~/Code/optivolt/ /Volumes/addons/optivolt/
+```
+Then reload local add-ons (**Settings → Apps → Install App**, click **Check for Updates**), find **Optivolt**, and install.
 
 ### Standalone / Local Development
 
@@ -152,6 +159,28 @@ OptiVolt integrates with the **EV Smart Charging** integration in Home Assistant
 - **Always apply schedule** toggle: plan for EV demand even when the car is not currently connected.
 - Battery discharge during EV charging can be optionally disabled to avoid double-conversion losses (grid → battery → EV is less efficient than grid → EV directly).
 
+### 5a. EV Charger Control via REST Sensor (Optional)
+
+Poll the `/ev/current` endpoint every minute to get the current slot's EV charging decision. Add this to your HA `configuration.yaml`:
+
+```yaml
+rest:
+  - resource: http://localhost:3070/ev/current
+    scan_interval: 60
+    sensor:
+      - name: "OptiVolt EV Charge Mode"
+        value_template: "{{ value_json.ev_charge_mode }}"
+        unique_id: optivolt_ev_charge_mode
+
+      - name: "OptiVolt EV Charge Current"
+        value_template: "{{ value_json.ev_charge_A }}"
+        unit_of_measurement: A
+        device_class: current
+        unique_id: optivolt_ev_charge_current_a
+```
+
+Use `sensor.optivolt_ev_charge_mode` and `sensor.optivolt_ev_charge_current_a` in automations to control your charger. The mode values are `off`, `fixed`, `solar_only`, `solar_grid`, and `max`; the current is the target charge rate in amps.
+
 ### 6. Adaptive Learning (Plan Accuracy)
 OptiVolt can learn from actual battery behavior to improve future plans. When enabled, it samples the real battery SoC, load, and PV from MQTT/VRM at each calculation tick and compares them against the solver's predictions. Over time, it builds per-SoC efficiency curves (100 points, one per SoC%) that capture how charge and discharge efficiency varies across the battery's state of charge.
 
@@ -213,5 +242,8 @@ The **UI** is static and calls the **Express API** on the same origin. The **API
 - `POST /vrm/refresh-settings` — Fetches latest Dynamic ESS limits/settings from VRM and persists.
 - `GET/POST /predictions/*` — Load forecasting features (`/validate`, `/forecast`, `/forecast/now`).
 - `GET /plan-accuracy/*` — Plan accuracy and adaptive learning (`/plan-accuracy`, `/calibration`, `/history`, `/soc-samples`, `/snapshots`).
+- `GET /ev/current` — Current time slot's EV charging decision (`ev_charge_mode`, `ev_charge_A`, source flows, EV SoC).
+- `GET /ev/schedule` — Full per-slot EV charging schedule from the last computed plan.
+- `GET /ha/entity/:entityId` — Fetch live entity state from Home Assistant (used to validate EV sensor configuration).
 
 *Note:* Data and settings are server-owned. VRM refreshes write to `DATA_DIR/data.json` and the solver always reads from this persisted snapshot.

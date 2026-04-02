@@ -1,5 +1,5 @@
 /**
- * predict-load.ts
+ * load-predictor-historical.ts
  *
  * Pure prediction/validation/forecast logic for load prediction.
  */
@@ -77,7 +77,9 @@ export function predict(
     const maxDays = lookbackWeeks * 7;
 
     for (let d = 1; d <= maxDays; d++) {
-      const pastDate = new Date(entryDate.getTime() - d * 24 * 60 * 60 * 1000);
+      // setDate() subtracts in local time, preserving the same wall-clock hour across DST boundaries
+      const pastDate = new Date(entryDate);
+      pastDate.setDate(pastDate.getDate() - d);
       const pastISO = pastDate.toISOString();
       const pastEntry = valueByDate.get(pastISO);
 

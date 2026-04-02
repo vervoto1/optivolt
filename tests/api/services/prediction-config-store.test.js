@@ -74,15 +74,39 @@ describe('loadPredictionConfig', () => {
     expect(config.anotherKey).toBe('overridden');
   });
 
-  it('preserves validationWindow from user config when set', async () => {
+  it('always recomputes validationWindow, ignoring any persisted value', async () => {
     _set(getDefaultPath(), {});
     _set(PREDICTION_CONFIG_PATH, {
       validationWindow: { start: '2024-01-01T00:00:00.000Z', end: '2024-01-08T00:00:00.000Z' },
     });
 
     const config = await loadPredictionConfig();
-    expect(config.validationWindow.start).toBe('2024-01-01T00:00:00.000Z');
-    expect(config.validationWindow.end).toBe('2024-01-08T00:00:00.000Z');
+    // New behavior: always recomputes — ignores persisted validationWindow
+    expect(config.validationWindow.end).toBe('2024-06-15T00:00:00.000Z');
+    const diffDays = (new Date(config.validationWindow.end) - new Date(config.validationWindow.start)) / (24 * 60 * 60 * 1000);
+    expect(diffDays).toBe(7);
+  });
+
+  it('migrates old activeConfig format to historicalPredictor + activeType', async () => {
+    _set(getDefaultPath(), {});
+    _set(PREDICTION_CONFIG_PATH, {
+      activeConfig: {
+        sensor: 'Total Load',
+        lookbackWeeks: 4,
+        dayFilter: 'weekday-weekend',
+        aggregation: 'mean',
+      },
+    });
+
+    const config = await loadPredictionConfig();
+    expect(config.activeType).toBe('historical');
+    expect(config.historicalPredictor).toEqual({
+      sensor: 'Total Load',
+      lookbackWeeks: 4,
+      dayFilter: 'weekday-weekend',
+      aggregation: 'mean',
+    });
+    expect(config).not.toHaveProperty('activeConfig');
   });
 });
 
@@ -97,8 +121,7 @@ describe('loadPredictionConfig — non-ENOENT error', () => {
     vi.useRealTimers();
   });
 
-  it('re-throws non-ENOENT errors when reading user config (line 16)', async () => {
-    // Line 16: if (code !== 'ENOENT') throw err
+  it('re-throws non-ENOENT errors when reading user config', async () => {
     _set(getDefaultPath(), { someKey: 'val' });
 
     const { readJson } = await import('../../../api/services/json-store.ts');
