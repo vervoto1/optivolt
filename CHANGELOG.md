@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1 - 2026-04-02
+
+- Sync fork with 69 upstream commits from bmesuere/optivolt
+- Add LP-optimized EV charging with MILP solver (departure deadline, target SoC, per-slot charge mode classification)
+- Add pluggable load predictors (historical + fixed) with predictor type selector in UI
+- Add EV REST endpoints (`/ev/current`, `/ev/schedule`) for HA charger control automation
+- Add HA entity state endpoint (`/ha/entity/:entityId`) for EV sensor validation
+- Fix DST handling in historical load predictor
+- Add day dividers and net error overlays to prediction accuracy charts
+
 ## 0.7.0 - 2026-03-31
 
 - Fix adaptive learning calibration never producing results when `minDataDays` matched the snapshot fetch window size (boundary race condition)
