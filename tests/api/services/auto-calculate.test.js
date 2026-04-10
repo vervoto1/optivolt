@@ -20,6 +20,7 @@ const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await 
 const { planAndMaybeWrite } = await import('../../../api/services/planner-service.ts');
 const { loadSettings } = await import('../../../api/services/settings-store.ts');
 const { calibrate } = await import('../../../api/services/efficiency-calibrator.ts');
+const { HttpError } = await import('../../../api/http-errors.ts');
 
 const BASE_TIME = '2024-01-01T12:03:00.000Z';
 
@@ -309,6 +310,60 @@ describe('auto-calculate', () => {
     expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
 
     warnSpy.mockRestore();
+  });
+
+  it('retries with updateData:true when planAndMaybeWrite throws Insufficient future data and updateData is false', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    planAndMaybeWrite
+      .mockRejectedValueOnce(new HttpError(422, 'Insufficient future data'))
+      .mockResolvedValueOnce({});
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: true });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(warnSpy).toHaveBeenCalledWith('[auto-calculate] data exhausted, retrying with VRM refresh');
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
+    expect(planAndMaybeWrite).toHaveBeenNthCalledWith(1, { updateData: false, writeToVictron: true });
+    expect(planAndMaybeWrite).toHaveBeenNthCalledWith(2, { updateData: true, writeToVictron: true });
+    expect(isAutoCalculateRunning()).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not retry when updateData is already true and Insufficient future data is thrown', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    planAndMaybeWrite.mockRejectedValueOnce(new HttpError(422, 'Insufficient future data'));
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: true, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    // Only one call — no retry since updateData was already true
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith('[auto-calculate] calculation failed:', 'Insufficient future data');
+
+    errorSpy.mockRestore();
+  });
+
+  it('does not retry on non-Insufficient future data errors', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    planAndMaybeWrite.mockRejectedValueOnce(new Error('solver crashed'));
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith('[auto-calculate] calculation failed:', 'solver crashed');
+
+    errorSpy.mockRestore();
   });
 
   it('aligns recurring runs to wall-clock boundaries instead of startup time', async () => {

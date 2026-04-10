@@ -5,6 +5,9 @@ import { loadData, saveData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
+import { runForecast } from './load-prediction-service.ts';
+import { runPvForecast } from './pv-prediction-service.ts';
+import { loadPredictionConfig } from './prediction-config-store.ts';
 import type { Data } from '../types.ts';
 
 function createClientFromEnv(): VRMClient {
@@ -117,6 +120,45 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       step: forecasts.step_minutes,
       values: forecasts.pv_W,
     };
+  }
+
+  // API forecasts (load and/or PV from the prediction pipeline)
+  const shouldFetchApiLoad = sources.load === 'api';
+  const shouldFetchApiPv = sources.pv === 'api';
+
+  if (shouldFetchApiLoad || shouldFetchApiPv) {
+    let predConfig: Awaited<ReturnType<typeof loadPredictionConfig>> | null = null;
+    try {
+      predConfig = await loadPredictionConfig();
+    } catch (err) {
+      console.warn('[vrm-refresh] Failed to load prediction config:', (err as Error).message);
+    }
+
+    if (predConfig) {
+      const runConfig = { ...predConfig, haUrl: settings.haUrl ?? '', haToken: settings.haToken ?? '' };
+
+      if (shouldFetchApiLoad) {
+        try {
+          const result = await runForecast(runConfig);
+          if (result?.forecast?.values) {
+            load = result.forecast;
+          }
+        } catch (err) {
+          console.warn('[vrm-refresh] Failed to refresh load forecast from API:', (err as Error).message);
+        }
+      }
+
+      if (shouldFetchApiPv) {
+        try {
+          const result = await runPvForecast(runConfig);
+          if (result?.forecast?.values) {
+            pv = result.forecast;
+          }
+        } catch (err) {
+          console.warn('[vrm-refresh] Failed to refresh PV forecast from API:', (err as Error).message);
+        }
+      }
+    }
   }
 
   let importPrice = baseData.importPrice;

@@ -31,6 +31,15 @@ vi.mock('../../../api/services/ha-ev-service.ts', () => ({
 vi.mock('../../../api/services/ha-price-service.ts', () => ({
   fetchPricesFromHA: vi.fn().mockResolvedValue(null),
 }));
+vi.mock('../../../api/services/load-prediction-service.ts', () => ({
+  runForecast: vi.fn(),
+}));
+vi.mock('../../../api/services/pv-prediction-service.ts', () => ({
+  runPvForecast: vi.fn(),
+}));
+vi.mock('../../../api/services/prediction-config-store.ts', () => ({
+  loadPredictionConfig: vi.fn(),
+}));
 
 const { refreshSeriesFromVrmAndPersist, refreshSettingsFromVrmAndPersist } = await import(
   '../../../api/services/vrm-refresh.ts'
@@ -486,6 +495,126 @@ describe('refreshSettingsFromVrmAndPersist', () => {
         maxSoc_percent: baseSettings.maxSoc_percent,
       }),
     );
+  });
+});
+
+describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
+  let runForecast, runPvForecast, loadPredictionConfig;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+
+    ({ runForecast } = await import('../../../api/services/load-prediction-service.ts'));
+    ({ runPvForecast } = await import('../../../api/services/pv-prediction-service.ts'));
+    ({ loadPredictionConfig } = await import('../../../api/services/prediction-config-store.ts'));
+
+    loadData.mockResolvedValue({ ...baseData });
+    saveData.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    mqttService.readVictronSocPercent.mockResolvedValue(50);
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+
+    loadPredictionConfig.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  it('calls runForecast and saves result to data.load when dataSources.load is api', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    const apiForecast = { start: '2024-01-02T00:00:00.000Z', step: 15, values: [300, 400] };
+    runForecast.mockResolvedValue({ forecast: apiForecast });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runForecast).toHaveBeenCalledTimes(1);
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.load).toEqual(apiForecast);
+  });
+
+  it('calls runPvForecast and saves result to data.pv when dataSources.pv is api', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'vrm', pv: 'api', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    const apiForecast = { start: '2024-01-02T00:00:00.000Z', step: 15, values: [150, 200] };
+    runPvForecast.mockResolvedValue({ forecast: apiForecast });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runPvForecast).toHaveBeenCalledTimes(1);
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.pv).toEqual(apiForecast);
+  });
+
+  it('keeps existing data.load when runForecast throws (non-fatal)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    runForecast.mockRejectedValue(new Error('HA connection refused'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.load).toEqual(baseData.load);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[vrm-refresh]'),
+      expect.stringContaining('HA connection refused'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('keeps existing data.pv when runPvForecast throws (non-fatal)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'vrm', pv: 'api', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    runPvForecast.mockRejectedValue(new Error('Open-Meteo 502'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.pv).toEqual(baseData.pv);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[vrm-refresh]'),
+      expect.stringContaining('Open-Meteo 502'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('does not call runForecast or runPvForecast when neither source is api', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+    });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runForecast).not.toHaveBeenCalled();
+    expect(runPvForecast).not.toHaveBeenCalled();
   });
 });
 

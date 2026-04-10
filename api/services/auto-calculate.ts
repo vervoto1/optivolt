@@ -1,4 +1,5 @@
 import type { Settings } from '../types.ts';
+import { HttpError } from '../http-errors.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
 import { sampleAndStoreSoc } from './soc-tracker.ts';
 import { calibrate } from './efficiency-calibrator.ts';
@@ -65,7 +66,16 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
       console.warn('[auto-calculate] SoC sampling failed:', (err as Error).message);
     }
 
-    await planAndMaybeWrite({ updateData, writeToVictron });
+    try {
+      await planAndMaybeWrite({ updateData, writeToVictron });
+    } catch (err) {
+      if (err instanceof HttpError && err.message === 'Insufficient future data' && !updateData) {
+        console.warn('[auto-calculate] data exhausted, retrying with VRM refresh');
+        await planAndMaybeWrite({ updateData: true, writeToVictron });
+      } else {
+        throw err;
+      }
+    }
     console.log('[auto-calculate] calculation completed');
 
     // Re-read adaptive learning settings each tick so UI changes take effect

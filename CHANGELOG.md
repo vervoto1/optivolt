@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 - 2026-04-10
+
+- Fix auto-calculate failing indefinitely with "Insufficient future data" at end of day — now auto-retries with a data refresh when the time window expires
+- Fix `refreshSeriesFromVrmAndPersist` not handling `api` data sources (load/PV prediction pipeline was never called during scheduled refresh)
+- Fix npm audit vulnerabilities (path-to-regexp, picomatch); regenerate lockfile with cross-platform optional deps
+
 ## 0.7.1 - 2026-04-02
 
 - Sync fork with 69 upstream commits from bmesuere/optivolt
