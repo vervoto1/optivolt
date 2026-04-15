@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 - 2026-04-15
+
+- Bump safe npm dependencies: `mqtt`, `@eslint/css`, `eslint`, `globals`, `jsdom`, `vitest`, and `@vitest/coverage-v8`
+
 ## 0.7.2 - 2026-04-10
 
 - Fix auto-calculate failing indefinitely with "Insufficient future data" at end of day — now auto-retries with a data refresh when the time window expires
