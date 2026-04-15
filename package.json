@@ -29,21 +29,21 @@
   "dependencies": {
     "express": "^5.2.1",
     "highs": "^1.8.0",
-    "mqtt": "^5.15.0"
+    "mqtt": "^5.15.1"
   },
   "devDependencies": {
-    "@eslint/css": "^1.0.0",
+    "@eslint/css": "^1.1.0",
     "@eslint/js": "^10.0.1",
     "@eslint/markdown": "^7.5.1",
     "@types/express": "^5.0.6",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "dotenv-cli": "^11.0.0",
-    "eslint": "^10.0.3",
-    "globals": "^17.4.0",
-    "jsdom": "^29.0.0",
+    "eslint": "^10.2.0",
+    "globals": "^17.5.0",
+    "jsdom": "^29.0.2",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.4"
   }
 }
