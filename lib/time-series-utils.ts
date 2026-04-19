@@ -47,6 +47,14 @@ export function getNextQuarterStart(date: Date | number | string = new Date(), s
 }
 
 /**
+ * Timestamp (ms) just after the last slot of a series.
+ */
+export function getSeriesEndMs(source: TimeSeries): number {
+  const step = source.step ?? 15;
+  return new Date(source.start).getTime() + source.values.length * step * 60_000;
+}
+
+/**
  * Extracts a window of data from a source time series to match a target start time.
  * Missing slots are padded with 0.
  */

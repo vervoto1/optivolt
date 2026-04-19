@@ -259,6 +259,7 @@ export function updateSummaryUI(els, summary) {
     setText(els.batteryExportTp, "—");
     updateRebalanceStatus(els, null);
     updateEvSummary(els, null);
+    updateHorizonWarnings(els, null);
 
     // reset mini bars
     const loadSplitBar = document.getElementById("load-split-bar");
@@ -314,6 +315,7 @@ export function updateSummaryUI(els, summary) {
 
   updateRebalanceStatus(els, summary.rebalanceStatus);
   updateEvSummary(els, summary);
+  updateHorizonWarnings(els, summary.horizonWarnings);
 
   // --- Energy Flow Bar ---
   const g2b = Number(summary.gridToBattery_kWh) || 0;
@@ -367,6 +369,21 @@ function updateEvSummary(els, summary) {
       { value: fromPv,   color: SOLUTION_COLORS.pv2ev, title: `PV: ${formatKWh(fromPv)}` },
     ]
   );
+}
+
+function updateHorizonWarnings(els, warnings) {
+  if (!els.horizonWarningsBlock || !els.horizonWarningsList) return;
+  els.horizonWarningsList.innerHTML = '';
+  if (!Array.isArray(warnings) || warnings.length === 0) {
+    els.horizonWarningsBlock.classList.add('hidden');
+    return;
+  }
+  els.horizonWarningsBlock.classList.remove('hidden');
+  for (const w of warnings) {
+    const li = document.createElement('li');
+    li.textContent = String(w);
+    els.horizonWarningsList.appendChild(li);
+  }
 }
 
 function updateRebalanceStatus(els, status) {

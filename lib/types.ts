@@ -181,4 +181,5 @@ export interface PlanSummary {
   evChargeFromGrid_kWh: number;
   evChargeFromPv_kWh: number;
   evChargeFromBattery_kWh: number;
+  horizonWarnings?: string[];
 }

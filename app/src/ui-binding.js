@@ -58,6 +58,8 @@ export function getElements() {
     batteryExportTp: $("#export-point-cent"),
     rebalanceStatus: $("#rebalance-status"),
     rebalanceStatusRow: $("#rebalance-status-row"),
+    horizonWarningsBlock: $("#horizon-warnings-block"),
+    horizonWarningsList: $("#horizon-warnings-list"),
 
     // VRM section
     vrmFetchSettings: $("#vrm-fetch-settings"),

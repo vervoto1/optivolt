@@ -2,15 +2,10 @@ import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
 import { loadData } from './data-store.ts';
 import { loadCalibration, generateThresholdsFromCurve } from './efficiency-calibrator.ts';
-import { extractWindow, getQuarterStart } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
-import type { SolverConfig, TimeSeries, EvConfig } from '../../lib/types.ts';
+import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult } from '../types.ts';
-
-function getSeriesEndMs(source: TimeSeries): number {
-  const step = source.step ?? 15;
-  return new Date(source.start).getTime() + source.values.length * step * 60_000;
-}
 
 function departureTimeToSlot(
   departureTime: string,

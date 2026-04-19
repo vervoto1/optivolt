@@ -11,9 +11,31 @@ import { saveData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
-import { extractWindow, getNextQuarterStart } from '../../lib/time-series-utils.ts';
+import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
+import type { TimeSeries } from '../../lib/types.ts';
+
+function computeHorizonWarnings(data: Data, nowMs: number): string[] {
+  const warnings: string[] = [];
+  const expectedEndMs = new Date(getForecastTimeRange(nowMs).endIso).getTime();
+  const toleranceMs = 2 * 60 * 60 * 1000;
+
+  const check = (label: string, s: TimeSeries | undefined) => {
+    if (!s) return;
+    const gapMs = expectedEndMs - getSeriesEndMs(s);
+    if (gapMs > toleranceMs) {
+      const hours = Math.round(gapMs / (60 * 60 * 1000));
+      warnings.push(`${label} ends ${hours}h short of expected horizon — refresh may have failed`);
+    }
+  };
+
+  check('Load forecast', data.load);
+  check('PV forecast', data.pv);
+  check('Import prices', data.importPrice);
+  check('Export prices', data.exportPrice);
+  return warnings;
+}
 
 // How many slots we push into Dynamic ESS.
 // Venus OS supports 48 schedule slots (indices 0–47).
@@ -168,6 +190,14 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   } : undefined;
 
   const summary = buildPlanSummary(rowsWithDess, cfg, diagnostics, rebalanceCtx);
+
+  const horizonWarnings = computeHorizonWarnings(data, timing.startMs);
+  if (horizonWarnings.length > 0) {
+    summary.horizonWarnings = horizonWarnings;
+    for (const w of horizonWarnings) {
+      console.error(`[calculate] STALE DATA: ${w}`);
+    }
+  }
 
   const rebalanceWindow = extractRebalanceWindow(
     result.Columns ?? {},

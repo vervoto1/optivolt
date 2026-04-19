@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.4 - 2026-04-19
+
+- Add retry-with-backoff (3 attempts, 500ms → 1500ms → 4500ms) for transient VRM, HA, and Open-Meteo fetch failures — prevents a brief outage from leaving stale forecasts in place for a whole auto-calc interval
+- Add stale-data detection: compares each persisted time-series (load / PV / import / export prices) against the expected horizon and emits a warning when any is >2h short
+- Add amber "Stale data detected" banner in the Plan summary panel listing each short series and by how many hours
+- Log to `console.error` (instead of `warn`) when forecast retries exhaust, and on every solve that still uses stale data, so the issue is visible in add-on logs
+- Parallelize load + PV forecast refresh (was sequential; worst-case double-failure delay is now 6s instead of 12s)
+
 ## 0.7.3 - 2026-04-15
 
 - Bump safe npm dependencies: `mqtt`, `@eslint/css`, `eslint`, `globals`, `jsdom`, `vitest`, and `@vitest/coverage-v8`

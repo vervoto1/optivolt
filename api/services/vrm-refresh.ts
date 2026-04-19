@@ -8,6 +8,7 @@ import { fetchPricesFromHA } from './ha-price-service.ts';
 import { runForecast } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
+import { withRetry } from './retry.ts';
 import type { Data } from '../types.ts';
 
 function createClientFromEnv(): VRMClient {
@@ -76,8 +77,8 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
 
   // Concurrent IO
   const [forecastsResult, pricesResult, socResult] = await Promise.allSettled([
-    shouldFetchForecasts ? client.fetchForecasts() : Promise.resolve(null),
-    shouldFetchPrices ? client.fetchPrices() : Promise.resolve(null),
+    shouldFetchForecasts ? withRetry(() => client.fetchForecasts(), { label: 'VRM forecasts' }) : Promise.resolve(null),
+    shouldFetchPrices ? withRetry(() => client.fetchPrices(), { label: 'VRM prices' }) : Promise.resolve(null),
     shouldFetchSoc ? readVictronSocPercent({ timeoutMs: 5000 }) : Promise.resolve(null),
   ]);
 
@@ -137,25 +138,24 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     if (predConfig) {
       const runConfig = { ...predConfig, haUrl: settings.haUrl ?? '', haToken: settings.haToken ?? '' };
 
+      const [loadRes, pvRes] = await Promise.allSettled([
+        shouldFetchApiLoad ? withRetry(() => runForecast(runConfig), { label: 'load forecast' }) : Promise.resolve(null),
+        shouldFetchApiPv ? withRetry(() => runPvForecast(runConfig), { label: 'pv forecast' }) : Promise.resolve(null),
+      ]);
+
       if (shouldFetchApiLoad) {
-        try {
-          const result = await runForecast(runConfig);
-          if (result?.forecast?.values) {
-            load = result.forecast;
-          }
-        } catch (err) {
-          console.warn('[vrm-refresh] Failed to refresh load forecast from API:', (err as Error).message);
+        if (loadRes.status === 'fulfilled' && loadRes.value?.forecast?.values) {
+          load = loadRes.value.forecast;
+        } else if (loadRes.status === 'rejected') {
+          console.error('[vrm-refresh] Load forecast failed after retries — keeping stale data:', (loadRes.reason as Error).message);
         }
       }
 
       if (shouldFetchApiPv) {
-        try {
-          const result = await runPvForecast(runConfig);
-          if (result?.forecast?.values) {
-            pv = result.forecast;
-          }
-        } catch (err) {
-          console.warn('[vrm-refresh] Failed to refresh PV forecast from API:', (err as Error).message);
+        if (pvRes.status === 'fulfilled' && pvRes.value?.forecast?.values) {
+          pv = pvRes.value.forecast;
+        } else if (pvRes.status === 'rejected') {
+          console.error('[vrm-refresh] PV forecast failed after retries — keeping stale data:', (pvRes.reason as Error).message);
         }
       }
     }

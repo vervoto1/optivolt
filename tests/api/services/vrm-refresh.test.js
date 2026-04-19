@@ -561,7 +561,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     expect(savedData.pv).toEqual(apiForecast);
   });
 
-  it('keeps existing data.load when runForecast throws (non-fatal)', async () => {
+  it('retries and keeps existing data.load when runForecast keeps failing', async () => {
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
@@ -571,19 +571,26 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
 
     runForecast.mockRejectedValue(new Error('HA connection refused'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await refreshSeriesFromVrmAndPersist();
 
+    // Should have retried 3 times before giving up
+    expect(runForecast).toHaveBeenCalledTimes(3);
+
     const savedData = saveData.mock.calls[0][0];
     expect(savedData.load).toEqual(baseData.load);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[vrm-refresh]'),
+
+    // Final failure surfaces via console.error with a clear "stale data" signal
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Load forecast failed after retries'),
       expect.stringContaining('HA connection refused'),
     );
     warnSpy.mockRestore();
-  });
+    errorSpy.mockRestore();
+  }, 15_000);
 
-  it('keeps existing data.pv when runPvForecast throws (non-fatal)', async () => {
+  it('retries and keeps existing data.pv when runPvForecast keeps failing', async () => {
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { load: 'vrm', pv: 'api', prices: 'vrm', soc: 'mqtt' },
@@ -593,17 +600,22 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
 
     runPvForecast.mockRejectedValue(new Error('Open-Meteo 502'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await refreshSeriesFromVrmAndPersist();
 
+    expect(runPvForecast).toHaveBeenCalledTimes(3);
+
     const savedData = saveData.mock.calls[0][0];
     expect(savedData.pv).toEqual(baseData.pv);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[vrm-refresh]'),
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('PV forecast failed after retries'),
       expect.stringContaining('Open-Meteo 502'),
     );
     warnSpy.mockRestore();
-  });
+    errorSpy.mockRestore();
+  }, 15_000);
 
   it('does not call runForecast or runPvForecast when neither source is api', async () => {
     loadSettings.mockResolvedValue({
