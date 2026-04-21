@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.6 - 2026-04-21
+
+- Fix Pro Grid strategy mapping during forced solar exports so Dynamic ESS uses the correct behavior in those periods
+- Fix local Home Assistant add-on builds by providing a default `BUILD_FROM`
+- Align declared Node.js support with the ESLint toolchain requirement (`^22.13.0 || >=24`)
+
 ## 0.7.5 - 2026-04-21
 
 - Bump typescript to 6.0.3 (major) — no type regressions, all 1140 tests pass
