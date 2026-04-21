@@ -646,6 +646,7 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
 // EV tab charts
 // -----------------------------------------------------------------------------
 
+// eslint-disable-next-line no-unused-vars
 export function drawEvPowerChart(canvas, rows, stepSize_m = 15, evSettings = {}) {
   const timestampsMs = rows.map(r => r.timestampMs);
   const axis = buildTimeAxisFromTimestamps(timestampsMs);

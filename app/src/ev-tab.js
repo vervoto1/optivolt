@@ -132,6 +132,7 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
   const totBatt  = evRows.reduce((s, r) => s + (r.b2ev  || 0) * h / 1000, 0);
   const totSolar = evRows.reduce((s, r) => s + (r.pv2ev || 0) * h / 1000, 0);
   const totGridCost_cents = evRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
+  // eslint-disable-next-line no-unused-vars
   const finalSoc = evRows[evRows.length - 1]?.ev_soc_percent ?? 0;
 
   const fmtTotalChip = (val, colorKey) => {

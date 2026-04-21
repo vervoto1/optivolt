@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.5 - 2026-04-21
+
+- Bump typescript to 6.0.3 (major) — no type regressions, all 1140 tests pass
+- Bump eslint to 10.2.1 and @eslint/markdown to 8.0.1 — minor version bumps with vulnerability fixes
+
 ## 0.7.4 - 2026-04-19
 
 - Add retry-with-backoff (3 attempts, 500ms → 1500ms → 4500ms) for transient VRM, HA, and Open-Meteo fetch failures — prevents a brief outage from leaving stale forecasts in place for a whole auto-calc interval
