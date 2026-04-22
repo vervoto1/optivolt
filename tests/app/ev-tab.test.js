@@ -20,7 +20,7 @@ vi.mock('../../app/src/state.js', () => ({
 }));
 
 import { updateEvPanel } from '../../app/src/ev-tab.js';
-import { drawEvPowerChart, drawEvSocChartTab } from '../../app/src/charts.js';
+import { drawEvSocChartTab } from '../../app/src/charts.js';
 import { updateStackedBarContainer } from '../../app/src/state.js';
 
 function makeEls() {
