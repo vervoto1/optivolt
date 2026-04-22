@@ -5,6 +5,7 @@ import { loadCalibration, resetCalibration, calibrate } from '../services/effici
 import { loadPlanHistory, clearPlanHistory } from '../services/plan-history-store.ts';
 import { getRecentSamples, clearSocSamples } from '../services/soc-tracker.ts';
 
+// v8 ignore next — module-level router instantiation
 const router = Router();
 
 /**

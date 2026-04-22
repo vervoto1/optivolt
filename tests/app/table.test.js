@@ -216,4 +216,87 @@ describe('renderTable', () => {
     // NaN should produce empty string from dec2Thin
     expect(table.innerHTML).toContain('<td');
   });
+
+  it('shows EV columns when rows have ev_charge > 0', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow({ ev_charge: 3000, ev_soc_percent: 30, g2ev: 1500, b2ev: 500, pv2ev: 1000 })];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    expect(table.innerHTML).toContain('EV');
+    expect(table.innerHTML).toContain('EV');
+    expect(table.innerHTML).toContain('Grid→EV');
+    expect(table.innerHTML).toContain('Battery→EV');
+    expect(table.innerHTML).toContain('PV→EV');
+  });
+
+  it('shows EV SoC column with departure highlight', () => {
+    const table = document.createElement('table');
+    const departure = new Date('2024-01-15T08:30:00Z').getTime();
+    const rows = [
+      makeRow({ timestampMs: new Date('2024-01-15T08:15:00Z').getTime(), ev_charge: 3000, ev_soc_percent: 30 }),
+      makeRow({ timestampMs: departure, ev_charge: 3000, ev_soc_percent: 80 }),
+    ];
+    renderTable({
+      rows,
+      cfg: { stepSize_m: 15 },
+      targets: { table },
+      showKwh: false,
+      evSettings: { departureTime: new Date(departure).toISOString() },
+    });
+    expect(table.innerHTML).toContain('ring-emerald-200');
+    expect(table.innerHTML).toContain('text-emerald-600');
+  });
+
+  it('applies departure ring style to row', () => {
+    const table = document.createElement('table');
+    const rows = [
+      makeRow({ timestampMs: new Date('2024-01-15T08:00:00Z').getTime() }),
+      makeRow({ timestampMs: new Date('2024-01-15T08:15:00Z').getTime() }),
+    ];
+    renderTable({
+      rows,
+      cfg: { stepSize_m: 15 },
+      targets: { table },
+      showKwh: false,
+      evSettings: { departureTime: new Date('2024-01-15T08:15:00Z').toISOString() },
+    });
+    expect(table.innerHTML).toContain('ring-1 ring-inset ring-emerald-200');
+  });
+
+  it('does not show EV columns when no ev_charge', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow({ ev_charge: 0, ev_soc_percent: 0 })];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    expect(table.innerHTML).not.toContain('Grid→EV');
+    expect(table.innerHTML).not.toContain('EV<br>SoC');
+  });
+
+  it('renders EV hover tooltip breakdown', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow({ ev_charge: 3000, g2ev: 1500, b2ev: 500, pv2ev: 1000 })];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    // Check title attribute contains the breakdown
+    expect(table.innerHTML).toContain('hover for breakdown');
+  });
+
+  it('renders EV SoC without breakdown tooltip when no flows', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow({ ev_charge: 100, g2ev: 0, b2ev: 0, pv2ev: 0 })];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    // EV charge exists but no breakdown flows
+    expect(table.innerHTML).toContain('EV');
+  });
+
+  it('handles missing evSettings gracefully', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow()];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    expect(table.innerHTML).toContain('<thead>');
+  });
+
+  it('handles undefined evSettings gracefully', () => {
+    const table = document.createElement('table');
+    const rows = [makeRow()];
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false, evSettings: undefined });
+    expect(table.innerHTML).toContain('<thead>');
+  });
 });

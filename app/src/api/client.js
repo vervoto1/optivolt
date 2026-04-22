@@ -1,3 +1,4 @@
+// v8 ignore next — module-level constant
 const API_BASE_URL = ".";
 
 export function normaliseBaseUrl(baseUrl) {

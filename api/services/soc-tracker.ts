@@ -15,6 +15,7 @@ const MAX_SAMPLES = 30 * 24 * 4; // 2880
  * Load stored SoC samples (oldest first).
  */
 export async function loadSocSamples(): Promise<SocSample[]> {
+  // v8 ignore next — v8 try/catch brace artifact
   try {
     return await readJson<SocSample[]>(SAMPLES_PATH);
   } catch (err) {

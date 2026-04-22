@@ -228,4 +228,60 @@ describe('Prediction route contracts', () => {
     const res = await post(predictionsRouter, '/validate', {});
     expect(res.status).toBe(502);
   });
+
+  // --- Coverage: 'fixed' activeType branch (lines 152-158 in predictions.ts) ---
+
+  it('returns 400 when activeType is fixed but fixedPredictor is missing', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      activeType: 'fixed',
+      fixedPredictor: undefined,
+    });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('fixedPredictor is required for fixed activeType');
+  });
+
+  it('returns 400 when fixedPredictor.load_W is negative', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      activeType: 'fixed',
+      fixedPredictor: { load_W: -500 },
+    });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('fixedPredictor.load_W must be a non-negative finite number');
+  });
+
+  it('returns 400 when fixedPredictor.load_W is NaN', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      activeType: 'fixed',
+      fixedPredictor: { load_W: NaN },
+    });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('fixedPredictor.load_W must be a non-negative finite number');
+  });
+
+  it('returns 400 when fixedPredictor.load_W is Infinity', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      activeType: 'fixed',
+      fixedPredictor: { load_W: Infinity },
+    });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('fixedPredictor.load_W must be a non-negative finite number');
+  });
+
+  it('accepts fixedPredictor with valid load_W', async () => {
+    loadPredictionConfig.mockResolvedValue({
+      ...structuredClone(mockConfig),
+      activeType: 'fixed',
+      fixedPredictor: { load_W: 500 },
+    });
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(200);
+  });
 });

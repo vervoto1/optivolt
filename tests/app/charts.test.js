@@ -25,6 +25,8 @@ import {
   drawSocChart,
   drawPricesStepLines,
   drawLoadPvGrouped,
+  drawEvPowerChart,
+  drawEvSocChartTab,
 } from '../../app/src/charts.js';
 
 function mockCanvas() {
@@ -425,6 +427,319 @@ describe('charts.js', () => {
       const loadDs = datasets.find(d => d.label === 'Consumption forecast');
       expect(evDs.stack).toBe('load');
       expect(loadDs.stack).toBe('load');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Helper — access top-level plugins array or options.plugins config
+  // ---------------------------------------------------------------------------
+
+  function topPlugins(chart) { return chart.config.plugins; }        // top-level array
+  function optPlugins(chart) { return chart.config.options.plugins; } // options.plugins config
+
+  // Helper to make canvas tooltip tests work — tooltip handler needs canvas in DOM
+  function mountCanvas(canvas) {
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.appendChild(canvas);
+    document.body.appendChild(wrapper);
+  }
+
+  // ---------------------------------------------------------------------------
+  // drawPricesStepLines — tooltip handler
+  // ---------------------------------------------------------------------------
+
+  describe('drawPricesStepLines tooltip', () => {
+    it('creates tooltip with dataPoints rendering', () => {
+      const canvas = mockCanvas();
+      mountCanvas(canvas);
+      Object.defineProperty(canvas, 'offsetWidth', { get: () => 400 });
+      Object.defineProperty(canvas, 'offsetHeight', { get: () => 300 });
+      // Use UTC timestamps for predictable behavior
+      const base = new Date('2024-01-15T00:00:00Z').getTime();
+      const rows = Array.from({ length: 4 }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        ic: 10.5, ec: 5.2,
+      }));
+      drawPricesStepLines(canvas, rows, 15);
+      const chart = canvas._chart;
+
+      // Verify tooltip external handler exists
+      const tooltipCfg = optPlugins(chart).tooltip;
+      expect(tooltipCfg.external).toBeInstanceOf(Function);
+
+      // Simulate tooltip call with title from chart.js callback
+      const mockTooltip = {
+        opacity: 1,
+        dataPoints: [
+          { dataIndex: 0, dataset: { borderColor: '#ef4444', label: 'Buy price' }, raw: 10.5 },
+          { dataIndex: 0, dataset: { borderColor: '#22c55e', label: 'Sell price' }, raw: 5.2 },
+        ],
+        title: ['00:00'],
+        caretX: 100,
+        caretY: 50,
+      };
+      const mockChart = { chart: { canvas }, tooltip: mockTooltip };
+      tooltipCfg.external(mockChart);
+
+      // Verify tooltip HTML contains expected content
+      const ttEl = canvas.parentElement.querySelector('.ov-tt');
+      expect(ttEl).toBeDefined();
+      expect(ttEl.innerHTML).toContain('Buy price');
+      expect(ttEl.innerHTML).toContain('10.5');
+      expect(ttEl.innerHTML).toContain('Sell price');
+      expect(ttEl.innerHTML).toContain('5.2');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // drawSocChart — hasEvSoc branch
+  // ---------------------------------------------------------------------------
+
+  describe('drawSocChart — hasEvSoc branch', () => {
+    it('includes EV SoC dataset when present', () => {
+      const canvas = mockCanvas();
+      const rows = makeRows().map(r => ({ ...r, ev_soc_percent: 60 + r.timestampMs % 30 }));
+      drawSocChart(canvas, rows, 15);
+      const datasets = canvas._chart.config.data.datasets;
+      expect(datasets).toHaveLength(2);
+      expect(datasets[1].label).toBe('EV SoC (%)');
+    });
+
+    it('omits EV SoC dataset when absent', () => {
+      const canvas = mockCanvas();
+      drawSocChart(canvas, makeRows(), 15);
+      expect(canvas._chart.config.data.datasets).toHaveLength(1);
+    });
+
+    it('hides legend when no EV SoC', () => {
+      const canvas = mockCanvas();
+      drawSocChart(canvas, makeRows(), 15);
+      expect(optPlugins(canvas._chart).legend.display).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // drawEvPowerChart
+  // ---------------------------------------------------------------------------
+
+  describe('drawEvPowerChart', () => {
+    function makeEvRows(count = 4) {
+      const base = new Date(2024, 0, 15, 8, 0, 0).getTime();
+      return Array.from({ length: count }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        g2ev: 500 + i * 50,
+        pv2ev: 300 + i * 30,
+        b2ev: 200 + i * 20,
+        ev_charge_A: 10 + i * 2,
+        ic: 8.5 + i * 0.5,
+        ec: 4.2,
+      }));
+    }
+
+    it('renders EV power chart with stacked bars', () => {
+      const canvas = mockCanvas();
+      drawEvPowerChart(canvas, makeEvRows(), 15, { departureTime: '2024-01-15T16:00:00Z' });
+      expect(canvas._chart.config.type).toBe('bar');
+      const labels = canvas._chart.config.data.datasets.map(d => d.label);
+      expect(labels).toContain('Grid');
+      expect(labels).toContain('Solar');
+      expect(labels).toContain('Battery');
+    });
+
+    it('has a secondary price axis (y2)', () => {
+      const canvas = mockCanvas();
+      drawEvPowerChart(canvas, makeEvRows(), 15, {});
+      expect(canvas._chart.config.options.scales.y2).toBeDefined();
+      expect(canvas._chart.config.options.scales.y2.position).toBe('right');
+    });
+
+    function makeEvRowsForDeparture(count = 4) {
+      const base = new Date('2024-01-15T06:00:00Z').getTime();
+      return Array.from({ length: count }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        g2ev: 500 + i * 50,
+        pv2ev: 300 + i * 30,
+        b2ev: 200 + i * 20,
+        ev_charge_A: 10 + i * 2,
+        ic: 8.5 + i * 0.5,
+        ec: 4.2,
+      }));
+    }
+
+    it('renders EV departure plugin', () => {
+      const canvas = mockCanvas();
+      // Rows from 06:00-06:45; departure at 06:30 (matches row[2])
+      const rows = makeEvRowsForDeparture(4);
+      drawEvPowerChart(canvas, rows, 15, { departureTime: '2024-01-15T06:30:00Z' });
+      const plugins = topPlugins(canvas._chart);
+      expect(plugins).toHaveLength(1);
+      expect(plugins[0].id).toBe('evDeparture');
+    });
+
+    it('does not render departure plugin when no departureTime', () => {
+      const canvas = mockCanvas();
+      drawEvPowerChart(canvas, makeEvRows(), 15, {});
+      expect(topPlugins(canvas._chart)).toHaveLength(0);
+    });
+
+    it('departure plugin handles missing chartArea gracefully', () => {
+      const canvas = mockCanvas();
+      const rows = makeEvRowsForDeparture(4);
+      drawEvPowerChart(canvas, rows, 15, { departureTime: '2024-01-15T06:30:00Z' });
+      const plugin = topPlugins(canvas._chart)[0];
+      plugin.afterDatasetsDraw({ ctx: {}, chartArea: null, scales: {} });
+    });
+
+    it('tooltip shows EV source breakdown', () => {
+      const canvas = mockCanvas();
+      mountCanvas(canvas);
+      Object.defineProperty(canvas, 'offsetWidth', { get: () => 400 });
+      Object.defineProperty(canvas, 'offsetHeight', { get: () => 300 });
+      drawEvPowerChart(canvas, makeEvRows(), 15, {});
+      const tooltipCfg = optPlugins(canvas._chart).tooltip;
+
+      const mockTooltip = {
+        opacity: 1,
+        dataPoints: [
+          { dataIndex: 0, dataset: { label: 'Grid' }, raw: 2.5 },
+        ],
+        caretX: 100,
+        caretY: 50,
+      };
+      tooltipCfg.external({ chart: { canvas }, tooltip: mockTooltip });
+
+      const ttEl = canvas.parentElement.querySelector('.ov-tt');
+      expect(ttEl).toBeDefined();
+      expect(ttEl.innerHTML).toContain('Charging');
+      expect(ttEl.innerHTML).toContain('Grid');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // drawEvSocChartTab
+  // ---------------------------------------------------------------------------
+
+  describe('drawEvSocChartTab', () => {
+    function makeEvSocRows(count = 4) {
+      const base = new Date(2024, 0, 15, 8, 0, 0).getTime();
+      return Array.from({ length: count }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        ev_soc_percent: 20 + i * 10,
+      }));
+    }
+
+    it('renders EV SoC line chart', () => {
+      const canvas = mockCanvas();
+      drawEvSocChartTab(canvas, makeEvSocRows(), {});
+      expect(canvas._chart.config.type).toBe('line');
+      expect(canvas._chart.config.data.datasets[0].label).toBe('EV SoC (%)');
+    });
+
+    it('has y axis min 0 and max 100', () => {
+      const canvas = mockCanvas();
+      drawEvSocChartTab(canvas, makeEvSocRows(), {});
+      expect(canvas._chart.config.options.scales.y.min).toBe(0);
+      expect(canvas._chart.config.options.scales.y.max).toBe(100);
+    });
+
+    function makeEvSocRowsForDeparture(count = 4) {
+      const base = new Date('2024-01-15T06:00:00Z').getTime();
+      return Array.from({ length: count }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        ev_soc_percent: 20 + i * 10,
+      }));
+    }
+
+    it('renders EV target plugin when departure + target provided', () => {
+      const canvas = mockCanvas();
+      const rows = makeEvSocRowsForDeparture(4);
+      drawEvSocChartTab(canvas, rows, {
+        departureTime: '2024-01-15T06:30:00Z',
+        targetSoc_percent: 80,
+      });
+      const plugins = topPlugins(canvas._chart);
+      expect(plugins).toHaveLength(1);
+      expect(plugins[0].id).toBe('evTarget');
+    });
+
+    it('no target plugin when targetSoc_percent is 0', () => {
+      const canvas = mockCanvas();
+      drawEvSocChartTab(canvas, makeEvSocRowsForDeparture(4), {
+        departureTime: '2024-01-15T06:30:00Z',
+        targetSoc_percent: 0,
+      });
+      expect(topPlugins(canvas._chart)).toHaveLength(0);
+    });
+
+    it('no target plugin when no departureTime', () => {
+      const canvas = mockCanvas();
+      drawEvSocChartTab(canvas, makeEvSocRowsForDeparture(4), { targetSoc_percent: 80 });
+      expect(topPlugins(canvas._chart)).toHaveLength(0);
+    });
+
+    it('EV target plugin handles missing chartArea', () => {
+      const canvas = mockCanvas();
+      const rows = makeEvSocRowsForDeparture(4);
+      drawEvSocChartTab(canvas, rows, {
+        departureTime: '2024-01-15T06:30:00Z',
+        targetSoc_percent: 80,
+      });
+      const plugin = topPlugins(canvas._chart)[0];
+      plugin.afterDatasetsDraw({ ctx: {}, chartArea: null, scales: {} });
+    });
+
+    it('tooltip shows EV SoC value', () => {
+      const canvas = mockCanvas();
+      mountCanvas(canvas);
+      Object.defineProperty(canvas, 'offsetWidth', { get: () => 400 });
+      Object.defineProperty(canvas, 'offsetHeight', { get: () => 300 });
+      drawEvSocChartTab(canvas, makeEvSocRows(), {});
+      const tooltipCfg = optPlugins(canvas._chart).tooltip;
+
+      tooltipCfg.external({
+        chart: { canvas },
+        tooltip: {
+          opacity: 1,
+          dataPoints: [{ dataIndex: 0, raw: 30, dataset: { label: 'EV SoC (%)' } }],
+          title: ['08:00'],
+          caretX: 100,
+          caretY: 50,
+        },
+      });
+
+      const ttEl = canvas.parentElement.querySelector('.ov-tt');
+      expect(ttEl.innerHTML).toContain('EV SoC');
+      expect(ttEl.innerHTML).toContain('30%');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // aggregateRows (via drawFlowsBarStackSigned with aggregateMinutes)
+  // ---------------------------------------------------------------------------
+
+  describe('aggregateRows behavior', () => {
+    it('averages flow values across aggregated slots', () => {
+      const canvas = mockCanvas();
+      // 4 rows at 15min = 1 hour → aggregate to 60min = 1 bucket
+      const rows = makeRows(4);
+      drawFlowsBarStackSigned(canvas, rows, 15, null, { aggregateMinutes: 60 });
+      // All 4 rows should be merged into 1 bucket
+      expect(canvas._chart.config.data.labels).toHaveLength(1);
+    });
+
+    it('uses last SoC value in bucket', () => {
+      const canvas = mockCanvas();
+      const rows = [
+        { timestampMs: Date.now(), g2l: 100, b2l: 50, load: 200, soc: 1000, soc_percent: 10 },
+        { timestampMs: Date.now() + 15 * 60000, g2l: 200, b2l: 100, load: 300, soc: 2000, soc_percent: 20 },
+      ];
+      drawFlowsBarStackSigned(canvas, rows, 15, null, { aggregateMinutes: 60 });
+      const datasets = canvas._chart.config.data.datasets;
+      // g2l should be averaged: (100 + 200) / 2 = 150, converted to kWh
+      const g2lDs = datasets.find(d => d.label === 'Grid → Load');
+      // Values are signed in kWh (abs value * sign)
+      expect(g2lDs).toBeDefined();
     });
   });
 });

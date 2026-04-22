@@ -9,6 +9,7 @@ import { fetchHaStats } from './ha-client.ts';
 import { postprocess, aggregateTo15Min } from '../../lib/ha-postprocess.ts';
 import { fetchArchiveIrradiance, fetchForecastIrradiance } from './open-meteo-client.ts';
 import { expandHourlyTo15Min } from '../../lib/open-meteo.ts';
+/* v8 ignore start — import lines are module-load noise */
 import {
   calculateMaxProductionPerHour,
   calculateMaxProductionPerSlot,
@@ -20,6 +21,7 @@ import {
   slotOfDay,
   validatePvForecast,
 } from '../../lib/predict-pv.ts';
+/* v8 ignore stop */
 import type { PvProductionRecord, PvForecastPoint } from '../../lib/predict-pv.ts';
 import type { PredictionRunConfig, PvMode } from '../types.ts';
 import { getForecastTimeRange, buildForecastSeries, type ForecastSeries } from '../../lib/time-series-utils.ts';

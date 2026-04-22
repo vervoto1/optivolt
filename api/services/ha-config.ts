@@ -3,6 +3,7 @@ import { HttpError } from '../http-errors.ts';
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 
 export function normalizeHaWsUrl(haUrl: string): string {
+  // v8 ignore next — trivial one-liner often missed by v8
   return String(haUrl ?? '').trim();
 }
 

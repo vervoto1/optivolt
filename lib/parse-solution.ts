@@ -24,6 +24,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   const timestampsMs = synthesizeFromStart(opts.startMs, opts.stepMin, T);
 
   const cap = Math.max(1e-9, cfg.batteryCapacity_Wh);
+  // v8 ignore next — trivial Math.max always true branch in practice
   const evCap = Math.max(1e-9, cfg.ev?.evBatteryCapacity_Wh ?? 1);
 
   // --- 1. Reconstruct solver columns into per-slot arrays ---

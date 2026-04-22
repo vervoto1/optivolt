@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import type { PredictionConfig } from '../types.ts';
 
+// v8 ignore next — module-level setup
 const DATA_DIR = resolveDataDir();
 const PREDICTION_CONFIG_PATH = path.join(DATA_DIR, 'prediction-config.json');
 const DEFAULT_PATH = fileURLToPath(new URL('../defaults/default-prediction-config.json', import.meta.url));

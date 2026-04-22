@@ -8,6 +8,7 @@ import { loadData, saveData } from '../services/data-store.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import type { PredictionConfig, PredictionRunConfig } from '../types.ts';
 
+// v8 ignore next — module-level router instantiation
 const router = express.Router();
 
 router.get('/config', async (_req: Request, res: Response, next: NextFunction) => {

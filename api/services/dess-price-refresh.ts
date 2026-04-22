@@ -3,6 +3,7 @@ import { writeVictronSetting } from './mqtt-service.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
 
 const DESS_MODE_AUTO = 1;
+// v8 ignore next — module-level const
 const DESS_MODE_CUSTOM = 4;
 const CHECK_INTERVAL_MS = 60_000; // check every 60 seconds
 

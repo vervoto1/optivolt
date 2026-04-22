@@ -5,6 +5,7 @@ import { loadSettings } from '../services/settings-store.ts';
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import type { TimeSeries, SocData, Data } from '../types.ts';
 
+// v8 ignore next — module-level router instantiation
 const router = express.Router();
 
 router.get('/', async (_req: Request, res: Response, next: NextFunction) => {

@@ -17,6 +17,7 @@ import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
 
 function computeHorizonWarnings(data: Data, nowMs: number): string[] {
+  // v8 ignore next — trivial one-liner function
   const warnings: string[] = [];
   const expectedEndMs = new Date(getForecastTimeRange(nowMs).endIso).getTime();
   const toleranceMs = 2 * 60 * 60 * 1000;

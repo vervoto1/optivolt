@@ -630,6 +630,106 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
   });
 });
 
+describe('refreshSeriesFromVrmAndPersist — API data sources failure paths', () => {
+  let runForecast, runPvForecast, loadPredictionConfig;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+
+    ({ runForecast } = await import('../../../api/services/load-prediction-service.ts'));
+    ({ runPvForecast } = await import('../../../api/services/pv-prediction-service.ts'));
+    ({ loadPredictionConfig } = await import('../../../api/services/prediction-config-store.ts'));
+
+    loadData.mockResolvedValue({ ...baseData });
+    saveData.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    mqttService.readVictronSocPercent.mockResolvedValue(50);
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+  });
+
+  afterEach(() => {
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  it('keeps base data when loadPredictionConfig throws (line 134-135)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    loadPredictionConfig.mockRejectedValue(new Error('config store locked'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    // Should fall back to baseData.load since we never called runForecast
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.load).toEqual(baseData.load);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[vrm-refresh]'),
+      'config store locked',
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('keeps base data when loadPredictionConfig returns null (line 138)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    loadPredictionConfig.mockResolvedValue(null);
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.load).toEqual(baseData.load);
+    expect(runForecast).not.toHaveBeenCalled();
+  });
+
+  it('keeps base data when load forecast succeeds but has no values array (line 147-148)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    // resolve with a result that has no forecast.values (fulfilled but incomplete)
+    runForecast.mockResolvedValue({ forecast: { start: 'x', step: 15 } });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    // forecast.values is missing, so should keep base data
+    expect(savedData.load).toEqual(baseData.load);
+  });
+
+  it('keeps base data when pv forecast resolves with no values (line 155-156)', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'vrm', pv: 'api', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+
+    runPvForecast.mockResolvedValue({ forecast: { start: 'x', step: 15 } });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.pv).toEqual(baseData.pv);
+  });
+});
+
 describe('refreshSeriesFromVrmAndPersist — empty timestamps', () => {
   beforeEach(() => {
     vi.clearAllMocks();

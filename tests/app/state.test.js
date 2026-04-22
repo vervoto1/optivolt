@@ -526,6 +526,263 @@ describe('updateSummaryUI', () => {
     hydrateUI(els, {});
     expect(els.step.value).toBe('original');
   });
+
+  it('hydrateUI sets flat evEnabled from obj.evEnabled (not from evConfig)', () => {
+    const els = makeEls();
+    els.evEnabled = { checked: false };
+    hydrateUI(els, { evEnabled: true });
+    expect(els.evEnabled.checked).toBe(true);
+  });
+
+  it('hydrateUI flat evEnabled overrides evConfig enabled', () => {
+    const els = makeEls();
+    els.evEnabled = { checked: false };
+    hydrateUI(els, {
+      evConfig: { enabled: false },
+      evEnabled: true,
+    });
+    // Flat evEnabled should win
+    expect(els.evEnabled.checked).toBe(true);
+  });
+
+  it('hydrateUI sets flat EV fields from top-level obj', () => {
+    const els = makeEls();
+    // Ensure flat EV fields exist in els
+    els.evMinChargeCurrent = { value: '' };
+    els.evMaxChargeCurrent = { value: '' };
+    els.evBatteryCapacity = { value: '' };
+    els.evChargeEfficiency = { value: '' };
+    els.evDepartureTime = { value: '' };
+    els.evTargetSoc = { value: '' };
+    els.evSocSensor = { value: '' };
+    els.evPlugSensor = { value: '' };
+    hydrateUI(els, {
+      evEnabled: true,
+      evMinChargeCurrent_A: 10,
+      evMaxChargeCurrent_A: 32,
+      evBatteryCapacity_kWh: 60,
+      evChargeEfficiency_percent: 90,
+      evDepartureTime: '2024-01-15T08:00:00Z',
+      evTargetSoc_percent: 80,
+      evSocSensor: 'sensor.ev_soc',
+      evPlugSensor: 'sensor.ev_plug',
+    });
+    expect(els.evMinChargeCurrent.value).toBe('10');
+    expect(els.evMaxChargeCurrent.value).toBe('32');
+    expect(els.evBatteryCapacity.value).toBe('60');
+    expect(els.evChargeEfficiency.value).toBe('90');
+    expect(els.evDepartureTime.value).toBe('2024-01-15T08:00:00Z');
+    expect(els.evTargetSoc.value).toBe('80');
+    expect(els.evSocSensor.value).toBe('sensor.ev_soc');
+    expect(els.evPlugSensor.value).toBe('sensor.ev_plug');
+  });
+});
+
+describe('updateSummaryUI -- loadTotal with || 0 fallback', () => {
+  it('loadTotal uses || 0 fallback when components are null', () => {
+    document.body.innerHTML = `
+      <div id="load-split-bar" style="display:flex"></div>
+      <div id="flow-split-bar" style="display:flex"></div>
+    `;
+    updateSummaryUI(
+      {
+        sumLoad: { textContent: '' },
+        sumPv: { textContent: '' },
+        sumEv: { textContent: '' },
+        sumEvRow: { hidden: false },
+        sumEvGrid: { textContent: '' },
+        sumEvPv: { textContent: '' },
+        sumEvBatt: { textContent: '' },
+        sumEvTotal: { textContent: '' },
+        sumLoadGrid: { textContent: '' },
+        sumLoadBatt: { textContent: '' },
+        sumLoadPv: { textContent: '' },
+        avgImport: { textContent: '' },
+        gridBatteryTp: { textContent: '' },
+        gridChargeTp: { textContent: '' },
+        batteryExportTp: { textContent: '' },
+        rebalanceStatus: { textContent: '', className: '' },
+        rebalanceStatusRow: { classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn() } },
+        horizonWarningsBlock: { classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn() } },
+        horizonWarningsList: { innerHTML: '' },
+      },
+      {
+        loadTotal_kWh: 10,
+        pvTotal_kWh: 0,
+        evLoadTotal_kWh: 0,
+        loadFromGrid_kWh: null,
+        loadFromBattery_kWh: null,
+        loadFromPv_kWh: null,
+        avgImportPrice_cents_per_kWh: 0,
+        gridBatteryTippingPoint_cents_per_kWh: 0,
+        gridChargeTippingPoint_cents_per_kWh: 0,
+        batteryExportTippingPoint_cents_per_kWh: 0,
+        gridToBattery_kWh: 0,
+        batteryToGrid_kWh: 0,
+      },
+    );
+    // Should still render a load bar with 0 total (no error from null components)
+    const loadBar = document.getElementById('load-split-bar');
+    expect(loadBar).toBeTruthy();
+    document.body.innerHTML = '';
+  });
+
+  it('updateEvSummary hides block when total <= 0', () => {
+    const mockEls = {
+      evSummaryBlock: document.createElement('div'),
+      sumEvGrid: { textContent: '' },
+      sumEvPv: { textContent: '' },
+      sumEvBatt: { textContent: '' },
+      sumEvTotal: { textContent: '' },
+    };
+    updateSummaryUI(mockEls, {
+      loadTotal_kWh: 10,
+      pvTotal_kWh: 5,
+      evLoadTotal_kWh: 0,
+      loadFromGrid_kWh: 5,
+      loadFromBattery_kWh: 3,
+      loadFromPv_kWh: 2,
+      avgImportPrice_cents_per_kWh: 10,
+      gridBatteryTippingPoint_cents_per_kWh: 5,
+      gridChargeTippingPoint_cents_per_kWh: 3,
+      batteryExportTippingPoint_cents_per_kWh: 12,
+      gridToBattery_kWh: 0,
+      batteryToGrid_kWh: 0,
+    });
+    expect(mockEls.evSummaryBlock.classList.contains('hidden')).toBe(true);
+  });
+
+  it('updateHorizonWarnings hides warnings block when empty', () => {
+    document.body.innerHTML = `
+      <div id="horizon-warnings-block"></div>
+      <ul id="horizon-warnings-list"></ul>
+    `;
+    updateSummaryUI(
+      {
+        sumLoad: { textContent: '' },
+        sumPv: { textContent: '' },
+        sumEv: { textContent: '' },
+        sumEvRow: { hidden: false },
+        sumLoadGrid: { textContent: '' },
+        sumLoadBatt: { textContent: '' },
+        sumLoadPv: { textContent: '' },
+        avgImport: { textContent: '' },
+        gridBatteryTp: { textContent: '' },
+        gridChargeTp: { textContent: '' },
+        batteryExportTp: { textContent: '' },
+        rebalanceStatus: { textContent: '', className: '' },
+        rebalanceStatusRow: { classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn() } },
+        horizonWarningsBlock: document.getElementById('horizon-warnings-block'),
+        horizonWarningsList: document.getElementById('horizon-warnings-list'),
+      },
+      {
+        loadTotal_kWh: 10,
+        pvTotal_kWh: 5,
+        evLoadTotal_kWh: 0,
+        loadFromGrid_kWh: 5,
+        loadFromBattery_kWh: 3,
+        loadFromPv_kWh: 2,
+        avgImportPrice_cents_per_kWh: 10,
+        gridBatteryTippingPoint_cents_per_kWh: 5,
+        gridChargeTippingPoint_cents_per_kWh: 3,
+        batteryExportTippingPoint_cents_per_kWh: 12,
+        gridToBattery_kWh: 0,
+        batteryToGrid_kWh: 0,
+        horizonWarnings: [],
+      },
+    );
+    expect(document.getElementById('horizon-warnings-block').classList.contains('hidden')).toBe(true);
+    document.body.innerHTML = '';
+  });
+
+  it('updateHorizonWarnings hides when warnings is null', () => {
+    document.body.innerHTML = `
+      <div id="horizon-warnings-block"></div>
+      <ul id="horizon-warnings-list"></ul>
+    `;
+    updateSummaryUI(
+      {
+        sumLoad: { textContent: '' },
+        sumPv: { textContent: '' },
+        sumEv: { textContent: '' },
+        sumEvRow: { hidden: false },
+        sumLoadGrid: { textContent: '' },
+        sumLoadBatt: { textContent: '' },
+        sumLoadPv: { textContent: '' },
+        avgImport: { textContent: '' },
+        gridBatteryTp: { textContent: '' },
+        gridChargeTp: { textContent: '' },
+        batteryExportTp: { textContent: '' },
+        rebalanceStatus: { textContent: '', className: '' },
+        rebalanceStatusRow: { classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn() } },
+        horizonWarningsBlock: document.getElementById('horizon-warnings-block'),
+        horizonWarningsList: document.getElementById('horizon-warnings-list'),
+      },
+      {
+        loadTotal_kWh: 10,
+        pvTotal_kWh: 5,
+        evLoadTotal_kWh: 0,
+        loadFromGrid_kWh: 5,
+        loadFromBattery_kWh: 3,
+        loadFromPv_kWh: 2,
+        avgImportPrice_cents_per_kWh: 10,
+        gridBatteryTippingPoint_cents_per_kWh: 5,
+        gridChargeTippingPoint_cents_per_kWh: 3,
+        batteryExportTippingPoint_cents_per_kWh: 12,
+        gridToBattery_kWh: 0,
+        batteryToGrid_kWh: 0,
+        horizonWarnings: null,
+      },
+    );
+    expect(document.getElementById('horizon-warnings-block').classList.contains('hidden')).toBe(true);
+    document.body.innerHTML = '';
+  });
+
+  it('updateHorizonWarnings shows warnings when array has items', () => {
+    document.body.innerHTML = `
+      <div id="horizon-warnings-block"></div>
+      <ul id="horizon-warnings-list"></ul>
+    `;
+    updateSummaryUI(
+      {
+        sumLoad: { textContent: '' },
+        sumPv: { textContent: '' },
+        sumEv: { textContent: '' },
+        sumEvRow: { hidden: false },
+        sumLoadGrid: { textContent: '' },
+        sumLoadBatt: { textContent: '' },
+        sumLoadPv: { textContent: '' },
+        avgImport: { textContent: '' },
+        gridBatteryTp: { textContent: '' },
+        gridChargeTp: { textContent: '' },
+        batteryExportTp: { textContent: '' },
+        rebalanceStatus: { textContent: '', className: '' },
+        rebalanceStatusRow: { classList: { add: vi.fn(), remove: vi.fn(), contains: vi.fn() } },
+        horizonWarningsBlock: document.getElementById('horizon-warnings-block'),
+        horizonWarningsList: document.getElementById('horizon-warnings-list'),
+      },
+      {
+        loadTotal_kWh: 10,
+        pvTotal_kWh: 5,
+        evLoadTotal_kWh: 0,
+        loadFromGrid_kWh: 5,
+        loadFromBattery_kWh: 3,
+        loadFromPv_kWh: 2,
+        avgImportPrice_cents_per_kWh: 10,
+        gridBatteryTippingPoint_cents_per_kWh: 5,
+        gridChargeTippingPoint_cents_per_kWh: 3,
+        batteryExportTippingPoint_cents_per_kWh: 12,
+        gridToBattery_kWh: 0,
+        batteryToGrid_kWh: 0,
+        horizonWarnings: ['Warning 1', 'Warning 2'],
+      },
+    );
+    expect(document.getElementById('horizon-warnings-block').classList.contains('hidden')).toBe(false);
+    const items = document.getElementById('horizon-warnings-list').querySelectorAll('li');
+    expect(items.length).toBe(2);
+    expect(items[0].textContent).toBe('Warning 1');
+    document.body.innerHTML = '';
+  });
 });
 
 describe('updateTerminalCustomUI', () => {

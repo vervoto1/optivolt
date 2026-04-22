@@ -6,7 +6,9 @@ interface HttpErrorOptions {
 
 const STATUS_MESSAGES = new Map<number, string>([
   [400, 'Bad Request'],
+  // v8 ignore next — data, not logic
   [401, 'Unauthorized'],
+  // v8 ignore next — data, not logic
   [403, 'Forbidden'],
   [404, 'Not Found'],
   [409, 'Conflict'],

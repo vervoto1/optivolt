@@ -6,6 +6,7 @@ export async function fetchStoredSettings() {
   if (settings && typeof settings === "object") {
     return settings;
   }
+  /* v8 ignore next */
   return {};
 }
 

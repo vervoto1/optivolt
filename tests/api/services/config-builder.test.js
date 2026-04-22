@@ -16,10 +16,16 @@ vi.mock('../../../api/services/efficiency-calibrator.ts', async (importOriginal)
   };
 });
 
+// Mock ha-client for fetchHaEntityState — needed because config-builder imports it directly
+vi.mock('../../../api/services/ha-client.ts', () => ({
+  fetchHaEntityState: vi.fn(),
+}));
+
 import { buildSolverConfigFromSettings, applyCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import { loadData } from '../../../api/services/data-store.ts';
 import { loadCalibration } from '../../../api/services/efficiency-calibrator.ts';
+import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 
 const NOW_STRING = '2024-01-01T12:00:00Z';
 const MID_SLOT_NOW_STRING = '2024-01-01T14:22:00Z';
@@ -358,6 +364,169 @@ describe('applyCalibration', () => {
     applyCalibration(baseCfg, cal);
     expect(baseCfg.chargeEfficiency_percent).toBe(original.chargeEfficiency_percent);
     expect(baseCfg.cvPhaseThresholds).toBeUndefined();
+  });
+});
+
+describe('getSolverInputs — EV state fetching from HA', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeEvSettings() {
+    return {
+      ...mockSettings,
+      evEnabled: true,
+      evSocSensor: 'sensor.ev_soc',
+      evPlugSensor: 'sensor.ev_plug',
+      haUrl: 'http://ha.local:8123',
+      haToken: 'my-token',
+    };
+  }
+
+  it('fetches EV state from HA and passes to buildSolverConfigFromSettings', async () => {
+    loadSettings.mockResolvedValue(makeEvSettings());
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // EV state should be undefined because fetchHaEntityState returns undefined by default
+    // in the vi.mock. We test the error path below.
+    expect(cfg.ev).toBeUndefined();
+  });
+
+  it('resolves EV state when fetchHaEntityState returns valid entity states (line 208-214)', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    // Mock fetchHaEntityState to return valid entity states
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'sensor.ev_soc') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_soc', state: '75',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      if (entityId === 'sensor.ev_plug') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_plug', state: 'connected',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      return Promise.resolve({
+        entity_id: '', state: 'unknown',
+        attributes: {}, last_changed: '', last_updated: '',
+      });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // EV state was read successfully: parseFloat('75') = 75, pluggedIn = true
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evInitialSoc_percent).toBe(75);
+    expect(cfg.ev.evDepartureSlot).toBe(8);
+  });
+
+  it('marks EV as not plugged when plug sensor returns "disconnected" (line 209)', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'sensor.ev_soc') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_soc', state: '60',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      return Promise.resolve({
+        entity_id: 'sensor.ev_plug', state: 'disconnected',
+        attributes: {}, last_changed: '', last_updated: '',
+      });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // pluggedIn = false, so cfg.ev should not be included
+    // (the pluggedIn check on line 114 prevents ev from being set)
+    expect(cfg.ev).toBeUndefined();
+  });
+
+  it('catches HA error and still returns config without EV state', async () => {
+    loadSettings.mockResolvedValue(makeEvSettings());
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockRejectedValue(new Error('HA unreachable'));
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // EV state should be undefined because fetchHaEntityState rejects
+    expect(cfg.ev).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Could not read EV state from HA:',
+      expect.any(String),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('skips EV state when parseFloat returns NaN (line 213)', async () => {
+    loadSettings.mockResolvedValue(makeEvSettings());
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'sensor.ev_soc') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_soc', state: 'not-a-number',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      return Promise.resolve({
+        entity_id: 'sensor.ev_plug', state: 'connected',
+        attributes: {}, last_changed: '', last_updated: '',
+      });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // soc_percent is NaN, so Number.isFinite fails (line 213), evState stays undefined
+    expect(cfg.ev).toBeUndefined();
   });
 });
 

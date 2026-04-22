@@ -445,6 +445,56 @@ describe('planAndMaybeWrite — writeToVictron=false', () => {
   });
 });
 
+describe('computePlan — horizon warnings', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sets horizonWarnings when data is short of expected horizon', async () => {
+    // baseData: 5 slots of 60 min = 5h data.
+    // Expected horizon: 24h from NOW → gap = 19h, tolerance = 2h → warning
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await computePlan();
+
+    expect(result.summary.horizonWarnings).toBeDefined();
+    expect(result.summary.horizonWarnings.length).toBeGreaterThan(0);
+    expect(result.summary.horizonWarnings[0]).toContain('short');
+    logSpy.mockRestore();
+  });
+
+  it('does not set horizonWarnings when data reaches the expected horizon', async () => {
+    // 24 slots of 60-min data starting at NOW = full 24h horizon
+    const fullData = {
+      ...baseData,
+      load: { start: NOW_STRING, step: 60, values: new Array(24).fill(500) },
+      pv: { start: NOW_STRING, step: 60, values: new Array(24).fill(0) },
+      importPrice: { start: NOW_STRING, step: 60, values: new Array(24).fill(10) },
+      exportPrice: { start: NOW_STRING, step: 60, values: new Array(24).fill(5) },
+    };
+
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue(fullData);
+
+    const result = await computePlan();
+    expect(result.summary.horizonWarnings).toBeUndefined();
+  });
+});
+
 describe('computePlan — savePlanSnapshot fire-and-forget', () => {
   beforeEach(() => {
     vi.useFakeTimers();

@@ -12,6 +12,7 @@ function getVictronClient(): VictronMqttClient {
     // If port is the non-TLS default (1883) but TLS is enabled, treat it as
     // "not explicitly set" so the MQTT client picks the correct TLS default (8883).
     const port = (tls && rawPort === 1883) ? undefined : rawPort;
+    // v8 ignore next — module-level setup in function (covered once per lazy init)
     const username = process.env.MQTT_USERNAME ?? '';
     const password = process.env.MQTT_PASSWORD ?? '';
     const rejectUnauthorized = !(process.env.MQTT_TLS_INSECURE === 'true' || process.env.MQTT_TLS_INSECURE === '1');

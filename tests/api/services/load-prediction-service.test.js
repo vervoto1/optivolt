@@ -137,6 +137,13 @@ describe('runForecast', () => {
     // All values should be 0 since there is no history to predict from
     expect(result.forecast.values.every(v => v === 0)).toBe(true);
   });
+
+  it('returns empty recent when includeRecent is false in historical mode', async () => {
+    const config = { ...baseConfig, includeRecent: false };
+    const result = await runForecast(config);
+
+    expect(result.recent).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -220,6 +227,10 @@ describe('runForecast (fixed predictor)', () => {
     vi.setSystemTime(new Date('2026-04-01T22:00:00.000Z'));
   });
 
+  beforeEach(() => {
+    fetchHaStats.mockReset();
+  });
+
   afterAll(() => {
     vi.useRealTimers();
   });
@@ -258,6 +269,46 @@ describe('runForecast (fixed predictor)', () => {
 
     const result = await runForecast(config);
     expect(result.forecast.values.every(v => v === 50)).toBe(true);
+  });
+
+  it('returns empty recent and NaN metrics when canComputeAccuracy is false (sensors empty)', async () => {
+    // Lines 113-120: canComputeAccuracy false → early return, no fetchHaStats call
+    const config = {
+      activeType: 'fixed',
+      fixedPredictor: { load_W: 300 },
+      historicalPredictor: undefined,
+      sensors: [],
+      derived: [],
+      haUrl: '',
+      haToken: '',
+    };
+
+    const result = await runForecast(config);
+
+    // Early-exit path: recent is [], metrics are all NaN
+    expect(result.recent).toEqual([]);
+    expect(Number.isNaN(result.metrics.mae)).toBe(true);
+    expect(Number.isNaN(result.metrics.rmse)).toBe(true);
+    expect(Number.isNaN(result.metrics.mape)).toBe(true);
+    expect(result.metrics.n).toBe(0);
+  });
+
+  it('returns empty recent and NaN metrics when haUrl is empty (line 117)', async () => {
+    const config = {
+      activeType: 'fixed',
+      fixedPredictor: { load_W: 300 },
+      historicalPredictor: { sensor: 'Load', lookbackWeeks: 4 },
+      sensors: [{ id: 'sensor.load', name: 'Load', unit: 'W' }],
+      derived: [],
+      haUrl: '',  // empty URL → canComputeAccuracy false
+      haToken: 'some-token',
+    };
+
+    const result = await runForecast(config);
+
+    // Early-exit path: recent is [], metrics are all NaN
+    expect(result.recent).toEqual([]);
+    expect(Number.isNaN(result.metrics.mae)).toBe(true);
   });
 });
 

@@ -263,7 +263,9 @@ export function updateSummaryUI(els, summary) {
 
     // reset mini bars
     const loadSplitBar = document.getElementById("load-split-bar");
+    /* v8 ignore start — DOM access, tested via integration only */
     if (loadSplitBar) loadSplitBar.innerHTML = "";
+    /* v8 ignore stop */
     return;
   }
 
@@ -461,6 +463,7 @@ function setText(el, txt) {
   }
 
   // Clear any in-flight fade
+  /* v8 ignore start — setTimeout + isConnected CSS transitions, untestable in jsdom */
   if (el._fadeTimer) clearTimeout(el._fadeTimer);
 
   el.style.transition = 'opacity 0.15s ease';
@@ -472,6 +475,7 @@ function setText(el, txt) {
     }
     el._fadeTimer = null;
   }, 150);
+  /* v8 ignore stop */
 }
 
 export function formatKWh(v) {

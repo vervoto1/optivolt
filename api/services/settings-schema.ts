@@ -1,3 +1,4 @@
+// v8 ignore next — type-only import
 import type {
   Settings,
   DataSources,

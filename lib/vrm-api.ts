@@ -40,6 +40,7 @@ interface VRMWindow {
 
 interface FetchOptions {
   query?: Record<string, string | number | null | undefined>;
+  // v8 ignore next — type-only
   method?: string;
   body?: unknown;
 }

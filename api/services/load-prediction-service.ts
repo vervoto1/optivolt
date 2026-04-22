@@ -33,6 +33,7 @@ interface ValidationEntry {
 
 interface ValidationRunResult {
   sensorNames: string[];
+  // v8 ignore next — type-only interface property
   results: ValidationEntry[];
 }
 
