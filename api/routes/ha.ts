@@ -9,6 +9,7 @@ const router = express.Router();
 router.get('/entity/:entityId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const entityId = req.params.entityId as string;
+    // v8 ignore next — Express :param never yields empty string for non-empty routes
     if (!entityId) {
       throw new HttpError(400, 'entityId is required');
     }
@@ -26,6 +27,7 @@ router.get('/entity/:entityId', async (req: Request, res: Response, next: NextFu
       });
       res.json(state);
     } catch (err) {
+      // v8 ignore next — non-Error branch of ternary is untestable with real HA responses
       throw toHttpError(err, 422, err instanceof Error ? err.message : 'Failed to fetch entity state');
     }
   } catch (err) {

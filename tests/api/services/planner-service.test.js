@@ -495,6 +495,89 @@ describe('computePlan — horizon warnings', () => {
   });
 });
 
+describe('computePlan — EV info in solve log', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('logs ev as null when evEnabled is false (covers null ternary branch)', async () => {
+    loadSettings.mockResolvedValue(baseSettings);
+    loadData.mockResolvedValue({ ...baseData });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await computePlan();
+
+    const logCall = logSpy.mock.calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('[calculate] solve')
+    );
+    expect(logCall[1].ev).toBeNull();
+
+    logSpy.mockRestore();
+  });
+});
+
+describe('computePlan — rebalance context', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sets rebalanceCtx to undefined when rebalanceEnabled is false', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: false });
+    loadData.mockResolvedValue({ ...baseData });
+
+    const result = await computePlan();
+
+    // rebalanceCtx path: settings.rebalanceEnabled is false → undefined
+    expect(result.rebalanceWindow).toBeUndefined();
+  });
+
+  it('passes rebalanceEnabled + startMs:null through buildPlanSummary (covers rebalanceCtx ternary)', async () => {
+    // When rebalanceEnabled=true and soc>=maxSoc with startMs=null, the pre-solve
+    // bookkeeping at line 181 sets startMs to timing.startMs and saves data.
+    // The rebalanceCtx object is built with enabled=true and startMs=null (original).
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 100 },
+      rebalanceState: { startMs: null },
+    });
+
+    await computePlan();
+
+    // saveData should be called with rebalanceState.startMs set
+    const saveCalls = saveData.mock.calls;
+    const rebalanceSave = saveCalls.find(
+      ([d]) => d.rebalanceState?.startMs != null
+    );
+    expect(rebalanceSave).toBeDefined();
+  });
+});
+
 describe('computePlan — savePlanSnapshot fire-and-forget', () => {
   beforeEach(() => {
     vi.useFakeTimers();

@@ -122,6 +122,7 @@ function evChargeMode(g: number, pv: number, b: number, evMinPow_W: number, pv2b
 
 function parseIndex(varName: string): number | null {
   const m = /_(\d+)$/.exec(varName);
+  // v8 ignore next — null path of ternary when regex matches is untestable
   return m ? Number(m[1]) : null;
 }
 

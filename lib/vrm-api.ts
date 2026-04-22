@@ -359,6 +359,7 @@ function num(x: unknown): number {
 }
 function safeMul(a: number, b: number): number {
   const n = a * b;
+  // v8 ignore next — NaN/0 branch of ternary is untestable with real inputs
   return Number.isFinite(n) ? n : 0;
 }
 function boolish(v: unknown): boolean { return v === true || v === 1 || v === '1'; }

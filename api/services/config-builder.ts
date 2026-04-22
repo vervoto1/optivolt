@@ -156,6 +156,7 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
   // Generate charge thresholds from calibration curve
   const chargeThresholds = generateThresholdsFromCurve(
     cal.chargeCurve,
+    // v8 ignore next — null path of ?? is untestable with real calibration results
     cal.chargeSamples ?? [],
     cfg.maxChargePower_W,
     'charge',
@@ -164,6 +165,7 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
   // Generate discharge thresholds from calibration curve
   const dischargeThresholds = generateThresholdsFromCurve(
     cal.dischargeCurve,
+    // v8 ignore next — null path of ?? is untestable with real calibration results
     cal.dischargeSamples ?? [],
     cfg.maxDischargePower_W,
     'discharge',

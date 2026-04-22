@@ -284,4 +284,35 @@ describe('Prediction route contracts', () => {
     const res = await post(predictionsRouter, '/load/forecast', {});
     expect(res.status).toBe(200);
   });
+
+  // --- Coverage: maybeSaveForecastData early return (line 219) ---
+
+  it('does not save data when PV forecast result has no values (maybeSaveForecastData early return)', async () => {
+    // runPvForecast returns a result with forecast that has no values property
+    // This triggers the early return in maybeSaveForecastData (line 219)
+    runPvForecast.mockResolvedValueOnce({ forecast: { start: '2026-02-20T00:00:00Z', step: 15 } });
+    loadSettings.mockResolvedValue({ ...mockSettings, dataSources: { ...mockSettings.dataSources, pv: 'api' } });
+
+    const res = await post(predictionsRouter, '/pv/forecast', {});
+    expect(res.status).toBe(200);
+    // saveData should not have been called because forecast has no values
+    expect(saveData).not.toHaveBeenCalled();
+  });
+
+  // --- Coverage: mapPredictionError non-Error throwable (lines 229, 236) ---
+
+  it('POST /predictions/load/forecast maps non-Error throwable to 500', async () => {
+    // runForecast rejects with a string — mapPredictionError (line 229) uses String(err),
+    // then returns new Error(msg) (line 236 fallback). Route handler catches and wraps.
+    runForecast.mockRejectedValueOnce('string error throwable');
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(500);
+  });
+
+  it('POST /predictions/load/forecast maps non-Error string with auth keyword to 502', async () => {
+    runForecast.mockRejectedValueOnce('HA authentication failed');
+    const res = await post(predictionsRouter, '/load/forecast', {});
+    expect(res.status).toBe(502);
+    expect(res.body.error).toContain('HA connection error');
+  });
 });

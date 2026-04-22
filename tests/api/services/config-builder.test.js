@@ -503,6 +503,29 @@ describe('getSolverInputs — EV state fetching from HA', () => {
     warnSpy.mockRestore();
   });
 
+  it('handles non-Error throwable from fetchHaEntityState (String(err) branch)', async () => {
+    loadSettings.mockResolvedValue(makeEvSettings());
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    // Reject with a string, not an Error instance
+    fetchHaEntityState.mockRejectedValue('connection refused');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    // EV state should be undefined because fetchHaEntityState rejects
+    expect(cfg.ev).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Could not read EV state from HA:',
+      'connection refused',
+    );
+    warnSpy.mockRestore();
+  });
+
   it('skips EV state when parseFloat returns NaN (line 213)', async () => {
     loadSettings.mockResolvedValue(makeEvSettings());
     loadData.mockResolvedValue(makeData());

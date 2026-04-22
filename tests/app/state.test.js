@@ -652,6 +652,41 @@ describe('updateSummaryUI -- loadTotal with || 0 fallback', () => {
     expect(mockEls.evSummaryBlock.classList.contains('hidden')).toBe(true);
   });
 
+  it('updateEvSummary shows block and sets values when total > 0 with real DOM', () => {
+    document.body.innerHTML = '<div id="ev-split-bar"></div>';
+    const mockEls = {
+      evSummaryBlock: document.getElementById('ev-split-bar'),
+      sumEvGrid: { textContent: '' },
+      sumEvPv: { textContent: '' },
+      sumEvBatt: { textContent: '' },
+      sumEvTotal: { textContent: '' },
+    };
+    updateSummaryUI(mockEls, {
+      loadTotal_kWh: 10,
+      pvTotal_kWh: 5,
+      evLoadTotal_kWh: 5,
+      evChargeTotal_kWh: 5,
+      evChargeFromGrid_kWh: 2,
+      evChargeFromPv_kWh: 1.5,
+      evChargeFromBattery_kWh: 1.5,
+      loadFromGrid_kWh: 5,
+      loadFromBattery_kWh: 3,
+      loadFromPv_kWh: 2,
+      avgImportPrice_cents_per_kWh: 10,
+      gridBatteryTippingPoint_cents_per_kWh: 5,
+      gridChargeTippingPoint_cents_per_kWh: 3,
+      batteryExportTippingPoint_cents_per_kWh: 12,
+      gridToBattery_kWh: 0,
+      batteryToGrid_kWh: 0,
+    });
+    expect(mockEls.evSummaryBlock.classList.contains('hidden')).toBe(false);
+    expect(mockEls.sumEvGrid.textContent).toBe('2.00 kWh');
+    expect(mockEls.sumEvPv.textContent).toBe('1.50 kWh');
+    expect(mockEls.sumEvBatt.textContent).toBe('1.50 kWh');
+    expect(mockEls.sumEvTotal.textContent).toBe('5.00 kWh');
+    document.body.innerHTML = '';
+  });
+
   it('updateHorizonWarnings hides warnings block when empty', () => {
     document.body.innerHTML = `
       <div id="horizon-warnings-block"></div>

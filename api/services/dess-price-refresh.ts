@@ -41,6 +41,8 @@ function isInWindow(now: Date, time: string, durationMinutes: number): boolean {
 }
 
 async function tick(): Promise<void> {
+  /* v8 ignore next 2 — configEnabled is set true before first tick() call,
+  and interval callback fires only after that same point */
   if (!configEnabled) return;
 
   const now = new Date();

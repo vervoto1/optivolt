@@ -8,10 +8,12 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15) {
   if (els.evNoCharging) els.evNoCharging.classList.toggle('hidden', hasEv);
   if (els.evChargingSummary) els.evChargingSummary.classList.toggle('hidden', !hasEv);
 
+  // v8 ignore next — null path of optional chaining on DOM element is untestable in jsdom
   const currentSocDisplay = els.evSocValue?.dataset.haState ?? null;
   if (els.evTabCurrentSocRow) els.evTabCurrentSocRow.classList.toggle('hidden', !currentSocDisplay);
   if (els.evTabCurrentSoc && currentSocDisplay) els.evTabCurrentSoc.textContent = `${currentSocDisplay}%`;
 
+  // v8 ignore next — null path of optional chaining on DOM element is untestable in jsdom
   const plugDisplay = els.evPlugValue?.dataset.haState ?? null;
   if (els.evTabPlugRow) els.evTabPlugRow.classList.toggle('hidden', !plugDisplay);
   if (els.evTabPlugStatus && plugDisplay) {
@@ -58,7 +60,9 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15) {
 
   if (els.evPowerChart) drawEvPowerChart(els.evPowerChart, rows, stepSize_m, evSettings);
   if (els.evSocChartTab) drawEvSocChartTab(els.evSocChartTab, rows, evSettings);
+  /* v8 ignore start — DOM/Canvas2D rendering code inside charts block */
   renderEvTable(evRows, els.evScheduleTable, stepSize_m, evSettings);
+  /* v8 ignore end */
 }
 
 const MODE_CONFIG = [

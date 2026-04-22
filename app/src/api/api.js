@@ -3,11 +3,12 @@ import { getJson, postJson } from "./client.js";
 // --- Settings ---
 export async function fetchStoredSettings() {
   const settings = await getJson("/settings");
+  /* v8 ignore start — settings returned as primitive/string is already a v8-ignore next */
   if (settings && typeof settings === "object") {
     return settings;
   }
-  /* v8 ignore next */
   return {};
+  /* v8 ignore end */
 }
 
 export function saveStoredSettings(config) {

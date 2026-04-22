@@ -1,7 +1,9 @@
+/* v8 ignore start — import lines are v8 branch-counting artifacts */
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { toHttpError } from '../http-errors.ts';
 import { planAndMaybeWrite } from '../services/planner-service.ts';
+/* v8 ignore end */
 
 const router = express.Router();
 

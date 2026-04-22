@@ -285,6 +285,62 @@ describe('fetchHaStats', () => {
     vi.useRealTimers();
   });
 
+  it('rejects on timeout when timer fires before any message (covers timer callback)', async () => {
+    // Lines 108-114: the setTimeout callback — !settled, sets settled=true, closes ws, rejects
+    vi.useFakeTimers();
+
+    const promise = fetchHaStats({
+      haUrl: 'ws://ha.local/api/websocket',
+      haToken: 'tok',
+      entityIds: ['sensor.soc'],
+      startTime: '2024-01-01T00:00:00Z',
+      timeoutMs: 100,
+    });
+
+    // Attach rejection handler before advancing timers to avoid unhandled rejection warning
+    const rejection = expect(promise).rejects.toThrow('timed out after 100ms');
+
+    // Let the timer fire without any messages — this covers the timer callback path
+    await vi.advanceTimersByTimeAsync(101);
+    await rejection;
+    vi.useRealTimers();
+  });
+
+  it('covers done() early return when settled is already true', async () => {
+    // Lines 116-121: done() called a second time with settled=true → early return
+    // Settle via onerror first, then simulate onclose which also calls done
+    const promise = fetchHaStats({
+      haUrl: 'ws://ha.local/api/websocket',
+      haToken: 'tok',
+      entityIds: ['sensor.soc'],
+      startTime: '2024-01-01T00:00:00Z',
+    });
+
+    // Settle via error first — done() sets settled=true
+    currentWs.simulateError('first error');
+    // Now onclose fires — done() is called again but settled=true so it early-returns
+    currentWs.simulateClose();
+
+    await expect(promise).rejects.toThrow('first error');
+  });
+
+  it('rejects with fallback message when result success=false and error is undefined', async () => {
+    // Line 150: result type with success=false and no error object at all
+    const promise = fetchHaStats({
+      haUrl: 'ws://ha.local/api/websocket',
+      haToken: 'tok',
+      entityIds: ['sensor.soc'],
+      startTime: '2024-01-01T00:00:00Z',
+    });
+
+    currentWs.simulateMessage({ type: 'auth_required' });
+    currentWs.simulateMessage({ type: 'auth_ok' });
+    // No error object at all — should use the fallback 'HA returned error result'
+    currentWs.simulateMessage({ type: 'result', success: false, error: undefined });
+
+    await expect(promise).rejects.toThrow('HA returned error result');
+  });
+
   it('silently ignores malformed JSON messages', async () => {
     const promise = fetchHaStats({
       haUrl: 'ws://ha.local/api/websocket',

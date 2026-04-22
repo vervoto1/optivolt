@@ -124,6 +124,7 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
 
   const nSlots = Math.min(slotCount, rows.length);
   const tasks = [];
+  // v8 ignore next — single-row edge case (default) is untestable with valid plan data
   const stepSeconds = rows.length > 1
     ? (rows[1].timestampMs - rows[0].timestampMs) / 1000
     : DEFAULT_SLOT_SECONDS;

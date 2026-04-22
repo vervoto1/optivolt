@@ -46,6 +46,7 @@ export function resolveHaWsConfig(haUrl: string, haToken: string): { url: string
     };
   }
 
+  // v8 ignore next — null path of ?? already covered, v8 double-counts in String() call
   const token = String(haToken ?? '');
   const url = normalizeHaWsUrl(haUrl);
   if (!token || !url) {

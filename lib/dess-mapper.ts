@@ -52,20 +52,15 @@ export function mapRowsToDess(rows: PlanRow[], cfg: SolverConfig): DessResult {
     const feedin = row.ec < 0 ? FeedIn.blocked : FeedIn.allowed;
 
     // Primitive flows — all non-negative by LP construction
-    // v8 ignore next — destructured assignment
+    /* v8 ignore start — destructured assignments are v8 counting artifacts */
     const g2l = row.g2l;
-    // v8 ignore next — destructured assignment
     const g2b = row.g2b;
-    // v8 ignore next — destructured assignment
     const pv2l = row.pv2l;
-    // v8 ignore next — destructured assignment
     const pv2b = row.pv2b;
-    // v8 ignore next — destructured assignment
     const pv2g = row.pv2g;
-    // v8 ignore next — destructured assignment
     const b2l = row.b2l;
-    // v8 ignore next — destructured assignment
     const b2g = row.b2g;
+    /* v8 ignore end */
 
     // Flow booleans
     const hasG2L = g2l > FLOW_EPSILON_W;

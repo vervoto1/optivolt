@@ -12,6 +12,7 @@ import {
   saveStoredSettings,
   requestRemoteSolve,
   refreshVrmSettings,
+  fetchHaEntityState,
   fetchPredictionConfig,
   savePredictionConfig,
   runValidation,
@@ -54,6 +55,18 @@ describe('api.js wrappers', () => {
     postJson.mockResolvedValue({});
     await saveStoredSettings({ foo: 1 });
     expect(postJson).toHaveBeenCalledWith('/settings', { foo: 1 });
+  });
+
+  it('fetchHaEntityState calls getJson with encoded entity ID', () => {
+    getJson.mockReturnValue(Promise.resolve({ state: 'on' }));
+    fetchHaEntityState('sensor.my_entity').catch(() => {});
+    expect(getJson).toHaveBeenCalledWith('/ha/entity/sensor.my_entity');
+  });
+
+  it('fetchHaEntityState encodes special characters in entity ID', () => {
+    getJson.mockReturnValue(Promise.resolve({ state: 'on' }));
+    fetchHaEntityState('sensor/my:entity').catch(() => {});
+    expect(getJson).toHaveBeenCalledWith('/ha/entity/sensor%2Fmy%3Aentity');
   });
 
   it('requestRemoteSolve calls postJson /calculate', async () => {

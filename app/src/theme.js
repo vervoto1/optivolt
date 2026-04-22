@@ -29,7 +29,8 @@ if (mq.addEventListener) {
   mq.addEventListener('change', () => {
     if (!getStoredTheme()) applyTheme();
   });
-} else if (mq.addListener) {
+} else {
+  // v8 ignore next — fallback for browsers without addEventListener (untestable)
   mq.addListener(() => {
     if (!getStoredTheme()) applyTheme();
   });

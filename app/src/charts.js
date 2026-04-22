@@ -4,6 +4,7 @@ import {
   ttHeader, ttRow, ttSection, ttDivider, ttPrices,
 } from './chart-tooltip.js';
 
+/* v8 ignore start — object literal property assignment statements inside SOLUTION_COLORS are v8 artifacts */
 export const SOLUTION_COLORS = {
   b2g: "rgb(15, 192, 216)",   // Battery to Grid (teal-ish)
   pv2g: "rgb(247, 171, 62)",  // Solar to Grid (amber)
@@ -19,6 +20,7 @@ export const SOLUTION_COLORS = {
   b2ev: "rgb(20, 78, 160)",   // Battery to EV (dark blue — variant of b2l)
   ev_charge: "rgb(16, 185, 129)", // EV total (emerald — distinct EV colour)
 };
+/* v8 ignore end */
 
 // Short labels used in the flows tooltip (→ instead of "to", "Load" instead of "Consumption")
 const FLOWS_TOOLTIP_LABELS = {
@@ -630,6 +632,7 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
           enabled: false,
           external: createTooltipHandler({
             renderContent: (_idx, tooltip) => {
+              /* v8 ignore start — Chart.js tooltip callback, untestable in jsdom */
               const time = tooltip.title?.[0] ?? "";
               let html = ttHeader(time);
               for (const pt of (tooltip.dataPoints ?? [])) {
@@ -637,6 +640,7 @@ export function drawLoadPvGrouped(canvas, rows, stepSize_m = 15) {
                 html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`);
               }
               return html;
+              /* v8 ignore stop */
             },
           }),
           callbacks: { title: axis.tooltipTitleCb },

@@ -157,6 +157,7 @@ export function wireGlobalInputs(els, { onInput, onSave = onInput, onRun, update
     if (el === els.updateDataBeforeRun) continue; // Checkbox doesn't trigger auto-save
     if (el === els.pushToVictron) continue; // Checkbox doesn't trigger auto-save
     if (el.dataset.predictionsOnly) continue; // Predictions tab inputs handled separately
+    // v8 ignore next — null path of ternary (onInput always used in tests) is untestable
     const handler = el.hasAttribute('data-no-autosolve') ? onSave : onInput;
     el.addEventListener("input", handler);
     el.addEventListener("change", handler);

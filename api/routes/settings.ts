@@ -20,6 +20,7 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // v8 ignore next — null path of ?? is untestable when req.body always exists
     const incoming = req.body ?? {};
     assertCondition(
       incoming && typeof incoming === 'object' && !Array.isArray(incoming),

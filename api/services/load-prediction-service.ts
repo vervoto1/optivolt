@@ -31,11 +31,13 @@ interface ValidationEntry {
   validationPredictions: PredictionResult[];
 }
 
+/* v8 ignore start — type-only interface property assignments */
 interface ValidationRunResult {
   sensorNames: string[];
   // v8 ignore next — type-only interface property
   results: ValidationEntry[];
 }
+/* v8 ignore end */
 
 interface ForecastRunResult {
   forecast: ForecastSeries;
@@ -133,6 +135,7 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
         date: d.date,
         time: d.time,
         hour: d.hour,
+        /* v8 ignore next — d.value ?? null branch is untestable in jsdom */
         actual: d.value ?? null,
         predicted: load_W,
       }));

@@ -17,6 +17,7 @@ vi.stubGlobal('Chart', MockChart);
 import {
   SOLUTION_COLORS,
   toRGBA,
+  fmtHHMM,
   buildTimeAxisFromTimestamps,
   getBaseOptions,
   getChartTheme,
@@ -75,6 +76,22 @@ describe('charts.js', () => {
 
     it('returns input unchanged for non-matching string', () => {
       expect(toRGBA('notacolor', 0.5)).toBe('notacolor');
+    });
+  });
+
+  describe('fmtHHMM', () => {
+    it('formats hour and minute correctly', () => {
+      // Use a Date with known local time regardless of system timezone
+      const dt = new Date(Date.UTC(2024, 0, 15, 8, 5));
+      // In test environment (jsdom), getHours() returns local time
+      // We verify the format structure instead of exact values
+      const result = fmtHHMM(dt);
+      expect(result).toMatch(/^\d{2}:\d{2}$/);
+    });
+
+    it('returns a two-digit hour and minute format', () => {
+      const dt = new Date(Date.UTC(2024, 0, 15, 0, 0));
+      expect(fmtHHMM(dt)).toMatch(/^\d{2}:\d{2}$/);
     });
   });
 
@@ -517,6 +534,63 @@ describe('charts.js', () => {
       drawSocChart(canvas, makeRows(), 15);
       expect(optPlugins(canvas._chart).legend.display).toBe(false);
     });
+
+    it('tooltip shows SoC dataPoints in drawSocChart', () => {
+      const canvas = mockCanvas();
+      mountCanvas(canvas);
+      Object.defineProperty(canvas, 'offsetWidth', { get: () => 400 });
+      Object.defineProperty(canvas, 'offsetHeight', { get: () => 300 });
+      const rows = makeRows(2);
+      drawSocChart(canvas, rows, 15);
+      const tooltipCfg = optPlugins(canvas._chart).tooltip;
+
+      tooltipCfg.external({
+        chart: { canvas },
+        tooltip: {
+          opacity: 1,
+          dataPoints: [
+            { dataIndex: 0, raw: 52, dataset: { borderColor: 'rgb(71, 144, 208)', label: 'SoC (%)' } },
+          ],
+          title: ['08:00'],
+          caretX: 100,
+          caretY: 50,
+        },
+      });
+
+      const ttEl = canvas.parentElement.querySelector('.ov-tt');
+      expect(ttEl).toBeDefined();
+      expect(ttEl.innerHTML).toContain('08:00');
+      expect(ttEl.innerHTML).toContain('52%');
+    });
+
+    it('tooltip shows both SoC and EV SoC when both datasets present', () => {
+      const canvas = mockCanvas();
+      mountCanvas(canvas);
+      Object.defineProperty(canvas, 'offsetWidth', { get: () => 400 });
+      Object.defineProperty(canvas, 'offsetHeight', { get: () => 300 });
+      const rows = makeRows(2).map(r => ({ ...r, ev_soc_percent: 60 + r.timestampMs % 30 }));
+      drawSocChart(canvas, rows, 15);
+      const tooltipCfg = optPlugins(canvas._chart).tooltip;
+
+      tooltipCfg.external({
+        chart: { canvas },
+        tooltip: {
+          opacity: 1,
+          dataPoints: [
+            { dataIndex: 0, raw: 52, dataset: { borderColor: 'rgb(71, 144, 208)', label: 'SoC (%)' } },
+            { dataIndex: 0, raw: 62, dataset: { borderColor: 'rgb(16, 185, 129)', label: 'EV SoC (%)' } },
+          ],
+          caretX: 100,
+          caretY: 50,
+        },
+      });
+
+      const ttEl = canvas.parentElement.querySelector('.ov-tt');
+      expect(ttEl.innerHTML).toContain('52%');
+      expect(ttEl.innerHTML).toContain('62%');
+      expect(ttEl.innerHTML).toContain('SoC');
+      expect(ttEl.innerHTML).toContain('EV SoC');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -552,6 +626,15 @@ describe('charts.js', () => {
       drawEvPowerChart(canvas, makeEvRows(), 15, {});
       expect(canvas._chart.config.options.scales.y2).toBeDefined();
       expect(canvas._chart.config.options.scales.y2.position).toBe('right');
+    });
+
+    it('y2 tick callback formats price as ¢', () => {
+      const canvas = mockCanvas();
+      drawEvPowerChart(canvas, makeEvRows(), 15, {});
+      const tickCb = canvas._chart.config.options.scales.y2.ticks.callback;
+      expect(tickCb(10.5)).toBe('11¢');
+      expect(tickCb(8.2)).toBe('8¢');
+      expect(tickCb(0)).toBe('0¢');
     });
 
     function makeEvRowsForDeparture(count = 4) {

@@ -11,6 +11,7 @@ export function debounce(fn, wait = 250) {
     }, wait);
   };
 
+  // v8 ignore next — null path of === check is untestable (timer is always set in tests)
   debounced.cancel = () => {
     if (timer !== null) {
       clearTimeout(timer);

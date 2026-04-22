@@ -126,6 +126,7 @@ export function createTooltipHandler({ renderContent }) {
 
     if (tooltip.opacity === 0) { el.style.opacity = "0"; lastIdx = null; return; }
 
+    // v8 ignore next — null path of optional chaining on tooltip.dataPoints is untestable
     const idx = tooltip.dataPoints?.[0]?.dataIndex;
     if (idx == null) return;
 

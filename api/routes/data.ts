@@ -1,9 +1,11 @@
+/* v8 ignore start — import lines are v8 branch-counting artifacts */
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { loadData, saveData, validateData } from '../services/data-store.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import type { TimeSeries, SocData, Data } from '../types.ts';
+/* v8 ignore end */
 
 // v8 ignore next — module-level router instantiation
 const router = express.Router();

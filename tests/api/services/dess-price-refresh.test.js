@@ -250,4 +250,17 @@ describe('dess-price-refresh', () => {
     // Should no longer be active (14:00 window, current time 13:05)
     expect(isPriceRefreshWindowActive()).toBe(false);
   });
+
+  it('handles invalid time string gracefully (isInWindow NaN branch)', async () => {
+    // Line 34: isInWindow checks !Number.isFinite(h) || !Number.isFinite(m)
+    vi.setSystemTime(new Date('2026-03-19T13:05:00'));
+    startDessPriceRefresh({
+      dessPriceRefresh: { enabled: true, time: 'not-a-time', durationMinutes: 15 },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should not crash; isInWindow returns false for NaN time
+    expect(isPriceRefreshWindowActive()).toBe(false);
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+  });
 });

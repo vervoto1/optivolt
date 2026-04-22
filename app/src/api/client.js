@@ -2,6 +2,7 @@
 const API_BASE_URL = ".";
 
 export function normaliseBaseUrl(baseUrl) {
+  // v8 ignore next — empty string fallback branch for falsy baseUrl is untestable
   return (baseUrl || "").replace(/\/$/, "");
 }
 

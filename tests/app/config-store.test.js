@@ -30,6 +30,14 @@ describe('config-store', () => {
     });
   });
 
+  it('uses empty config when fetchStoredSettings returns falsy value', async () => {
+    fetchStoredSettings.mockResolvedValue(null);
+    await expect(loadInitialConfig()).resolves.toEqual({
+      config: {},
+      source: 'api',
+    });
+  });
+
   it('delegates config saves to the API layer', async () => {
     const config = { stepSize_m: 60 };
     await saveConfig(config);
