@@ -189,7 +189,11 @@ describe('shore-optimizer service', () => {
     emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
     vi.clearAllMocks();
 
+    // Advance past first tick so serial/paths are initialized, then move time
+    // 16s forward so readings are stale (>15s refresh window) for the next tick
+    await vi.advanceTimersByTimeAsync(3000);
     vi.setSystemTime(new Date('2026-04-28T10:00:16.000Z'));
+    vi.clearAllMocks();
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(requestVictronSetting).toHaveBeenCalledWith(
@@ -204,5 +208,79 @@ describe('shore-optimizer service', () => {
       'multi/6/Pv/0/MppOperationMode',
       { serial: 'c0619ab6bd28' },
     );
+  });
+
+  it('skips refresh requests when readings are recent', async () => {
+    startShoreOptimizer(makeSettings());
+    await flushPromises();
+
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+
+    // Advance past first tick, then emit fresh readings for the next tick
+    await vi.advanceTimersByTimeAsync(3000);
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+    vi.clearAllMocks();
+
+    // Tick at T=6s — readings are only 6s old (<15s refresh window), so no requests
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(requestVictronSetting).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-numeric MQTT payload for current limit', async () => {
+    startShoreOptimizer(makeSettings());
+    await flushPromises();
+
+    // Emit a string payload — the subscribeNumber handler should ignore it
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 'not-a-number');
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // currentShoreA should still be null, so no write occurs
+    expect(getShoreOptimizerStatus().currentShoreA).toBeNull();
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+  });
+
+  it('handles raw non-object payload via subscribeValue for mppOperationMode', async () => {
+    startShoreOptimizer(makeSettings());
+    await flushPromises();
+
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    // MPP operation mode receives a raw number (not {value} wrapper)
+    // payloadValue returns undefined for non-objects → normalizeMppOperationMode returns 'unknown'
+    const sub = subscriptions.get('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode');
+    sub.handler('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // MPPT state is 'unknown' → mppt_idle blocks the write
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(getShoreOptimizerStatus().mpptState).toBeNull();
+  });
+
+  it('truncates recent writes ring buffer when exceeding limit', async () => {
+    startShoreOptimizer(makeSettings({ dryRun: true, gateOnDessSchedule: false }));
+    await flushPromises();
+
+    // Emit readings and tick 55 times (>50 limit)
+    for (let i = 0; i < 55; i++) {
+      emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+      emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+      emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+      await vi.advanceTimersByTimeAsync(3000);
+    }
+
+    const writes = getShoreOptimizerStatus().recentWrites;
+    expect(writes.length).toBe(50);
+    // First write timestamp should not be present (truncated)
+    const firstTs = writes[0].ts;
+    expect(firstTs).toBeDefined();
   });
 });

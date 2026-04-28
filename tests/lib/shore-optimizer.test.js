@@ -121,4 +121,33 @@ describe('decideShoreCurrent', () => {
     });
     expect(result.newA).toBe(10.1);
   });
+
+  it('blocks when shore current reading is null', () => {
+    const result = decide({ currentShoreA: null });
+    expect(result.shouldWrite).toBe(false);
+    expect(result.reason).toBe('missing_current_shore');
+    expect(result.oldA).toBeNull();
+  });
+
+  it('uses default step when config provides a non-finite value', () => {
+    const result = decide({
+      currentShoreA: 10,
+      mppOperationMode: 2,
+      config: { stepA: NaN },
+    });
+    // With NaN step, finiteOr returns DEFAULT_STEP_A = 0.5, rounded to CURRENT_STEP_A = 0.1 minimum
+    expect(result.shouldWrite).toBe(true);
+    expect(result.newA).toBe(10.5);
+  });
+
+  it('swaps minShoreA and maxShoreA when max is less than min', () => {
+    const result = decide({
+      currentShoreA: 5,
+      mppOperationMode: 2,
+      config: { minShoreA: 20, maxShoreA: 5 },
+    });
+    // After swap: min=5, max=20. Stepping up from 5 gives 5.5, within bounds.
+    expect(result.shouldWrite).toBe(true);
+    expect(result.newA).toBe(5.5);
+  });
 });

@@ -9,6 +9,15 @@ vi.mock('../../api/services/shore-optimizer.ts', () => ({
   getShoreOptimizerStatus: vi.fn(),
 }));
 
+vi.mock('../../api/http-errors.ts', () => ({
+  toHttpError: vi.fn((error, statusCode, message) => ({
+    statusCode,
+    message,
+    expose: false,
+    originalError: error,
+  })),
+}));
+
 import { loadSettings } from '../../api/services/settings-store.ts';
 import { getShoreOptimizerStatus } from '../../api/services/shore-optimizer.ts';
 import shoreOptimizerRouter from '../../api/routes/shore-optimizer.ts';
@@ -42,5 +51,14 @@ describe('shore optimizer route', () => {
     expect(res.status).toBe(200);
     expect(getShoreOptimizerStatus).toHaveBeenCalledWith(settings.shoreOptimizer);
     expect(res.body).toEqual(status);
+  });
+
+  it('returns 500 when loadSettings throws', async () => {
+    loadSettings.mockRejectedValue(new Error('disk read failed'));
+
+    const res = await get(shoreOptimizerRouter, '/status');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to read shore optimizer status');
   });
 });

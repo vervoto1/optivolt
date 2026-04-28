@@ -12,13 +12,15 @@ const { mockMqttClient } = vi.hoisted(() => {
     unsubscribeAsync: vi.fn().mockResolvedValue(undefined),
     endAsync: vi.fn().mockResolvedValue(undefined),
     on: vi.fn().mockImplementation((event, handler) => {
-      handlers[event] = handler;
+      if (!handlers[event]) handlers[event] = [];
+      handlers[event].push(handler);
     }),
     off: vi.fn().mockImplementation((event, _handler) => {
-      delete handlers[event];
+      if (!Array.isArray(handlers[event])) handlers[event] = undefined;
     }),
     emit: (event, ...args) => {
-      if (handlers[event]) handlers[event](...args);
+      const list = Array.isArray(handlers[event]) ? handlers[event] : [];
+      list.forEach(h => h(...args));
     },
   };
 
@@ -227,6 +229,19 @@ describe('VictronMqttClient — requestSetting', () => {
     mqtt.connectAsync.mockResolvedValue(mockMqttClient);
   });
 
+  it('uses auto-detected serial when not provided', async () => {
+    const client = new VictronMqttClient();
+    scheduleMessage('N/myserial/system/0/Serial', { value: 'detected-auto' });
+
+    await client.requestSetting('multi/6/Pv/0/MppOperationMode');
+
+    expect(mockMqttClient.publishAsync).toHaveBeenCalledWith(
+      'R/detected-auto/multi/6/Pv/0/MppOperationMode',
+      '',
+      { qos: 0, retain: false },
+    );
+  });
+
   it('publishes an empty payload to R/<serial>/<path>', async () => {
     const client = new VictronMqttClient({ serial: 'ser1' });
     await client.requestSetting('multi/6/Pv/0/MppOperationMode', { serial: 'ser1' });
@@ -243,6 +258,28 @@ describe('VictronMqttClient — subscribeJson', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mqtt.connectAsync.mockResolvedValue(mockMqttClient);
+  });
+
+  it('subscribes without requestTopic and does not publish', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const handler = vi.fn();
+    await client.subscribeJson('N/ser1/topic', handler); // no requestTopic
+
+    expect(mockMqttClient.subscribeAsync).toHaveBeenCalledWith('N/ser1/topic');
+    // No publishAsync call for requestTopic
+    expect(mockMqttClient.publishAsync).not.toHaveBeenCalled();
+  });
+
+  it('cleans up message handler when subscribeAsync throws', async () => {
+    mockMqttClient.subscribeAsync.mockRejectedValueOnce(new Error('subscribe failed'));
+
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    await expect(
+      client.subscribeJson('N/ser1/topic', vi.fn()),
+    ).rejects.toThrow('subscribe failed');
+
+    // Should remove the message handler on error via client.off
+    expect(mockMqttClient.off).toHaveBeenCalledWith('message', expect.any(Function));
   });
 
   it('subscribes, requests an update, and forwards parsed payloads', async () => {
@@ -262,6 +299,21 @@ describe('VictronMqttClient — subscribeJson', () => {
 
     expect(mockMqttClient.subscribeAsync).toHaveBeenCalledWith('N/ser1/multi/6/Ac/In/1/CurrentLimit');
     expect(mockMqttClient.publishAsync).toHaveBeenCalledWith('R/ser1/multi/6/Ac/In/1/CurrentLimit', '');
+
+    // Test wrong topic is ignored
+    mockMqttClient.emit(
+      'N/ser1/wrong/topic',
+      Buffer.from(JSON.stringify({ value: 99 })),
+    );
+    expect(handler).toHaveBeenCalledTimes(1); // unchanged
+
+    // Test invalid JSON payload is silently ignored (parse fails, handler not called again)
+    mockMqttClient.emit(
+      'N/ser1/multi/6/Ac/In/1/CurrentLimit',
+      Buffer.from('not-valid-json{{{'),
+    );
+    expect(handler).toHaveBeenCalledTimes(1); // still only 1 valid call
+
     expect(handler).toHaveBeenCalledWith('N/ser1/multi/6/Ac/In/1/CurrentLimit', { value: 12.5 });
 
     await unsubscribe();

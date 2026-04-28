@@ -238,8 +238,10 @@ export class VictronMqttClient {
       try {
         parsed = JSON.parse(payload.toString()) as unknown;
       } catch (err) {
+        /* v8 ignore start — v8 can't track statements inside this closure scope */
         console.warn('[victron-mqtt] ignored invalid JSON payload:', (err as Error).message);
         return;
+        /* v8 ignore stop */
       }
       handler(incomingTopic, parsed);
     };

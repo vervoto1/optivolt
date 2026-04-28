@@ -9,6 +9,7 @@ const mockWriteScheduleSlot = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
 const mockReadSocPercent = vi.fn().mockResolvedValue({ soc_percent: 75 });
 const mockReadSocLimitsPercent = vi.fn().mockResolvedValue({ minSoc_percent: 20, maxSoc_percent: 95 });
+const mockSubscribeJson = vi.fn().mockResolvedValue(vi.fn());
 
 vi.mock('../../../lib/victron-mqtt.ts', () => ({
   VictronMqttClient: class MockVictronMqttClient {
@@ -21,6 +22,7 @@ vi.mock('../../../lib/victron-mqtt.ts', () => ({
     close = mockClose;
     readSocPercent = mockReadSocPercent;
     readSocLimitsPercent = mockReadSocLimitsPercent;
+    subscribeJson = mockSubscribeJson;
   },
 }));
 
@@ -314,6 +316,27 @@ describe('mqtt-service — TLS env var parsing', () => {
 
     // Client was created — the port override logic ran without error
     expect(mockGetSerial).toHaveBeenCalled();
+  });
+});
+
+describe('mqtt-service — subscribeVictronJson wrapper', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetSerial.mockResolvedValue('test-serial-123');
+    await shutdownVictronClient();
+  });
+
+  it('subscribes and returns unsubscribe function', async () => {
+    const { subscribeVictronJson } = await import('../../../api/services/mqtt-service.ts');
+
+    const handler = vi.fn();
+    const unsubscribe = await subscribeVictronJson(
+      'N/test-serial-123/multi/6/Ac/In/1/CurrentLimit',
+      handler,
+      { requestTopic: 'R/test-serial-123/multi/6/Ac/In/1/CurrentLimit' },
+    );
+
+    expect(typeof unsubscribe).toBe('function');
   });
 });
 

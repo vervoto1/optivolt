@@ -100,6 +100,66 @@ describe('loadSettings', () => {
   });
 });
 
+describe('loadSettings — shoreOptimizer merge with null', () => {
+  beforeEach(() => {
+    _reset();
+  });
+
+  it('handles null shoreOptimizer in stored settings', async () => {
+    const defaults = makeDefaults({
+      shoreOptimizer: {
+        enabled: true,
+        dryRun: true,
+        tickMs: 3000,
+        stepA: 0.5,
+        minShoreA: 0,
+        maxShoreA: 25,
+        minChargingPowerW: 200,
+        gateOnDessSchedule: true,
+        portalId: 'test-portal',
+        multiInstance: 6,
+        acInputIndex: 1,
+        mpptInstance: 0,
+        batteryInstance: 512,
+      },
+    });
+    _set(getDefaultPath(), defaults);
+    // Stored settings explicitly set shoreOptimizer to null
+    _set('/tmp/test-data/settings.json', { shoreOptimizer: null });
+
+    const settings = await loadSettings();
+    // defaults.shoreOptimizer ?? {} should provide the merge base
+    expect(settings.shoreOptimizer).toBeDefined();
+    expect(settings.shoreOptimizer.enabled).toBe(true);
+  });
+
+  it('handles null shoreOptimizer in defaults', async () => {
+    // Defaults have no shoreOptimizer at all (undefined → ?? {} path)
+    _set(getDefaultPath(), makeDefaults());
+    _set('/tmp/test-data/settings.json', {
+      shoreOptimizer: {
+        enabled: true,
+        dryRun: false,
+        tickMs: 3000,
+        stepA: 0.5,
+        minShoreA: 0,
+        maxShoreA: 25,
+        minChargingPowerW: 200,
+        gateOnDessSchedule: false,
+        portalId: 'stored-portal',
+        multiInstance: 6,
+        acInputIndex: 1,
+        mpptInstance: 0,
+        batteryInstance: 512,
+      },
+    });
+
+    const settings = await loadSettings();
+    expect(settings.shoreOptimizer).toBeDefined();
+    expect(settings.shoreOptimizer.portalId).toBe('stored-portal');
+  });
+});
+
 describe('loadSettings — validateSettings edge cases', () => {
   beforeEach(() => {
     _reset();
