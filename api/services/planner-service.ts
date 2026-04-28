@@ -17,6 +17,7 @@ import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndM
 import { savePlanSnapshot } from './plan-history-store.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
+import type { ShoreOptimizerSlotMode } from '../../lib/shore-optimizer.ts';
 
 function computeHorizonWarnings(data: Data, nowMs: number): string[] {
   /* v8 ignore start — line 22 is a statement counter artifact inside a function body */
@@ -105,6 +106,19 @@ let lastPlan: ComputePlanResult | undefined;
 export function getLastPlan(): ComputePlanResult | undefined {
   // v8 ignore next — defensive return when no plan was computed yet
   return lastPlan;
+}
+
+export function getCurrentSlotMode(nowMs = Date.now()): ShoreOptimizerSlotMode {
+  const plan = lastPlan;
+  if (!plan) return 'unknown';
+
+  const stepMs = Math.max(1, plan.cfg.stepSize_m) * 60_000;
+  const row = plan.rows.find(r => nowMs >= r.timestampMs && nowMs < r.timestampMs + stepMs);
+  if (!row) return 'unknown';
+
+  if (row.g2b > 0) return 'grid_charge';
+  if (row.b2l + row.b2g + (row.b2ev ?? 0) > 0) return 'discharge';
+  return 'idle';
 }
 
 export async function computePlan({ updateData = false } = {}): Promise<ComputePlanResult> {

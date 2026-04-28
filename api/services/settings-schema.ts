@@ -6,6 +6,7 @@ import type {
   AutoCalculateConfig,
   HaPriceConfig,
   DessPriceRefreshConfig,
+  ShoreOptimizerConfig,
   CvPhaseConfig,
   AdaptiveLearningConfig,
 } from '../types.ts';
@@ -19,12 +20,14 @@ export type SettingsPatch = Partial<Settings> & {
   autoCalculate?: Partial<AutoCalculateConfig>;
   haPriceConfig?: Partial<HaPriceConfig>;
   dessPriceRefresh?: Partial<DessPriceRefreshConfig>;
+  shoreOptimizer?: Partial<ShoreOptimizerConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
   adaptiveLearning?: Partial<AdaptiveLearningConfig>;
 };
 
 const HH_MM = /^\d{2}:\d{2}$/;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
+const MAX_SAFE_SHORE_A = 25;
 
 const NUMERIC_FIELDS: (keyof Settings)[] = [
   'stepSize_m', 'batteryCapacity_Wh', 'minSoc_percent', 'maxSoc_percent',
@@ -104,6 +107,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     autoCalculate: patch.autoCalculate ? { ...base.autoCalculate, ...patch.autoCalculate } as AutoCalculateConfig : base.autoCalculate,
     haPriceConfig: patch.haPriceConfig ? { ...base.haPriceConfig, ...patch.haPriceConfig } as HaPriceConfig : base.haPriceConfig,
     dessPriceRefresh: patch.dessPriceRefresh ? { ...base.dessPriceRefresh, ...patch.dessPriceRefresh } as DessPriceRefreshConfig : base.dessPriceRefresh,
+    shoreOptimizer: patch.shoreOptimizer ? { ...base.shoreOptimizer, ...patch.shoreOptimizer } as ShoreOptimizerConfig : base.shoreOptimizer,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
     adaptiveLearning: patch.adaptiveLearning ? { ...base.adaptiveLearning, ...patch.adaptiveLearning } as AdaptiveLearningConfig : base.adaptiveLearning,
     /* v8 ignore end */
@@ -163,6 +167,9 @@ export function normalizeSettings(settings: Settings): Settings {
   }
   if (normalized.dessPriceRefresh) {
     normalized.dessPriceRefresh = normalizeDessPriceRefresh(normalized.dessPriceRefresh);
+  }
+  if (normalized.shoreOptimizer) {
+    normalized.shoreOptimizer = normalizeShoreOptimizer(normalized.shoreOptimizer);
   }
   if (normalized.cvPhase) {
     normalized.cvPhase = normalizeCvPhase(normalized.cvPhase);
@@ -240,6 +247,39 @@ function normalizeDessPriceRefresh(dessPriceRefresh: DessPriceRefreshConfig): De
     enabled: expectBoolean(dessPriceRefresh.enabled, 'dessPriceRefresh.enabled'),
     time,
     durationMinutes: Math.max(1, Math.round(expectFiniteNumber(dessPriceRefresh.durationMinutes, 'dessPriceRefresh.durationMinutes'))),
+  };
+}
+
+function normalizeShoreOptimizer(shoreOptimizer: ShoreOptimizerConfig): ShoreOptimizerConfig {
+  assertObject(shoreOptimizer, 'shoreOptimizer');
+
+  let minShoreA = Math.max(0, Math.min(
+    MAX_SAFE_SHORE_A,
+    expectFiniteNumber(shoreOptimizer.minShoreA, 'shoreOptimizer.minShoreA'),
+  ));
+  let maxShoreA = Math.max(0, Math.min(
+    MAX_SAFE_SHORE_A,
+    expectFiniteNumber(shoreOptimizer.maxShoreA, 'shoreOptimizer.maxShoreA'),
+  ));
+
+  if (maxShoreA < minShoreA) {
+    [minShoreA, maxShoreA] = [maxShoreA, minShoreA];
+  }
+
+  return {
+    enabled: expectBoolean(shoreOptimizer.enabled, 'shoreOptimizer.enabled'),
+    dryRun: expectBoolean(shoreOptimizer.dryRun, 'shoreOptimizer.dryRun'),
+    tickMs: Math.max(1000, Math.round(expectFiniteNumber(shoreOptimizer.tickMs, 'shoreOptimizer.tickMs'))),
+    stepA: Math.max(0.1, expectFiniteNumber(shoreOptimizer.stepA, 'shoreOptimizer.stepA')),
+    minShoreA,
+    maxShoreA,
+    minChargingPowerW: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.minChargingPowerW, 'shoreOptimizer.minChargingPowerW'))),
+    gateOnDessSchedule: expectBoolean(shoreOptimizer.gateOnDessSchedule, 'shoreOptimizer.gateOnDessSchedule'),
+    portalId: expectString(shoreOptimizer.portalId, 'shoreOptimizer.portalId').trim(),
+    multiInstance: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.multiInstance, 'shoreOptimizer.multiInstance'))),
+    acInputIndex: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.acInputIndex, 'shoreOptimizer.acInputIndex'))),
+    mpptInstance: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.mpptInstance, 'shoreOptimizer.mpptInstance'))),
+    batteryInstance: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.batteryInstance, 'shoreOptimizer.batteryInstance'))),
   };
 }
 

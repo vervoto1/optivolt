@@ -73,6 +73,23 @@ export function snapshotUI(els) {
       durationMinutes: Math.max(5, Number(els.dessRefreshDuration?.value) || 15),
     },
 
+    // Shore Current Optimizer — always send complete object (shallow merge safe)
+    shoreOptimizer: {
+      enabled: els.shoreOptEnabled?.checked ?? false,
+      dryRun: els.shoreOptDryRun?.checked ?? true,
+      tickMs: Math.max(1000, num(els.shoreOptTickMs?.value) ?? 3000),
+      stepA: num(els.shoreOptStepA?.value) ?? 0.5,
+      minShoreA: num(els.shoreOptMinShoreA?.value) ?? 0,
+      maxShoreA: num(els.shoreOptMaxShoreA?.value) ?? 25,
+      minChargingPowerW: Math.max(0, num(els.shoreOptMinChargingPowerW?.value) ?? 200),
+      gateOnDessSchedule: els.shoreOptGateOnDess?.checked ?? true,
+      portalId: els.shoreOptPortalId?.value ?? 'c0619ab6bd28',
+      multiInstance: num(els.shoreOptMultiInstance?.value) ?? 6,
+      acInputIndex: num(els.shoreOptAcInputIndex?.value) ?? 1,
+      mpptInstance: num(els.shoreOptMpptInstance?.value) ?? 0,
+      batteryInstance: num(els.shoreOptBatteryInstance?.value) ?? 512,
+    },
+
     // HA Price Config — always send complete object (shallow merge safe)
     haPriceConfig: {
       sensor: els.haPriceSensor?.value ?? '',
@@ -195,6 +212,21 @@ export function hydrateUI(els, obj = {}) {
   if (els.dessRefreshEnabled) els.dessRefreshEnabled.checked = obj.dessPriceRefresh?.enabled ?? false;
   if (els.dessRefreshTime) els.dessRefreshTime.value = obj.dessPriceRefresh?.time ?? '23:00';
   if (els.dessRefreshDuration) els.dessRefreshDuration.value = obj.dessPriceRefresh?.durationMinutes ?? 15;
+
+  // Shore Current Optimizer
+  if (els.shoreOptEnabled) els.shoreOptEnabled.checked = obj.shoreOptimizer?.enabled ?? false;
+  if (els.shoreOptDryRun) els.shoreOptDryRun.checked = obj.shoreOptimizer?.dryRun ?? true;
+  if (els.shoreOptTickMs) els.shoreOptTickMs.value = obj.shoreOptimizer?.tickMs ?? 3000;
+  if (els.shoreOptStepA) els.shoreOptStepA.value = obj.shoreOptimizer?.stepA ?? 0.5;
+  if (els.shoreOptMinShoreA) els.shoreOptMinShoreA.value = obj.shoreOptimizer?.minShoreA ?? 0;
+  if (els.shoreOptMaxShoreA) els.shoreOptMaxShoreA.value = obj.shoreOptimizer?.maxShoreA ?? 25;
+  if (els.shoreOptMinChargingPowerW) els.shoreOptMinChargingPowerW.value = obj.shoreOptimizer?.minChargingPowerW ?? 200;
+  if (els.shoreOptGateOnDess) els.shoreOptGateOnDess.checked = obj.shoreOptimizer?.gateOnDessSchedule ?? true;
+  if (els.shoreOptPortalId) els.shoreOptPortalId.value = obj.shoreOptimizer?.portalId ?? 'c0619ab6bd28';
+  if (els.shoreOptMultiInstance) els.shoreOptMultiInstance.value = obj.shoreOptimizer?.multiInstance ?? 6;
+  if (els.shoreOptAcInputIndex) els.shoreOptAcInputIndex.value = obj.shoreOptimizer?.acInputIndex ?? 1;
+  if (els.shoreOptMpptInstance) els.shoreOptMpptInstance.value = obj.shoreOptimizer?.mpptInstance ?? 0;
+  if (els.shoreOptBatteryInstance) els.shoreOptBatteryInstance.value = obj.shoreOptimizer?.batteryInstance ?? 512;
 
   // HA Price Sensor
   if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.7 - 2026-04-28
+
+- Add optional shore current optimizer that adjusts the Victron shore current limit during planned grid-to-battery charging to avoid MPPT current/voltage limiting
+
 ## 0.7.6 - 2026-04-21
 
 - Fix Pro Grid strategy mapping during forced solar exports so Dynamic ESS uses the correct behavior in those periods

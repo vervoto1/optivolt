@@ -1,4 +1,4 @@
-import { VictronMqttClient } from '../../lib/victron-mqtt.ts';
+import { VictronMqttClient, type JsonMessageHandler, type UnsubscribeJson } from '../../lib/victron-mqtt.ts';
 import { isPriceRefreshWindowActive } from './dess-price-refresh.ts';
 import type { PlanRowWithDess } from '../types.ts';
 
@@ -17,7 +17,7 @@ function getVictronClient(): VictronMqttClient {
     const password = process.env.MQTT_PASSWORD ?? '';
     const rejectUnauthorized = !(process.env.MQTT_TLS_INSECURE === 'true' || process.env.MQTT_TLS_INSECURE === '1');
 
-    victronClient = new VictronMqttClient({ host, port, username, password, tls, rejectUnauthorized });
+    victronClient = new VictronMqttClient({ host, port, username, password, tls, rejectUnauthorized, reconnectPeriod: 5000 });
   }
 
   return victronClient;
@@ -33,9 +33,18 @@ export async function readVictronSetting(relativePath: string, { timeoutMs }: { 
   return client.readSetting(relativePath, { timeoutMs });
 }
 
-export async function writeVictronSetting(relativePath: string, value: unknown): Promise<void> {
+export async function writeVictronSetting(relativePath: string, value: unknown, { serial }: { serial?: string } = {}): Promise<void> {
   const client = getVictronClient();
-  await client.writeSetting(relativePath, value);
+  await client.writeSetting(relativePath, value, { serial });
+}
+
+export async function subscribeVictronJson(
+  topic: string,
+  handler: JsonMessageHandler,
+  { requestTopic }: { requestTopic?: string } = {},
+): Promise<UnsubscribeJson> {
+  const client = getVictronClient();
+  return client.subscribeJson(topic, handler, { requestTopic });
 }
 
 /**

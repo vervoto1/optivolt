@@ -34,6 +34,9 @@ export function fetchHaEntityState(entityId) {
 export const fetchEvSchedule = () => getJson('/ev/schedule');
 export const fetchEvCurrent = () => getJson('/ev/current');
 
+// --- Shore Current Optimizer ---
+export const fetchShoreOptimizerStatus = () => getJson('/shore-optimizer/status');
+
 // --- Predictions ---
 export const fetchPredictionConfig = () => getJson('/predictions/config');
 export const savePredictionConfig = (c) => postJson('/predictions/config', c);

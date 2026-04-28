@@ -221,6 +221,36 @@ describe('VictronMqttClient — writeSetting', () => {
   });
 });
 
+describe('VictronMqttClient — subscribeJson', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mqtt.connectAsync.mockResolvedValue(mockMqttClient);
+  });
+
+  it('subscribes, requests an update, and forwards parsed payloads', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const handler = vi.fn();
+    const unsubscribe = await client.subscribeJson(
+      'N/ser1/multi/6/Ac/In/1/CurrentLimit',
+      handler,
+      { requestTopic: 'R/ser1/multi/6/Ac/In/1/CurrentLimit' },
+    );
+
+    mockMqttClient.emit(
+      'message',
+      'N/ser1/multi/6/Ac/In/1/CurrentLimit',
+      Buffer.from(JSON.stringify({ value: 12.5 })),
+    );
+
+    expect(mockMqttClient.subscribeAsync).toHaveBeenCalledWith('N/ser1/multi/6/Ac/In/1/CurrentLimit');
+    expect(mockMqttClient.publishAsync).toHaveBeenCalledWith('R/ser1/multi/6/Ac/In/1/CurrentLimit', '');
+    expect(handler).toHaveBeenCalledWith('N/ser1/multi/6/Ac/In/1/CurrentLimit', { value: 12.5 });
+
+    await unsubscribe();
+    expect(mockMqttClient.unsubscribeAsync).toHaveBeenCalledWith('N/ser1/multi/6/Ac/In/1/CurrentLimit');
+  });
+});
+
 describe('VictronMqttClient — _getClient error handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();

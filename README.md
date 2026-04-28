@@ -22,6 +22,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
 - Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling
 - Adaptive learning: compares planned vs actual battery SoC to auto-calibrate charge/discharge efficiency over time
+- Shore current optimizer: optional real-time shore limit control during planned grid-to-battery charging
 
 ## Installation
 
@@ -106,6 +107,19 @@ OptiVolt automatically sets Dynamic ESS to **Mode 4** (Custom/Node-RED) via MQTT
 OptiVolt writes both `Soc` and `TargetSoc` fields per schedule slot for compatibility with Venus OS >= 3.20, and fills all 48 schedule slots to eliminate gaps between writes.
 
 **Price refresh:** There is a Victron API limitation where price data is not available when DESS is in Mode 4. OptiVolt has a built-in **DESS Price Refresh** feature (Settings → DESS Price Refresh) that temporarily switches to Auto/VRM mode at a configurable daily time so prices can update, then restores Mode 4 and triggers an immediate recalculation with fresh prices. No external HA automation needed.
+
+### 2a. Shore Current Optimizer
+
+OptiVolt can optionally adjust the Victron shore current limit while the current DESS slot is explicitly charging the battery from the grid. The loop observes battery power, the configured Multi RS MPPT operation mode, and the current shore limit over MQTT. When the MPPT reports `MPPT active`, it probes the shore limit upward by the configured step. When the MPPT reports `Voltage/current limited`, it backs off by the same step so PV is not curtailed.
+
+The optimizer only runs when all gates pass:
+- `shoreOptimizer.enabled` is true.
+- Battery power is above `minChargingPowerW`.
+- The current cached OptiVolt plan row has `g2b > 0`, unless `gateOnDessSchedule` is disabled.
+- MQTT readings are fresh.
+- The MPPT state is either active or voltage/current limited.
+
+The default config is scoped to one controller path only: `multi/6/Pv/0/MppOperationMode` and `multi/6/Ac/In/1/CurrentLimit`. It does not aggregate across other MPPTs or write other Multi instances. `dryRun` defaults to true and logs would-be writes without publishing; disable dry run only after validating behavior. The current runtime state is available at `GET /shore-optimizer/status`.
 
 ### 3. Load Forecasting Periodic Trigger (Optional)
 Call the endpoint `/predictions/forecast/now` periodically from Home Assistant (via a REST Command) to generate up-to-date load forecasts. Be sure to first configure the predictor on the optimizer page of the UI.

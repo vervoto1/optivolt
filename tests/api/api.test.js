@@ -10,6 +10,7 @@ vi.mock('../../api/services/efficiency-calibrator.ts');
 vi.mock('../../api/services/plan-accuracy-service.ts');
 vi.mock('../../api/services/auto-calculate.ts');
 vi.mock('../../api/services/dess-price-refresh.ts');
+vi.mock('../../api/services/shore-optimizer.ts');
 vi.mock('../../api/services/planner-service.ts');
 vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/prediction-config-store.ts');
@@ -22,6 +23,7 @@ import { loadCalibration, calibrate, resetCalibration } from '../../api/services
 import { evaluateRecentPlans } from '../../api/services/plan-accuracy-service.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../../api/services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/dess-price-refresh.ts';
+import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
 import { planAndMaybeWrite } from '../../api/services/planner-service.ts';
 
 async function importRoutes() {
@@ -119,6 +121,8 @@ describe('Route contracts', () => {
     stopAutoCalculate.mockReturnValue();
     startDessPriceRefresh.mockReturnValue();
     stopDessPriceRefresh.mockReturnValue();
+    startShoreOptimizer.mockReturnValue();
+    stopShoreOptimizer.mockReturnValue();
     evaluateRecentPlans.mockResolvedValue([]);
     loadCalibration.mockResolvedValue(null);
     loadPlanHistory.mockResolvedValue([]);
@@ -170,6 +174,8 @@ describe('Route contracts', () => {
     expect(startAutoCalculate).toHaveBeenCalled();
     expect(stopDessPriceRefresh).toHaveBeenCalled();
     expect(startDessPriceRefresh).toHaveBeenCalled();
+    expect(stopShoreOptimizer).toHaveBeenCalled();
+    expect(startShoreOptimizer).toHaveBeenCalled();
   });
 
   it('POST /calculate forwards parsed flags to planner-service', async () => {

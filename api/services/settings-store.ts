@@ -18,7 +18,18 @@ export async function loadSettings(): Promise<Settings> {
   try {
     const settings = await readJson<Partial<Settings>>(SETTINGS_PATH);
     const mergedDataSources = { ...defaults.dataSources, ...settings.dataSources };
-    return normalizeSettings({ ...defaults, ...settings, dataSources: mergedDataSources });
+    const mergedShoreOptimizer = (defaults.shoreOptimizer || settings.shoreOptimizer)
+      ? {
+          ...(defaults.shoreOptimizer ?? {}),
+          ...(settings.shoreOptimizer ?? {}),
+        } as Settings['shoreOptimizer']
+      : undefined;
+    return normalizeSettings({
+      ...defaults,
+      ...settings,
+      dataSources: mergedDataSources,
+      ...(mergedShoreOptimizer ? { shoreOptimizer: mergedShoreOptimizer } : {}),
+    });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     return normalizeSettings(defaults);

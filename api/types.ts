@@ -46,6 +46,7 @@ export interface Settings {
   autoCalculate?: AutoCalculateConfig;
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
+  shoreOptimizer?: ShoreOptimizerConfig;
   cvPhase?: CvPhaseConfig;
   adaptiveLearning?: AdaptiveLearningConfig;
   evEnabled: boolean;
@@ -96,6 +97,22 @@ export interface HaPriceConfig {
   valueMultiplier: number;
   importEqualsExport: boolean;
   priceInterval: number;
+}
+
+export interface ShoreOptimizerConfig {
+  enabled: boolean;
+  dryRun: boolean;
+  tickMs: number;
+  stepA: number;
+  minShoreA: number;
+  maxShoreA: number;
+  minChargingPowerW: number;
+  gateOnDessSchedule: boolean;
+  portalId: string;
+  multiInstance: number;
+  acInputIndex: number;
+  mpptInstance: number;
+  batteryInstance: number;
 }
 
 // ----------------------------- Persisted data ---------------------------

@@ -96,6 +96,21 @@ export function getElements() {
     dessRefreshTime: document.getElementById('dess-refresh-time'),
     dessRefreshDuration: document.getElementById('dess-refresh-duration'),
 
+    // Shore Current Optimizer
+    shoreOptEnabled: document.getElementById('shore-opt-enabled'),
+    shoreOptDryRun: document.getElementById('shore-opt-dry-run'),
+    shoreOptTickMs: document.getElementById('shore-opt-tick-ms'),
+    shoreOptStepA: document.getElementById('shore-opt-step-a'),
+    shoreOptMaxShoreA: document.getElementById('shore-opt-max-shore-a'),
+    shoreOptMinChargingPowerW: document.getElementById('shore-opt-min-charging-power-w'),
+    shoreOptGateOnDess: document.getElementById('shore-opt-gate-on-dess'),
+    shoreOptPortalId: document.getElementById('shore-opt-portal-id'),
+    shoreOptMultiInstance: document.getElementById('shore-opt-multi-instance'),
+    shoreOptAcInputIndex: document.getElementById('shore-opt-ac-input-index'),
+    shoreOptMpptInstance: document.getElementById('shore-opt-mppt-instance'),
+    shoreOptBatteryInstance: document.getElementById('shore-opt-battery-instance'),
+    shoreOptMinShoreA: document.getElementById('shore-opt-min-shore-a'),
+
     // HA Price Sensor
     haPriceSensor: document.getElementById('ha-price-sensor'),
     haPriceInterval: document.getElementById('ha-price-interval'),

@@ -22,6 +22,13 @@ interface ReadSettingOptions {
   timeoutMs?: number;
 }
 
+interface SubscribeJsonOptions {
+  requestTopic?: string;
+}
+
+export type JsonMessageHandler = (topic: string, payload: unknown) => void;
+export type UnsubscribeJson = () => Promise<void>;
+
 export interface ScheduleSlot {
   startEpoch?: number;
   durationSeconds?: number;
@@ -211,6 +218,59 @@ export class VictronMqttClient {
     const client = await this._getClient();
     const json = JSON.stringify(payload);
     await client.publishAsync(topic, json, { qos, retain });
+  }
+
+  async subscribeJson(
+    topic: string,
+    handler: JsonMessageHandler,
+    { requestTopic }: SubscribeJsonOptions = {},
+  ): Promise<UnsubscribeJson> {
+    const client = await this._getClient();
+
+    const wrapped = (incomingTopic: string, payload: Buffer) => {
+      if (incomingTopic !== topic) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(payload.toString()) as unknown;
+      } catch (err) {
+        console.warn('[victron-mqtt] ignored invalid JSON payload:', (err as Error).message);
+        return;
+      }
+      handler(incomingTopic, parsed);
+    };
+
+    client.on('message', wrapped);
+
+    try {
+      await client.subscribeAsync(topic);
+      if (requestTopic) {
+        await client.publishAsync(requestTopic, '');
+      }
+    } catch (err) {
+      if (typeof client.off === 'function') {
+        client.off('message', wrapped);
+      /* v8 ignore start */
+      } else {
+        client.removeListener('message', wrapped);
+      }
+      /* v8 ignore stop */
+      throw err;
+    }
+
+    return async () => {
+      if (typeof client.off === 'function') {
+        client.off('message', wrapped);
+      /* v8 ignore start */
+      } else {
+        client.removeListener('message', wrapped);
+      }
+      /* v8 ignore stop */
+      try {
+        await client.unsubscribeAsync(topic);
+      } catch {
+        // ignore cleanup failures
+      }
+    };
   }
 
   /**

@@ -46,6 +46,19 @@ function makeEls() {
     dessRefreshEnabled: { checked: false },
     dessRefreshTime: { value: '23:00' },
     dessRefreshDuration: { value: '15' },
+    shoreOptEnabled: { checked: false },
+    shoreOptDryRun: { checked: true },
+    shoreOptTickMs: { value: '3000' },
+    shoreOptStepA: { value: '0.5' },
+    shoreOptMinShoreA: { value: '0' },
+    shoreOptMaxShoreA: { value: '25' },
+    shoreOptMinChargingPowerW: { value: '200' },
+    shoreOptGateOnDess: { checked: true },
+    shoreOptPortalId: { value: 'c0619ab6bd28' },
+    shoreOptMultiInstance: { value: '6' },
+    shoreOptAcInputIndex: { value: '1' },
+    shoreOptMpptInstance: { value: '0' },
+    shoreOptBatteryInstance: { value: '512' },
     haPriceSensor: { value: '' },
     haPriceInterval: { value: '60' },
     haPriceTodayAttr: { value: 'today_hourly_prices' },
@@ -152,6 +165,44 @@ describe('state.js', () => {
     });
     expect(els.dessRefreshEnabled.checked).toBe(true);
     expect(els.dessRefreshTime.value).toBe('12:00');
+  });
+
+  it('hydrateUI sets shore optimizer config', () => {
+    const els = makeEls();
+    hydrateUI(els, {
+      shoreOptimizer: {
+        enabled: true,
+        dryRun: false,
+        tickMs: 5000,
+        stepA: 1,
+        minShoreA: 2,
+        maxShoreA: 20,
+        minChargingPowerW: 300,
+        gateOnDessSchedule: false,
+        portalId: 'portal',
+        multiInstance: 6,
+        acInputIndex: 1,
+        mpptInstance: 0,
+        batteryInstance: 512,
+      },
+    });
+    expect(els.shoreOptEnabled.checked).toBe(true);
+    expect(els.shoreOptDryRun.checked).toBe(false);
+    expect(els.shoreOptTickMs.value).toBe(5000);
+    expect(els.shoreOptMaxShoreA.value).toBe(20);
+    expect(els.shoreOptGateOnDess.checked).toBe(false);
+  });
+
+  it('snapshotUI includes shore optimizer config', () => {
+    const els = makeEls();
+    els.shoreOptEnabled.checked = true;
+    els.shoreOptDryRun.checked = false;
+    els.shoreOptMaxShoreA.value = '22.5';
+    const snapshot = snapshotUI(els);
+    expect(snapshot.shoreOptimizer.enabled).toBe(true);
+    expect(snapshot.shoreOptimizer.dryRun).toBe(false);
+    expect(snapshot.shoreOptimizer.maxShoreA).toBe(22.5);
+    expect(snapshot.shoreOptimizer.multiInstance).toBe(6);
   });
 
   it('hydrateUI sets HA price config', () => {

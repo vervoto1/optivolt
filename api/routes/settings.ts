@@ -4,6 +4,7 @@ import { assertCondition, toHttpError } from '../http-errors.ts';
 import { loadSettings, saveSettings } from '../services/settings-store.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
+import { startShoreOptimizer, stopShoreOptimizer } from '../services/shore-optimizer.ts';
 import { mergeSettings, normalizeSettings, sanitizeSettingsResponse } from '../services/settings-schema.ts';
 import type { SettingsPatch } from '../services/settings-schema.ts';
 
@@ -37,6 +38,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     startAutoCalculate(mergedSettings);
     stopDessPriceRefresh();
     startDessPriceRefresh(mergedSettings);
+    stopShoreOptimizer();
+    startShoreOptimizer(mergedSettings);
 
     res.json({ message: 'Settings saved successfully.', settings: sanitizeSettingsResponse(mergedSettings) });
   } catch (error) {

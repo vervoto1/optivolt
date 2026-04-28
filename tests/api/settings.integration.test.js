@@ -6,9 +6,11 @@ import { get, post } from './helpers/express-test-client.js';
 
 vi.mock('../../api/services/auto-calculate.ts');
 vi.mock('../../api/services/dess-price-refresh.ts');
+vi.mock('../../api/services/shore-optimizer.ts');
 
 import { startAutoCalculate, stopAutoCalculate } from '../../api/services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/dess-price-refresh.ts';
+import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
 
 async function importRouter() {
   vi.resetModules();
@@ -79,6 +81,8 @@ describe('Settings route integration', () => {
     expect(startAutoCalculate).toHaveBeenCalled();
     expect(stopDessPriceRefresh).toHaveBeenCalled();
     expect(startDessPriceRefresh).toHaveBeenCalled();
+    expect(stopShoreOptimizer).toHaveBeenCalled();
+    expect(startShoreOptimizer).toHaveBeenCalled();
   });
 
   it('POST /settings rejects invalid Home Assistant URLs', async () => {

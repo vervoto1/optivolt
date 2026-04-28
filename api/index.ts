@@ -1,6 +1,7 @@
 import app from './app.ts';
 import { startAutoCalculate, stopAutoCalculate } from './services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from './services/dess-price-refresh.ts';
+import { startShoreOptimizer, stopShoreOptimizer } from './services/shore-optimizer.ts';
 import { loadSettings } from './services/settings-store.ts';
 
 const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
@@ -10,6 +11,7 @@ const host = process.env.HOST ?? '0.0.0.0';
 async function shutdown() {
   stopAutoCalculate();
   stopDessPriceRefresh();
+  stopShoreOptimizer();
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);
@@ -24,6 +26,7 @@ app.listen(port, host, () => {
     .then(settings => {
       startAutoCalculate(settings);
       startDessPriceRefresh(settings);
+      startShoreOptimizer(settings);
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });

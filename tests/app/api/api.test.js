@@ -25,6 +25,7 @@ import {
   fetchCalibration,
   resetCalibrationData,
   triggerCalibration,
+  fetchShoreOptimizerStatus,
 } from '../../../app/src/api/api.js';
 
 beforeEach(() => {
@@ -85,6 +86,12 @@ describe('api.js wrappers', () => {
     postJson.mockResolvedValue({});
     await refreshVrmSettings();
     expect(postJson).toHaveBeenCalledWith('/vrm/refresh-settings', {});
+  });
+
+  it('fetchShoreOptimizerStatus calls getJson', async () => {
+    getJson.mockResolvedValue({});
+    await fetchShoreOptimizerStatus();
+    expect(getJson).toHaveBeenCalledWith('/shore-optimizer/status');
   });
 
   it('fetchPredictionConfig calls getJson', async () => {

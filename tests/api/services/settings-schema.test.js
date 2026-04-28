@@ -42,6 +42,21 @@ function validSettings() {
       importEqualsExport: false, priceInterval: 60,
     },
     dessPriceRefresh: { enabled: false, time: '23:00', durationMinutes: 15 },
+    shoreOptimizer: {
+      enabled: false,
+      dryRun: true,
+      tickMs: 3000,
+      stepA: 0.5,
+      minShoreA: 0,
+      maxShoreA: 25,
+      minChargingPowerW: 200,
+      gateOnDessSchedule: true,
+      portalId: 'c0619ab6bd28',
+      multiInstance: 6,
+      acInputIndex: 1,
+      mpptInstance: 0,
+      batteryInstance: 512,
+    },
     cvPhase: { enabled: false, thresholds: [{ soc_percent: 95, maxChargePower_W: 1200 }] },
     adaptiveLearning: { enabled: false, mode: 'suggest', minDataDays: 3 },
   };
@@ -147,6 +162,33 @@ describe('settings-schema', () => {
       expect(() => normalizeSettings(s)).toThrow('dessPriceRefresh must be an object');
     });
 
+    it('throws on non-object shoreOptimizer', () => {
+      const s = validSettings();
+      s.shoreOptimizer = 'bad';
+      expect(() => normalizeSettings(s)).toThrow('shoreOptimizer must be an object');
+    });
+
+    it('normalizes shoreOptimizer limits and instances', () => {
+      const s = validSettings();
+      s.shoreOptimizer.maxShoreA = 200;
+      s.shoreOptimizer.minShoreA = -5;
+      s.shoreOptimizer.tickMs = 500;
+      s.shoreOptimizer.stepA = 0;
+      s.shoreOptimizer.multiInstance = 6.4;
+      const result = normalizeSettings(s);
+      expect(result.shoreOptimizer.maxShoreA).toBe(25);
+      expect(result.shoreOptimizer.minShoreA).toBe(0);
+      expect(result.shoreOptimizer.tickMs).toBe(1000);
+      expect(result.shoreOptimizer.stepA).toBe(0.1);
+      expect(result.shoreOptimizer.multiInstance).toBe(6);
+    });
+
+    it('throws on invalid shoreOptimizer booleans', () => {
+      const s = validSettings();
+      s.shoreOptimizer.enabled = 'yes';
+      expect(() => normalizeSettings(s)).toThrow('shoreOptimizer.enabled must be a boolean');
+    });
+
     it('throws on non-object cvPhase', () => {
       const s = validSettings();
       s.cvPhase = true;
@@ -231,6 +273,14 @@ describe('settings-schema', () => {
       const merged = mergeSettings(base, { evConfig: { enabled: true } });
       expect(merged.evConfig.enabled).toBe(true);
       expect(merged.evConfig.chargerPower_W).toBe(11000);
+    });
+
+    it('merges shoreOptimizer patches without dropping defaults', () => {
+      const base = validSettings();
+      const merged = mergeSettings(base, { shoreOptimizer: { enabled: true } });
+      expect(merged.shoreOptimizer.enabled).toBe(true);
+      expect(merged.shoreOptimizer.dryRun).toBe(true);
+      expect(merged.shoreOptimizer.multiInstance).toBe(6);
     });
 
     it('keeps existing haToken when patch omits it', () => {

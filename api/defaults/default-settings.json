@@ -54,6 +54,21 @@
     "time": "23:00",
     "durationMinutes": 15
   },
+  "shoreOptimizer": {
+    "enabled": false,
+    "dryRun": true,
+    "tickMs": 3000,
+    "stepA": 0.5,
+    "minShoreA": 0,
+    "maxShoreA": 25,
+    "minChargingPowerW": 200,
+    "gateOnDessSchedule": true,
+    "portalId": "c0619ab6bd28",
+    "multiInstance": 6,
+    "acInputIndex": 1,
+    "mpptInstance": 0,
+    "batteryInstance": 512
+  },
   "cvPhase": {
     "enabled": false,
     "thresholds": [
