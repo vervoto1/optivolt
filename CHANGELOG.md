@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8 - 2026-04-28
+
+- Bump version
+
 ## 0.7.7 - 2026-04-28
 
 - Add optional shore current optimizer that adjusts the Victron shore current limit during planned grid-to-battery charging to avoid MPPT current/voltage limiting
