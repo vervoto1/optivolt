@@ -5,6 +5,7 @@ const unsubscribeFns = [];
 
 vi.mock('../../../api/services/mqtt-service.ts', () => ({
   getVictronSerial: vi.fn().mockResolvedValue('detected-serial'),
+  requestVictronSetting: vi.fn().mockResolvedValue(undefined),
   subscribeVictronJson: vi.fn().mockImplementation(async (topic, handler, options) => {
     subscriptions.set(topic, { handler, options });
     const unsubscribe = vi.fn().mockResolvedValue(undefined);
@@ -18,7 +19,7 @@ vi.mock('../../../api/services/planner-service.ts', () => ({
   getCurrentSlotMode: vi.fn().mockReturnValue('grid_charge'),
 }));
 
-import { subscribeVictronJson, writeVictronSetting } from '../../../api/services/mqtt-service.ts';
+import { requestVictronSetting, subscribeVictronJson, writeVictronSetting } from '../../../api/services/mqtt-service.ts';
 import { getCurrentSlotMode } from '../../../api/services/planner-service.ts';
 import {
   getShoreOptimizerStatus,
@@ -177,5 +178,31 @@ describe('shore-optimizer service', () => {
 
     expect(writeVictronSetting).not.toHaveBeenCalled();
     expect(getShoreOptimizerStatus().stale.currentShoreA).toBe(true);
+  });
+
+  it('requests fresh telemetry before readings become stale', async () => {
+    startShoreOptimizer(makeSettings());
+    await flushPromises();
+
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 2);
+    vi.clearAllMocks();
+
+    vi.setSystemTime(new Date('2026-04-28T10:00:16.000Z'));
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(requestVictronSetting).toHaveBeenCalledWith(
+      'multi/6/Ac/In/1/CurrentLimit',
+      { serial: 'c0619ab6bd28' },
+    );
+    expect(requestVictronSetting).toHaveBeenCalledWith(
+      'battery/512/Dc/0/Power',
+      { serial: 'c0619ab6bd28' },
+    );
+    expect(requestVictronSetting).toHaveBeenCalledWith(
+      'multi/6/Pv/0/MppOperationMode',
+      { serial: 'c0619ab6bd28' },
+    );
   });
 });

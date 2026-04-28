@@ -38,6 +38,11 @@ export async function writeVictronSetting(relativePath: string, value: unknown, 
   await client.writeSetting(relativePath, value, { serial });
 }
 
+export async function requestVictronSetting(relativePath: string, { serial }: { serial?: string } = {}): Promise<void> {
+  const client = getVictronClient();
+  await client.requestSetting(relativePath, { serial });
+}
+
 export async function subscribeVictronJson(
   topic: string,
   handler: JsonMessageHandler,

@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockGetSerial = vi.fn().mockResolvedValue('test-serial-123');
 const mockReadSetting = vi.fn();
 const mockWriteSetting = vi.fn().mockResolvedValue(undefined);
+const mockRequestSetting = vi.fn().mockResolvedValue(undefined);
 const mockWriteScheduleSlot = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
 const mockReadSocPercent = vi.fn().mockResolvedValue({ soc_percent: 75 });
@@ -15,6 +16,7 @@ vi.mock('../../../lib/victron-mqtt.ts', () => ({
     getSerial = mockGetSerial;
     readSetting = mockReadSetting;
     writeSetting = mockWriteSetting;
+    requestSetting = mockRequestSetting;
     writeScheduleSlot = mockWriteScheduleSlot;
     close = mockClose;
     readSocPercent = mockReadSocPercent;
@@ -27,6 +29,7 @@ const {
   shutdownVictronClient,
   getVictronSerial,
   readVictronSetting,
+  requestVictronSetting,
   readVictronSocPercent,
   readVictronSocLimits,
 } = await import('../../../api/services/mqtt-service.ts');
@@ -343,6 +346,15 @@ describe('mqtt-service — thin wrapper functions', () => {
 
     expect(mockReadSetting).toHaveBeenCalledWith('Settings/DynamicEss/Mode', {});
     expect(result).toEqual({ value: 42 });
+  });
+
+  it('requestVictronSetting delegates to client.requestSetting with path and serial', async () => {
+    await requestVictronSetting('multi/6/Pv/0/MppOperationMode', { serial: 'c0619ab6bd28' });
+
+    expect(mockRequestSetting).toHaveBeenCalledWith(
+      'multi/6/Pv/0/MppOperationMode',
+      { serial: 'c0619ab6bd28' },
+    );
   });
 
   it('readVictronSocPercent delegates to client.readSocPercent and returns soc_percent', async () => {

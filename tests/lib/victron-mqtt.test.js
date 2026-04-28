@@ -221,6 +221,24 @@ describe('VictronMqttClient — writeSetting', () => {
   });
 });
 
+describe('VictronMqttClient — requestSetting', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mqtt.connectAsync.mockResolvedValue(mockMqttClient);
+  });
+
+  it('publishes an empty payload to R/<serial>/<path>', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    await client.requestSetting('multi/6/Pv/0/MppOperationMode', { serial: 'ser1' });
+
+    expect(mockMqttClient.publishAsync).toHaveBeenCalledWith(
+      'R/ser1/multi/6/Pv/0/MppOperationMode',
+      '',
+      { qos: 0, retain: false },
+    );
+  });
+});
+
 describe('VictronMqttClient — subscribeJson', () => {
   beforeEach(() => {
     vi.clearAllMocks();

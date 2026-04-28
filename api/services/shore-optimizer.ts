@@ -6,7 +6,7 @@ import {
   type ShoreOptimizerSlotMode,
 } from '../../lib/shore-optimizer.ts';
 import { getCurrentSlotMode } from './planner-service.ts';
-import { getVictronSerial, subscribeVictronJson, writeVictronSetting } from './mqtt-service.ts';
+import { getVictronSerial, requestVictronSetting, subscribeVictronJson, writeVictronSetting } from './mqtt-service.ts';
 
 interface Reading<T> {
   value: T | null;
@@ -44,7 +44,9 @@ export interface ShoreOptimizerStatus {
 }
 
 const STALE_AFTER_MS = 30_000;
+const REFRESH_AFTER_MS = 15_000;
 const RECENT_WRITE_LIMIT = 50;
+const GATE_BLOCK_LOG_INTERVAL_MS = 60_000;
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let unsubscribeFns: (() => Promise<void>)[] = [];
@@ -53,7 +55,7 @@ let tickInFlight = false;
 
 let activeConfig: ShoreOptimizerConfig | null = null;
 let activeSerial: string | null = null;
-let activeShoreRelativePath: string | null = null;
+let activeRelativePaths: OptimizerRelativePaths | null = null;
 
 let currentShoreA: Reading<number> = emptyReading();
 let batteryPowerW: Reading<number> = emptyReading();
@@ -62,7 +64,15 @@ let mppOperationMode: Reading<unknown> = emptyReading();
 let lastTickAtMs: number | null = null;
 let lastWriteAtMs: number | null = null;
 let latestSlotMode: ShoreOptimizerSlotMode = 'unknown';
+let lastGateBlockSignature: string | null = null;
+let lastGateBlockLogAtMs: number | null = null;
 const recentWrites: ShoreOptimizerWriteRecord[] = [];
+
+interface OptimizerRelativePaths {
+  currentLimit: string;
+  batteryPower: string;
+  mppOperationMode: string;
+}
 
 export function startShoreOptimizer(settings: Settings): void {
   stopShoreOptimizer();
@@ -70,7 +80,7 @@ export function startShoreOptimizer(settings: Settings): void {
   const cfg = settings.shoreOptimizer;
   activeConfig = cfg ?? null;
   activeSerial = null;
-  activeShoreRelativePath = null;
+  activeRelativePaths = null;
   resetReadings();
 
   if (!cfg?.enabled) return;
@@ -154,7 +164,7 @@ async function initializeSubscriptions(token: number, cfg: ShoreOptimizerConfig)
   }
 
   activeSerial = serial;
-  activeShoreRelativePath = topics.currentLimitRelativePath;
+  activeRelativePaths = topics.relativePaths;
   unsubscribeFns = subscriptions;
 }
 
@@ -167,6 +177,7 @@ async function tick(): Promise<void> {
     const nowMs = Date.now();
     lastTickAtMs = nowMs;
     latestSlotMode = getCurrentSlotMode(nowMs);
+    requestReadingsIfDue(nowMs);
 
     const stateFresh =
       !isStale(currentShoreA, nowMs)
@@ -210,9 +221,11 @@ async function tick(): Promise<void> {
     }
 
     const serial = (activeSerial ?? cfg.portalId) || undefined;
-    const relativePath = activeShoreRelativePath ?? buildTopics(serial ?? cfg.portalId, cfg).currentLimitRelativePath;
+    const relativePath = activeRelativePaths?.currentLimit ?? buildTopics(serial ?? cfg.portalId, cfg).relativePaths.currentLimit;
     await writeVictronSetting(relativePath, newA, { serial });
-    lastWriteAtMs = Date.now();
+    const writeAtMs = Date.now();
+    lastWriteAtMs = writeAtMs;
+    updateReading(currentShoreA, newA, { value: newA, source: 'shore-optimizer-write' }, writeAtMs);
     pushWriteRecord(record);
     console.info('[shore-optimizer] setpoint write', record);
   } finally {
@@ -228,6 +241,7 @@ function buildTopics(serial: string, cfg: ShoreOptimizerConfig): {
   batteryPowerRequest: string;
   mppOperationMode: string;
   mppOperationModeRequest: string;
+  relativePaths: OptimizerRelativePaths;
 } {
   const currentLimitRelativePath = `multi/${cfg.multiInstance}/Ac/In/${cfg.acInputIndex}/CurrentLimit`;
   const batteryPowerRelativePath = `battery/${cfg.batteryInstance}/Dc/0/Power`;
@@ -241,6 +255,11 @@ function buildTopics(serial: string, cfg: ShoreOptimizerConfig): {
     batteryPowerRequest: `R/${serial}/${batteryPowerRelativePath}`,
     mppOperationMode: `N/${serial}/${mppRelativePath}`,
     mppOperationModeRequest: `R/${serial}/${mppRelativePath}`,
+    relativePaths: {
+      currentLimit: currentLimitRelativePath,
+      batteryPower: batteryPowerRelativePath,
+      mppOperationMode: mppRelativePath,
+    },
   };
 }
 
@@ -277,10 +296,10 @@ function payloadValue(payload: unknown): unknown {
   return undefined;
 }
 
-function updateReading<T>(reading: Reading<T>, value: T, raw: unknown): void {
+function updateReading<T>(reading: Reading<T>, value: T, raw: unknown, updatedAtMs = Date.now()): void {
   reading.value = value;
   reading.raw = raw;
-  reading.updatedAtMs = Date.now();
+  reading.updatedAtMs = updatedAtMs;
 }
 
 function emptyReading<T>(): Reading<T> {
@@ -292,20 +311,103 @@ function resetReadings(): void {
   batteryPowerW = emptyReading();
   mppOperationMode = emptyReading();
   latestSlotMode = 'unknown';
+  lastGateBlockSignature = null;
+  lastGateBlockLogAtMs = null;
 }
 
 function isStale(reading: Reading<unknown>, nowMs: number): boolean {
   return reading.updatedAtMs == null || nowMs - reading.updatedAtMs > STALE_AFTER_MS;
 }
 
+function requestReadingsIfDue(nowMs: number): void {
+  const cfg = activeConfig;
+  if (!cfg?.enabled) return;
+
+  const serial = activeSerial;
+  const paths = activeRelativePaths;
+  if (!serial || !paths) return;
+
+  requestIfDue('currentShoreA', currentShoreA, paths.currentLimit, serial, nowMs);
+  requestIfDue('batteryPowerW', batteryPowerW, paths.batteryPower, serial, nowMs);
+  requestIfDue('mpptState', mppOperationMode, paths.mppOperationMode, serial, nowMs);
+}
+
+function requestIfDue(
+  label: string,
+  reading: Reading<unknown>,
+  relativePath: string,
+  serial: string,
+  nowMs: number,
+): void {
+  if (reading.updatedAtMs != null && nowMs - reading.updatedAtMs <= REFRESH_AFTER_MS) return;
+
+  requestVictronSetting(relativePath, { serial }).catch(err => {
+    console.warn('[shore-optimizer] telemetry refresh request failed:', {
+      label,
+      path: relativePath,
+      error: (err as Error).message,
+    });
+  });
+}
+
 function logGateBlock(reason: string, mpptState: MppOperationModeState): void {
-  console.debug('[shore-optimizer] gate blocked', {
+  const nowMs = Date.now();
+  const stale = staleSnapshot(nowMs);
+  const signature = JSON.stringify({
+    reason,
+    currentShoreA: currentShoreA.value,
+    mpptState: mpptState.id,
+    slotMode: latestSlotMode,
+    stale: staleStateOnly(stale),
+  });
+  const shouldLog =
+    signature !== lastGateBlockSignature
+    || lastGateBlockLogAtMs == null
+    || nowMs - lastGateBlockLogAtMs >= GATE_BLOCK_LOG_INTERVAL_MS;
+
+  if (!shouldLog) return;
+
+  lastGateBlockSignature = signature;
+  lastGateBlockLogAtMs = nowMs;
+
+  const entry: {
+    reason: string;
+    currentShoreA: number | null;
+    mpptState: string;
+    batteryPowerW: number | null;
+    slotMode: ShoreOptimizerSlotMode;
+    stale?: ReturnType<typeof staleSnapshot>;
+  } = {
     reason,
     currentShoreA: currentShoreA.value,
     mpptState: mpptState.id,
     batteryPowerW: batteryPowerW.value,
     slotMode: latestSlotMode,
-  });
+  };
+
+  if (reason === 'stale_state') entry.stale = stale;
+  console.debug('[shore-optimizer] gate blocked', entry);
+}
+
+function staleSnapshot(nowMs: number): Record<string, { stale: boolean; ageMs: number | null }> {
+  return {
+    currentShoreA: staleDetail(currentShoreA, nowMs),
+    mpptState: staleDetail(mppOperationMode, nowMs),
+    batteryPowerW: staleDetail(batteryPowerW, nowMs),
+  };
+}
+
+function staleDetail(reading: Reading<unknown>, nowMs: number): { stale: boolean; ageMs: number | null } {
+  return {
+    stale: isStale(reading, nowMs),
+    ageMs: reading.updatedAtMs == null ? null : nowMs - reading.updatedAtMs,
+  };
+}
+
+function staleStateOnly(stale: ReturnType<typeof staleSnapshot>): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(stale).map(([key, value]) => [key, value.stale]),
+  );
 }
 
 function pushWriteRecord(record: ShoreOptimizerWriteRecord): void {

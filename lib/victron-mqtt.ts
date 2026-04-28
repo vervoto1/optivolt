@@ -220,6 +220,11 @@ export class VictronMqttClient {
     await client.publishAsync(topic, json, { qos, retain });
   }
 
+  async publishRaw(topic: string, payload: string | Buffer = '', { qos = 0, retain = false }: { qos?: 0 | 1 | 2; retain?: boolean } = {}): Promise<void> {
+    const client = await this._getClient();
+    await client.publishAsync(topic, payload, { qos, retain });
+  }
+
   async subscribeJson(
     topic: string,
     handler: JsonMessageHandler,
@@ -325,6 +330,14 @@ export class VictronMqttClient {
     const s = serial ?? (await this.getSerial());
     const topic = `W/${s}/${relativePath}`;
     await this.publishJson(topic, { value });
+  }
+
+  /**
+   * Request a fresh N/<serial>/<relativePath> publish from Venus.
+   */
+  async requestSetting(relativePath: string, { serial }: { serial?: string } = {}): Promise<void> {
+    const s = serial ?? (await this.getSerial());
+    await this.publishRaw(`R/${s}/${relativePath}`, '');
   }
 
   // ---------------------------------------------------------------------------
