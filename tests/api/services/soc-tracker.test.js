@@ -33,6 +33,12 @@ vi.mock('../../../api/services/data-store.ts', () => ({
   })),
 }));
 
+vi.mock('../../../api/services/settings-store.ts', () => ({
+  loadSettings: vi.fn(async () => ({
+    shoreOptimizer: { batteryInstance: 512 },
+  })),
+}));
+
 import {
   loadSocSamples,
   findClosestSample,
@@ -44,11 +50,13 @@ import {
 import { _reset, readJson } from '../../../api/services/json-store.ts';
 import { loadData } from '../../../api/services/data-store.ts';
 import { readVictronSocPercent } from '../../../api/services/mqtt-service.ts';
+import { loadSettings } from '../../../api/services/settings-store.ts';
 
 describe('soc-tracker', () => {
   beforeEach(() => {
     _reset();
     vi.restoreAllMocks();
+    loadSettings.mockResolvedValue({ shoreOptimizer: { batteryInstance: 512 } });
     readVictronSocPercent.mockResolvedValue(65);
   });
 
@@ -79,6 +87,7 @@ describe('soc-tracker', () => {
     expect(sample).not.toBeNull();
     expect(sample.soc_percent).toBe(65);
     expect(sample.timestampMs).toBeGreaterThan(0);
+    expect(readVictronSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000, batteryInstance: 512 });
 
     const stored = await loadSocSamples();
     expect(stored).toHaveLength(1);

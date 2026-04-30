@@ -11,7 +11,7 @@ vi.mock('../../../api/services/plan-history-store.ts');
 import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
-import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
+import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { fetchEvLoadFromHA } from '../../../api/services/ha-ev-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
@@ -36,7 +36,7 @@ const baseSettings = {
   idleDrain_W: 0,
   terminalSocValuation: 'zero',
   terminalSocCustomPrice_cents_per_kWh: 0,
-  dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+  dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'api' },
   dessAlgorithm: 'v1',
   rebalanceEnabled: false,
   rebalanceHoldHours: 2,
@@ -188,20 +188,56 @@ describe('computePlan — error handling', () => {
     expect(result.rows).toBeDefined();
   });
 
-  it('logs error but still returns result when writeToVictron fails', async () => {
+  it('rejects when writeToVictron fails', async () => {
     setDynamicEssSchedule.mockRejectedValue(new Error('MQTT connection refused'));
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const result = await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+    await expect(planAndMaybeWrite({ writeToVictron: true, forceWrite: true }))
+      .rejects.toThrow('MQTT connection refused');
+  });
+});
 
-    expect(result).toBeDefined();
-    expect(result.rows).toBeDefined();
-    expect(errorSpy).toHaveBeenCalledWith(
-      '[calculate] Failed to write to Victron:',
-      'MQTT connection refused',
+describe('computePlan — MQTT SoC refresh', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    fetchEvLoadFromHA.mockResolvedValue(null);
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { ...baseSettings.dataSources, soc: 'mqtt' },
+      shoreOptimizer: { batteryInstance: 512 },
+    });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('uses live MQTT SoC before solving even when updateData=false', async () => {
+    readVictronSocPercent.mockResolvedValue(11);
+
+    const result = await computePlan();
+
+    expect(readVictronSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000, batteryInstance: 512 });
+    expect(result.cfg.initialSoc_percent).toBe(11);
+    expect(saveData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        soc: { timestamp: expect.any(String), value: 11 },
+      }),
     );
+  });
 
-    errorSpy.mockRestore();
+  it('rejects instead of planning with stale SoC when MQTT read fails', async () => {
+    readVictronSocPercent.mockRejectedValue(new Error('MQTT timeout'));
+
+    await expect(computePlan()).rejects.toThrow('Failed to read battery SoC from Victron MQTT');
+    expect(savePlanSnapshot).not.toHaveBeenCalled();
   });
 });
 

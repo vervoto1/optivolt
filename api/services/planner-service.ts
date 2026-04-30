@@ -11,8 +11,9 @@ import { getSolverInputs, buildSolverConfigFromSettings } from './config-builder
 import { saveSettings, loadSettings } from './settings-store.ts';
 import { saveData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
-import { setDynamicEssSchedule } from './mqtt-service.ts';
+import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
+import { HttpError } from '../http-errors.ts';
 import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
@@ -121,6 +122,36 @@ export function getCurrentSlotMode(nowMs = Date.now()): ShoreOptimizerSlotMode {
   return 'idle';
 }
 
+async function refreshMqttSocForPlan(data: Data, batteryInstance?: number): Promise<Data> {
+  let socPercent: number | null;
+  try {
+    const options: { timeoutMs: number; batteryInstance?: number } = { timeoutMs: 5000 };
+    if (batteryInstance !== undefined) options.batteryInstance = batteryInstance;
+    socPercent = await readVictronSocPercent(options);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new HttpError(503, 'Failed to read battery SoC from Victron MQTT', {
+      cause: err,
+      details: { message },
+    });
+  }
+
+  if (socPercent === null) {
+    throw new HttpError(503, 'Victron MQTT returned no battery SoC');
+  }
+
+  const nextData: Data = {
+    ...data,
+    soc: {
+      timestamp: new Date().toISOString(),
+      value: socPercent,
+    },
+  };
+  await saveData(nextData);
+  console.log(`[calculate] MQTT SoC refreshed: ${socPercent}%`);
+  return nextData;
+}
+
 export async function computePlan({ updateData = false } = {}): Promise<ComputePlanResult> {
   if (updateData) {
     try {
@@ -134,6 +165,11 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   }
 
   let { cfg, timing, data, settings } = await getSolverInputs();
+
+  if (settings.dataSources.soc === 'mqtt') {
+    data = await refreshMqttSocForPlan(data, settings.shoreOptimizer?.batteryInstance);
+    cfg = buildSolverConfigFromSettings(settings, data, timing.startMs);
+  }
 
   // Always refresh EV load from HA when evConfig is enabled (schedule changes frequently)
   if (settings.evConfig?.enabled) {
@@ -307,11 +343,7 @@ export async function planAndMaybeWrite({
 } = {}): Promise<ComputePlanResult> {
   const result = await computePlan({ updateData });
   if (writeToVictron) {
-    try {
-      await writePlanToVictron(result.rows, { force: forceWrite });
-    } catch (err) {
-      console.error('[calculate] Failed to write to Victron:', (err as Error).message);
-    }
+    await writePlanToVictron(result.rows, { force: forceWrite });
   }
   return result;
 }

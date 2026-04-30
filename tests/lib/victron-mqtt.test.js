@@ -404,6 +404,30 @@ describe('VictronMqttClient — readSocPercent', () => {
     expect(result.soc_percent).toBeCloseTo(65.5);
   });
 
+  it('prefers configured battery instance SoC when provided', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const path = 'battery/512/Soc';
+    scheduleMessage(`N/ser1/${path}`, { value: 10 });
+
+    const result = await client.readSocPercent({ timeoutMs: 500, batteryInstance: 512 });
+    expect(result.soc_percent).toBe(10);
+    expect(mockMqttClient.publishAsync).toHaveBeenCalledWith(
+      `R/ser1/${path}`,
+      '',
+    );
+  });
+
+  it('falls back to system SoC when battery instance has no SoC value', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const batteryPath = 'battery/512/Soc';
+    const systemPath = 'system/0/Dc/Battery/Soc';
+    scheduleMessage(`N/ser1/${batteryPath}`, { value: null }, 5);
+    scheduleMessage(`N/ser1/${systemPath}`, { value: 66 }, 25);
+
+    const result = await client.readSocPercent({ timeoutMs: 500, batteryInstance: 512 });
+    expect(result.soc_percent).toBe(66);
+  });
+
   it('clamps soc_percent to [0, 100]', async () => {
     const client = new VictronMqttClient({ serial: 'ser1' });
     const path = 'system/0/Dc/Battery/Soc';

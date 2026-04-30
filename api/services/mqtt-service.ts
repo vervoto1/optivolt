@@ -56,9 +56,12 @@ export async function subscribeVictronJson(
  * Read the current battery SoC (%) from MQTT.
  * Returns a number in [0, 100] or null if unavailable.
  */
-export async function readVictronSocPercent({ timeoutMs }: { timeoutMs?: number } = {}): Promise<number | null> {
+export async function readVictronSocPercent({ timeoutMs, batteryInstance }: { timeoutMs?: number; batteryInstance?: number } = {}): Promise<number | null> {
   const client = getVictronClient();
-  const res = await client.readSocPercent({ timeoutMs });
+  const options: { timeoutMs?: number; batteryInstance?: number } = {};
+  if (timeoutMs !== undefined) options.timeoutMs = timeoutMs;
+  if (batteryInstance !== undefined) options.batteryInstance = batteryInstance;
+  const res = await client.readSocPercent(options);
   return res.soc_percent;
 }
 

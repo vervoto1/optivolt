@@ -393,6 +393,12 @@ describe('mqtt-service — thin wrapper functions', () => {
     expect(mockReadSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000 });
   });
 
+  it('readVictronSocPercent passes batteryInstance option to client', async () => {
+    await readVictronSocPercent({ timeoutMs: 5000, batteryInstance: 512 });
+
+    expect(mockReadSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000, batteryInstance: 512 });
+  });
+
   it('readVictronSocLimits delegates to client.readSocLimitsPercent and returns min/max', async () => {
     const limits = await readVictronSocLimits();
 

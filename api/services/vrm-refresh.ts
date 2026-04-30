@@ -79,12 +79,16 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   const shouldFetchForecasts = shouldFetchVrmLoad || shouldFetchVrmPv;
   const shouldFetchPrices = sources.prices === 'vrm';
   const shouldFetchSoc = sources.soc === 'mqtt';
+  const socOptions: { timeoutMs: number; batteryInstance?: number } = { timeoutMs: 5000 };
+  if (settings.shoreOptimizer?.batteryInstance !== undefined) {
+    socOptions.batteryInstance = settings.shoreOptimizer.batteryInstance;
+  }
 
   // Concurrent IO
   const [forecastsResult, pricesResult, socResult] = await Promise.allSettled([
     shouldFetchForecasts ? withRetry(() => client.fetchForecasts(), { label: 'VRM forecasts' }) : Promise.resolve(null),
     shouldFetchPrices ? withRetry(() => client.fetchPrices(), { label: 'VRM prices' }) : Promise.resolve(null),
-    shouldFetchSoc ? readVictronSocPercent({ timeoutMs: 5000 }) : Promise.resolve(null),
+    shouldFetchSoc ? readVictronSocPercent(socOptions) : Promise.resolve(null),
   ]);
 
   let forecasts: VRMForecasts | null = null;

@@ -39,6 +39,22 @@ export interface ScheduleSlot {
   allowGridFeedIn?: number;
 }
 
+function normalizeSocPayload(payload: { value?: unknown } | null): number | null {
+  const rawValue = payload?.value;
+
+  // Victron sometimes sends [] when there is no SoC.
+  if (rawValue === null || rawValue === undefined || Array.isArray(rawValue)) {
+    return null;
+  }
+
+  const n = Number(rawValue);
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, n));
+}
+
 
 export class VictronMqttClient {
   host: string;
@@ -348,33 +364,37 @@ export class VictronMqttClient {
 
   /**
    * Read the current battery state-of-charge (%) via MQTT.
-   * Uses the system-level SoC at:
+   * When a battery instance is configured, prefers the battery service SoC at:
+   *   N/<serial>/battery/<batteryInstance>/Soc
+   * Otherwise falls back to the system-level SoC at:
    *   N/<serial>/system/0/Dc/Battery/Soc
    */
-  async readSocPercent({ timeoutMs = 8000 }: { timeoutMs?: number } = {}): Promise<{ soc_percent: number | null; raw: unknown }> {
+  async readSocPercent({ timeoutMs = 8000, batteryInstance }: { timeoutMs?: number; batteryInstance?: number } = {}): Promise<{ soc_percent: number | null; raw: unknown }> {
     const s = await this.getSerial({ timeoutMs });
 
-    // This will subscribe to N/s/system/0/Dc/Battery/Soc
-    // and publish an empty message to R/s/system/0/Dc/Battery/Soc
-    const payload = await this.readSetting('system/0/Dc/Battery/Soc', {
-      serial: s,
-      timeoutMs,
-    }) as { value?: unknown } | null;
+    const paths: string[] = [];
+    if (batteryInstance !== undefined && Number.isFinite(batteryInstance) && batteryInstance >= 0) {
+      paths.push(`battery/${Math.round(batteryInstance)}/Soc`);
+    }
+    paths.push('system/0/Dc/Battery/Soc');
 
-    const rawValue = payload?.value;
+    let raw: unknown = null;
+    for (const [idx, path] of paths.entries()) {
+      try {
+        const payload = await this.readSetting(path, {
+          serial: s,
+          timeoutMs,
+        }) as { value?: unknown } | null;
+        raw = payload;
 
-    // Victron sometimes sends [] when there is no SoC
-    if (rawValue === null || rawValue === undefined || Array.isArray(rawValue)) {
-      return { soc_percent: null, raw: payload };
+        const soc_percent = normalizeSocPayload(payload);
+        if (soc_percent !== null) return { soc_percent, raw: payload };
+      } catch (err) {
+        if (idx === paths.length - 1) throw err;
+      }
     }
 
-    const n = Number(rawValue);
-    if (!Number.isFinite(n)) {
-      return { soc_percent: null, raw: payload };
-    }
-
-    const soc_percent = Math.max(0, Math.min(100, n));
-    return { soc_percent, raw: payload };
+    return { soc_percent: null, raw };
   }
 
   /**

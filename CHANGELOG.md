@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.10 - 2026-04-30
+
+- Refresh live Victron MQTT battery SoC before every MQTT-sourced solve, preferring the configured battery instance topic before falling back to system SoC
+- Fail calculations when Victron MQTT SoC cannot be read instead of silently planning from old SoC data
+- Surface Victron schedule write failures to the API/UI instead of reporting a false successful send
+
 ## 0.7.9 - 2026-04-30
 
 - Add PV curtailment and battery direction constraints so negative-price plans better match Victron DESS capabilities

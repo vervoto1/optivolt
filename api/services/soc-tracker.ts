@@ -2,6 +2,7 @@ import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { readVictronSocPercent } from './mqtt-service.ts';
 import { loadData } from './data-store.ts';
+import { loadSettings } from './settings-store.ts';
 import { getQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SocSample, TimeSeries } from '../types.ts';
 
@@ -42,7 +43,12 @@ async function saveSocSamples(samples: SocSample[]): Promise<void> {
 export async function sampleAndStoreSoc(): Promise<SocSample | null> {
   let soc_percent: number | null;
   try {
-    soc_percent = await readVictronSocPercent({ timeoutMs: 5000 });
+    const settings = await loadSettings();
+    const options: { timeoutMs: number; batteryInstance?: number } = { timeoutMs: 5000 };
+    if (settings.shoreOptimizer?.batteryInstance !== undefined) {
+      options.batteryInstance = settings.shoreOptimizer.batteryInstance;
+    }
+    soc_percent = await readVictronSocPercent(options);
   } catch (err) {
     console.warn('[soc-tracker] Failed to read SoC from MQTT:', (err as Error).message);
     return null;
