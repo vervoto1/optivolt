@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.11 - 2026-04-30
+
+- Fix SoC parsing: exclude `soc_shortfall` slack variables from SoC reconstruction, resolving jumpy/incorrect SoC display and false simultaneous charge/discharge in plans
+
 ## 0.7.10 - 2026-04-30
 
 - Refresh live Victron MQTT battery SoC before every MQTT-sourced solve, preferring the configured battery instance topic before falling back to system SoC
