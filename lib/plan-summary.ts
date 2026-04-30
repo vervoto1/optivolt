@@ -28,6 +28,7 @@ export function buildPlanSummary(
       loadFromPv_kWh: 0,
       gridToBattery_kWh: 0,
       batteryToGrid_kWh: 0,
+      pvCurtailed_kWh: 0,
       importEnergy_kWh: 0,
       avgImportPrice_cents_per_kWh: null,
       gridBatteryTippingPoint_cents_per_kWh:
@@ -59,6 +60,7 @@ export function buildPlanSummary(
   let loadFromPv = 0;
   let gridToBattery = 0;
   let batteryToGrid = 0;
+  let pvCurtailed = 0;
   let importEnergy = 0;
   let priceTimesEnergy = 0;
   let evFromGrid = 0;
@@ -74,6 +76,7 @@ export function buildPlanSummary(
     const pv2lK = W2kWh(row.pv2l);
     const g2bK = W2kWh(row.g2b);
     const b2gK = W2kWh(row.b2g);
+    const pvCurtailK = W2kWh(row.pvCurtail ?? 0);
     const impK = W2kWh(row.imp);
 
     loadTotal += loadK;
@@ -84,6 +87,7 @@ export function buildPlanSummary(
     loadFromPv += pv2lK;
     gridToBattery += g2bK;
     batteryToGrid += b2gK;
+    pvCurtailed += pvCurtailK;
     importEnergy += impK;
 
     if (impK > 0) {
@@ -106,6 +110,7 @@ export function buildPlanSummary(
     loadFromPv_kWh: loadFromPv,
     gridToBattery_kWh: gridToBattery,
     batteryToGrid_kWh: batteryToGrid,
+    pvCurtailed_kWh: pvCurtailed,
     importEnergy_kWh: importEnergy,
     avgImportPrice_cents_per_kWh: avgImportPrice,
     gridBatteryTippingPoint_cents_per_kWh:

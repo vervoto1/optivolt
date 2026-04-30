@@ -8,6 +8,7 @@ import {
 export const SOLUTION_COLORS = {
   b2g: "rgb(15, 192, 216)",   // Battery to Grid (teal-ish)
   pv2g: "rgb(247, 171, 62)",  // Solar to Grid (amber)
+  pvCurtail: "rgb(148, 163, 184)", // Curtailed Solar (slate)
   pv2b: "rgb(139, 201, 100)", // Solar to Battery (green)
   pv2l: "rgb(212, 222, 95)",  // Solar to Consumption (yellow-green)
   b2l: "rgb(71, 144, 208)",   // Battery to Consumption (blue)
@@ -28,6 +29,7 @@ const FLOWS_TOOLTIP_LABELS = {
   pv2ev: "Solar → EV",
   pv2b:  "Solar → Battery",
   pv2g:  "Solar → Grid",
+  pvCurtail: "Solar curtailed",
   b2g:   "Battery → Grid",
   b2l:   "Battery → Load",
   b2ev:  "Battery → EV",
@@ -310,7 +312,7 @@ function aggregateRows(rows, inputStep_m, targetStep_m) {
     buckets.get(bucketTs).push(r);
   }
 
-  const keys = ['g2l', 'g2b', 'pv2l', 'pv2b', 'pv2g', 'b2l', 'b2g', 'load', 'pv', 'imp', 'exp', 'evLoad'];
+  const keys = ['g2l', 'g2b', 'pv2l', 'pv2b', 'pv2g', 'pvCurtail', 'b2l', 'b2g', 'load', 'pv', 'imp', 'exp', 'evLoad'];
 
   return [...buckets.entries()]
     .sort(([a], [b]) => a - b)
@@ -353,6 +355,7 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
     { key: "pv2ev", color: SOLUTION_COLORS.pv2ev, label: "Solar → EV",       sign: 1 },
     { key: "pv2b",  color: SOLUTION_COLORS.pv2b,  label: "Solar → Battery",  sign: 1 },
     { key: "pv2g",  color: SOLUTION_COLORS.pv2g,  label: "Solar → Grid",     sign: 1 },
+    { key: "pvCurtail", color: SOLUTION_COLORS.pvCurtail, label: "Solar curtailed", sign: 1 },
     { key: "b2g",   color: SOLUTION_COLORS.b2g,   label: "Battery → Grid",   sign: 1 },
     // Negative Stack
     { key: "b2l",   color: SOLUTION_COLORS.b2l,   label: "Battery → Load",   sign: -1 },

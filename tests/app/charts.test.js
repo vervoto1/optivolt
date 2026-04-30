@@ -40,7 +40,7 @@ function makeRows(count = 4, stepMs = 900000) {
   const base = new Date('2024-01-15T08:00:00Z').getTime();
   return Array.from({ length: count }, (_, i) => ({
     timestampMs: base + i * stepMs,
-    g2l: 500 + i * 10, b2l: 200, pv2l: 300, pv2b: 100, pv2g: 50,
+    g2l: 500 + i * 10, b2l: 200, pv2l: 300, pv2b: 100, pv2g: 50, pvCurtail: 0,
     g2b: 50, b2g: 30, load: 1000, pv: 500, imp: 500, exp: 50,
     evLoad: 0, soc: 5000, soc_percent: 50 + i, ic: 10.5, ec: 5.2,
   }));
@@ -58,6 +58,7 @@ describe('charts.js', () => {
       expect(SOLUTION_COLORS.pv2l).toBeDefined();
       expect(SOLUTION_COLORS.pv2b).toBeDefined();
       expect(SOLUTION_COLORS.pv2g).toBeDefined();
+      expect(SOLUTION_COLORS.pvCurtail).toBeDefined();
       expect(SOLUTION_COLORS.g2b).toBeDefined();
       expect(SOLUTION_COLORS.b2g).toBeDefined();
       expect(SOLUTION_COLORS.ev).toBeDefined();

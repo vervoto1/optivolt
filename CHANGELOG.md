@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.9 - 2026-04-30
+
+- Add PV curtailment and battery direction constraints so negative-price plans better match Victron DESS capabilities
+- Prefer DC-coupled PV charging paths when the battery is charging, while still allowing curtailment when prices make PV harmful
+- Surface curtailed PV in plan rows, summaries, charts, and schedule tables
+
 ## 0.7.8 - 2026-04-28
 
 - Bump version

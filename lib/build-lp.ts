@@ -60,19 +60,25 @@ export function buildLP({
   }
 
   // Tiebreak hierarchy (at near-zero prices, zero batteryCost):
-  //   pv→load (0) < pv→ev (2e-6) < pv→battery (3e-6) < pv→grid (4e-6)
+  //   PV is preferred for the DC battery over grid charging when the slot is
+  //   charging anyway, while PV still prefers load over battery if that avoids
+  //   paid grid import.
+  //   pv→load (0) < pv→battery (1.5e-6) < pv→ev (2e-6) < pv→grid (4e-6)
   //   grid→ev tiebreak (1e-6) < pv→ev (2e-6): PV is strictly preferred for EV at real prices.
   //   At zero prices grid→ev (1e-6) < pv→ev (2e-6), but PV still prefers load because
   //   routing PV to EV only saves 1e-6 net (grid_to_ev tiebreak - pv_to_ev tiebreak = -1e-6).
   const TIEBREAK = {
     avoidExport: 4e-6,           // prefer pv used locally over pv→grid
-    pvToLoad: 3e-6,              // prefer pv→load over pv→battery; must exceed pv→ev (2e-6) so pv→battery > pv→ev when batteryCost=0
-    preferPvForEv: 1e-6,         // extra cost on grid→ev and pv→ev; ensures pv→battery+grid→ev (4e-6) > pv→ev (2e-6)
+    pvToBattery: 1.5e-6,         // prefer DC-coupled PV→battery over grid→battery in charging slots
+    gridToBattery: 4e-6,         // prefer PV→battery + grid→load over PV→load + grid→battery when import is equal
+    preferPvForEv: 1e-6,         // extra cost on grid→ev and pv→ev; ensures pv→battery+grid→ev (2.5e-6) > pv→ev (2e-6)
     pvLoadOverEv: 1e-6,          // extra cost on pv→ev beyond preferPvForEv; prefer pv→load over pv→ev
     evOnPerSlot: 1e-6,           // escalating per-slot penalty on ev_on_t: breaks symmetry between equivalent charging schedules
     rebalanceStartPerSlot: 1e-6, // escalating per-window penalty on start_balance_k: breaks symmetry between equivalent rebalance windows
     avoidGridRoundTrip: 5e-7, // prefer battery→load over grid→load when battery is already discharging (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierCharging: 5e-7, // per-slot increasing penalty on g2b to prefer continuous charging from start of price block
+    allowCurtailAtNegativePrice: 1e-8, // permit PV curtailment when import/export prices make PV economically harmful
+    avoidCurtail: 1e-4, // otherwise prefer using/storing/exporting PV over curtailment
   }
   const softMinSocPenalty_cents_per_Wh = 0.05; // penalty to keep soc above minSoc when possible
 
@@ -147,10 +153,12 @@ export function buildLP({
   const pvToLoad = (t: number) => `pv_to_load_${t}`;
   const pvToBattery = (t: number) => `pv_to_battery_${t}`;
   const pvToGrid = (t: number) => `pv_to_grid_${t}`;
+  const pvCurtail = (t: number) => `pv_curtail_${t}`;
   const batteryToLoad = (t: number) => `battery_to_load_${t}`;
   const batteryToGrid = (t: number) => `battery_to_grid_${t}`;
   const soc = (t: number) => `soc_${t}`;
   const socShortfall = (t: number) => `soc_shortfall_${t}`;
+  const batteryCharging = (t: number) => `battery_charging_${t}`;
   const cvBin = (k: number, t: number) => `cv_${k}_${t}`;
   const dpBin = (k: number, t: number) => `dp_${k}_${t}`;
 
@@ -167,12 +175,16 @@ export function buildLP({
 
     // Aggregate coefficients for each variable
     const gridToLoadCoeff = importCoeff_cents + TIEBREAK.avoidGridRoundTrip; // import cost + tiny nudge to prefer battery→load when prices are equal
-    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + slight preference for earlier charging
+    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + TIEBREAK.gridToBattery + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + prefer DC PV charging + slight preference for earlier charging
     const pvToGridCoeff = -exportCoeff_cents + TIEBREAK.avoidExport; // export revenue + slight penalty to prefer using PV locally
     const batteryToGridCoeff = -exportCoeff_cents + batteryCost_cents; // export revenue + battery cost
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
-    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToLoad; // battery cost
+    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery; // battery cost + tiny routing tiebreak
     const socShortfallCoeff = softMinSocPenalty_cents_per_Wh; // penalty for being below minSoc
+    const pvCurtailCoeff =
+      importPrice[t] < 0 || exportPrice[t] < 0
+        ? TIEBREAK.allowCurtailAtNegativePrice
+        : TIEBREAK.avoidCurtail;
 
     // Add each variable to the objective once with its final coefficient
     /* v8 ignore start — v8 statement counter artifact inside covered if-block */
@@ -182,6 +194,7 @@ export function buildLP({
     if (batteryToGridCoeff !== 0) objTerms.push(` + ${toNum(batteryToGridCoeff)} ${batteryToGrid(t)}`);
     if (batteryToLoadCoeff !== 0) objTerms.push(` + ${toNum(batteryToLoadCoeff)} ${batteryToLoad(t)}`);
     if (pvToBatteryCoeff !== 0) objTerms.push(` + ${toNum(pvToBatteryCoeff)} ${pvToBattery(t)}`);
+    objTerms.push(` + ${toNum(pvCurtailCoeff)} ${pvCurtail(t)}`);
     /* v8 ignore end */
     if (evActive) {
       /* v8 ignore next — v8 statement counter artifact inside covered if-block */
@@ -222,7 +235,7 @@ export function buildLP({
   // PV split
   for (let t = 0; t < T; t++) {
     const pvEvTerm = evActive ? ` + ${pvToEv(t)}` : '';
-    lines.push(` c_pv_split_${t}: ${pvToLoad(t)} + ${pvToBattery(t)} + ${pvToGrid(t)}${pvEvTerm} = ${pv_W[t]}`);
+    lines.push(` c_pv_split_${t}: ${pvToLoad(t)} + ${pvToBattery(t)} + ${pvToGrid(t)} + ${pvCurtail(t)}${pvEvTerm} = ${pv_W[t]}`);
   }
 
   // SOC evolution (includes idle drain: inverter consumes idleDrain_Wh per slot)
@@ -255,6 +268,10 @@ export function buildLP({
     const gridEvTerm = evActive ? ` + ${gridToEv(t)}` : '';
     lines.push(` c_grid_import_cap_${t}: ${gridToLoad(t)} + ${gridToBattery(t)}${gridEvTerm} <= ${maxGridImport_W}`);
     lines.push(` c_grid_export_cap_${t}: ${pvToGrid(t)} + ${batteryToGrid(t)} <= ${maxGridExport_W}`);
+
+    // Victron cannot charge and discharge the battery in the same DESS slot.
+    lines.push(` c_battery_charge_mode_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} - ${toNum(maxChargePower_W)} ${batteryCharging(t)} <= 0`);
+    lines.push(` c_battery_discharge_mode_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} + ${toNum(maxDischargePower_W)} ${batteryCharging(t)} <= ${toNum(maxDischargePower_W)}`);
 
     // Soft min SOC constraint
     lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
@@ -385,6 +402,7 @@ export function buildLP({
     lines.push(` 0 <= ${pvToLoad(t)} <= ${toNum(effectiveLoad_W[t])}`);
     lines.push(` 0 <= ${pvToBattery(t)} <= ${toNum(Math.min(pv_W[t], maxChargePower_W))}`);
     lines.push(` 0 <= ${pvToGrid(t)} <= ${toNum(Math.min(pv_W[t], maxGridExport_W))}`);
+    lines.push(` 0 <= ${pvCurtail(t)} <= ${toNum(pv_W[t])}`);
 
     // Battery → load/grid (cannot exceed discharge or respective sinks)
     // evDischargeBlocked: when uncontrollable EV is charging, block battery discharge
@@ -405,9 +423,13 @@ export function buildLP({
   }
   lines.push("");
 
-  const hasBinaries = D > 0 || cvK > 0 || dpK > 0 || evActive;
+  const hasBinaries = T > 0 || D > 0 || cvK > 0 || dpK > 0 || evActive;
   if (hasBinaries) {
     lines.push("Binaries");
+    // Battery direction binaries
+    for (let t = 0; t < T; t++) {
+      lines.push(` ${batteryCharging(t)}`);
+    }
     // Rebalancing binaries
     if (D > 0) {
       for (let k = 0; k <= T - D; k++) {

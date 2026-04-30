@@ -20,6 +20,7 @@ describe('parseSolution', () => {
       Columns: {
         'grid_to_load_0': { Primal: 400 },
         'pv_to_load_0': { Primal: 100 },
+        'pv_curtail_0': { Primal: 250 },
         'grid_to_load_1': { Primal: 600 },
         'soc_0': { Primal: 200 },
         'soc_1': { Primal: 200 },
@@ -31,6 +32,7 @@ describe('parseSolution', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].g2l).toBe(400);
     expect(rows[0].pv2l).toBe(100);
+    expect(rows[0].pvCurtail).toBe(250);
     expect(rows[1].g2l).toBe(600);
     expect(rows[0].soc).toBe(200);
     expect(rows[0].soc_percent).toBe(20);

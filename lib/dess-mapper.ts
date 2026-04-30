@@ -236,7 +236,7 @@ function findHighestGridChargeCost(rows: PlanRow[], segment: Segment | null): nu
  * (i.e. we were willing to sell at this low price, so we'd definitely sell at higher prices).
  */
 function findLowestGridExportRevenue(rows: PlanRow[], segment: Segment | null): number {
-  return aggregateSegmentPrice(rows, segment, r => r.b2g > FLOW_EPSILON_W, r => r.ec, 'min');
+  return aggregateSegmentPrice(rows, segment, r => r.b2g > FLOW_EPSILON_W && r.ec >= 0, r => r.ec, 'min');
 }
 
 /**
@@ -249,7 +249,7 @@ function findLowestPvExportPrice(rows: PlanRow[], segment: Segment | null, cfg: 
     rows,
     segment,
     r => {
-      if (r.pv2g <= FLOW_EPSILON_W) return false;
+      if (r.pv2g <= FLOW_EPSILON_W || r.ec < 0) return false;
       const chargePower = r.pv2b + r.g2b;
       const isChargeConstrained = chargePower >= cfg.maxChargePower_W - FLOW_EPSILON_W;
       const isSocConstrained = r.soc_percent >= cfg.maxSoc_percent - SOC_EPSILON_PERCENT;
@@ -363,6 +363,7 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
 
     // Feed-in: same rule as v1
     const feedin = row.ec < 0 ? FeedIn.blocked : FeedIn.allowed;
+    const feedinAllowed = feedin === FeedIn.allowed;
 
     const importCost = row.ic;
     const exportPrice = row.ec;
@@ -408,14 +409,14 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
       // charge toward target SoC if needed.
       strategy = Strategy.proBattery;
       restrictions = Restrictions.batteryToGrid; // allow grid→battery
-    } else if (exportPrice >= batteryExportTp) {
+    } else if (feedinAllowed && exportPrice >= batteryExportTp) {
       // Export price is high enough to dump battery to grid
       strategy = Strategy.proGrid;
       restrictions = Restrictions.gridToBattery; // allow battery→grid
       if (gridExport >= cfg.maxGridExport_W - FLOW_EPSILON_W || dischargePower >= cfg.maxDischargePower_W - FLOW_EPSILON_W) {
         socTarget_percent = Math.max(socTarget_percent - 5, cfg.minSoc_percent + 1);
       }
-    } else if (pvSurplus && exportPrice >= pvExportTp) {
+    } else if (feedinAllowed && pvSurplus && exportPrice >= pvExportTp) {
       // PV surplus goes to grid (battery likely full)
       // Only applies when we actually expect PV to exceed load
       // Allow battery→grid so GX can discharge toward target SoC
@@ -426,6 +427,10 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
       // In Mode 4, GX needs unrestricted access to reach target SoC
       strategy = Strategy.selfConsumption;
       restrictions = Restrictions.none;
+    }
+
+    if (!feedinAllowed && restrictions === Restrictions.none) {
+      restrictions = Restrictions.batteryToGrid;
     }
 
     // EV discharge constraint: block battery discharge during EV charging
@@ -451,4 +456,3 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
 
   return { perSlot, diagnostics };
 }
-

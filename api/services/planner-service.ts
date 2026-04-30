@@ -163,7 +163,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const lpText = buildLP(cfg);
   const highs = await getHighsInstance();
-  const hasBinaries = cfg.ev != null || (cfg.rebalanceRemainingSlots ?? 0) > 0;
+  const hasBinaries = cfg.load_W.length > 0;
   const solveOptions = hasBinaries ? { mip_rel_gap: 0.005, mip_abs_gap: 0.01 } : {};
   let result: ReturnType<typeof highs.solve>;
   const t0 = performance.now();

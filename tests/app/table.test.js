@@ -5,6 +5,7 @@ vi.mock('../../app/src/charts.js', () => ({
   SOLUTION_COLORS: {
     b2g: 'rgb(15, 192, 216)',
     pv2g: 'rgb(247, 171, 62)',
+    pvCurtail: 'rgb(148, 163, 184)',
     pv2b: 'rgb(139, 201, 100)',
     pv2l: 'rgb(212, 222, 95)',
     b2l: 'rgb(71, 144, 208)',
@@ -21,7 +22,7 @@ function makeRow(overrides = {}) {
   return {
     timestampMs: new Date('2024-01-15T08:15:00Z').getTime(),
     load: 1000, pv: 500, ic: 10.55, ec: 5.23,
-    g2l: 500, b2l: 200, pv2l: 300, pv2b: 100, pv2g: 50,
+    g2l: 500, b2l: 200, pv2l: 300, pv2b: 100, pv2g: 50, pvCurtail: 0,
     g2b: 0, b2g: 0, imp: 500, exp: 50,
     soc: 5000, soc_percent: 50, evLoad: 0,
     dess: { strategy: 0, restrictions: 0, feedin: 1, socTarget_percent: 60 },

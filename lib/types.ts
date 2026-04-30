@@ -113,6 +113,7 @@ export interface PlanRow {
   pv2l: number;  // PV → load W
   pv2b: number;  // PV → battery W
   pv2g: number;  // PV → grid W
+  pvCurtail: number; // curtailed PV W
   b2l: number;   // battery → load W
   b2g: number;   // battery → grid W
   imp: number;   // total import W (g2l + g2b)
@@ -170,6 +171,7 @@ export interface PlanSummary {
   loadFromPv_kWh: number;
   gridToBattery_kWh: number;
   batteryToGrid_kWh: number;
+  pvCurtailed_kWh: number;
   importEnergy_kWh: number;
   avgImportPrice_cents_per_kWh: number | null;
   gridBatteryTippingPoint_cents_per_kWh: number | null;

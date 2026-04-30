@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { buildLP } from '../../lib/build-lp.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
+import { parseSolution } from '../../lib/parse-solution.ts';
+// @ts-ignore
+import highsFactory from '../../vendor/highs-build/highs.js';
 
 describe('buildLP', () => {
   const T = 5;
@@ -32,6 +35,8 @@ describe('buildLP', () => {
     // Check for variables at t=0 and t=4
     expect(lp).toContain('grid_to_load_0');
     expect(lp).toContain('pv_to_grid_4');
+    expect(lp).toContain('pv_curtail_4');
+    expect(lp).toContain('battery_charging_4');
     expect(lp).toContain('soc_shortfall_0');
   });
 
@@ -109,6 +114,128 @@ describe('buildLP', () => {
   });
 });
 
+describe('buildLP — Victron executable battery/PV behavior', () => {
+  let highs;
+
+  beforeAll(async () => {
+    highs = await highsFactory({});
+  });
+
+  it('emits PV curtailment and battery direction constraints for each slot', () => {
+    const lp = buildLP({
+      load_W: [1000, 1000],
+      pv_W: [5000, 5000],
+      importPrice: [-40, -40],
+      exportPrice: [-40, -40],
+      maxChargePower_W: 4000,
+      maxDischargePower_W: 4000,
+    });
+
+    expect(lp).toContain('pv_curtail_0');
+    expect(lp).toContain('c_battery_charge_mode_0:');
+    expect(lp).toContain('c_battery_discharge_mode_0:');
+    expect(lp).toContain('battery_charging_0');
+    expect(lp).toContain('battery_charging_1');
+  });
+
+  it('curtails PV instead of forcing it into negative-price export', () => {
+    const cfg = {
+      load_W: [1000],
+      pv_W: [5000],
+      importPrice: [-40],
+      exportPrice: [-40],
+      stepSize_m: 15,
+      batteryCapacity_Wh: 20000,
+      minSoc_percent: 10,
+      maxSoc_percent: 100,
+      maxChargePower_W: 4000,
+      maxDischargePower_W: 4000,
+      maxGridImport_W: 5000,
+      maxGridExport_W: 5000,
+      chargeEfficiency_percent: 90,
+      dischargeEfficiency_percent: 90,
+      batteryCost_cent_per_kWh: 0,
+      idleDrain_W: 0,
+      terminalSocValuation: 'zero',
+      initialSoc_percent: 50,
+    };
+
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    expect(result.Status).toBe('Optimal');
+
+    const [row] = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
+    expect(row.g2l).toBeCloseTo(1000, 3);
+    expect(row.pv2g).toBeCloseTo(0, 3);
+    expect(row.pvCurtail).toBeGreaterThan(4999);
+  });
+
+  it('prefers DC PV into the battery over grid charging when a slot is charging anyway', () => {
+    const cfg = {
+      load_W: [1000],
+      pv_W: [1000],
+      importPrice: [20],
+      exportPrice: [0],
+      stepSize_m: 15,
+      batteryCapacity_Wh: 20000,
+      minSoc_percent: 10,
+      maxSoc_percent: 100,
+      maxChargePower_W: 1000,
+      maxDischargePower_W: 1000,
+      maxGridImport_W: 1000,
+      maxGridExport_W: 1000,
+      chargeEfficiency_percent: 100,
+      dischargeEfficiency_percent: 100,
+      batteryCost_cent_per_kWh: 0,
+      idleDrain_W: 0,
+      terminalSocValuation: 'custom',
+      terminalSocCustomPrice_cents_per_kWh: 100,
+      initialSoc_percent: 50,
+    };
+
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    expect(result.Status).toBe('Optimal');
+
+    const [row] = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
+    expect(row.g2l).toBeCloseTo(1000, 3);
+    expect(row.pv2b).toBeCloseTo(1000, 3);
+    expect(row.g2b).toBeCloseTo(0, 3);
+    expect(row.pv2l).toBeCloseTo(0, 3);
+  });
+
+  it('does not allow same-slot battery charging and discharging during negative prices', () => {
+    const cfg = {
+      load_W: [0],
+      pv_W: [0],
+      importPrice: [-46],
+      exportPrice: [-46],
+      stepSize_m: 15,
+      batteryCapacity_Wh: 20000,
+      minSoc_percent: 10,
+      maxSoc_percent: 100,
+      maxChargePower_W: 5000,
+      maxDischargePower_W: 5000,
+      maxGridImport_W: 5000,
+      maxGridExport_W: 5000,
+      chargeEfficiency_percent: 90,
+      dischargeEfficiency_percent: 90,
+      batteryCost_cent_per_kWh: 0,
+      idleDrain_W: 0,
+      terminalSocValuation: 'zero',
+      initialSoc_percent: 50,
+    };
+
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    expect(result.Status).toBe('Optimal');
+
+    const [row] = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
+    const chargePower = row.g2b + row.pv2b;
+    const dischargePower = row.b2l + row.b2g + row.b2ev;
+
+    expect(chargePower).toBeGreaterThan(0);
+    expect(dischargePower).toBeCloseTo(0, 3);
+  });
+});
+
 describe('buildLP — MILP rebalancing', () => {
   const T = 8;
   const D = 3; // hold window in slots
@@ -121,15 +248,17 @@ describe('buildLP — MILP rebalancing', () => {
     maxSoc_percent: 100,
   };
 
-  it('does NOT include Binaries block when rebalanceRemainingSlots is 0', () => {
+  it('does NOT include rebalance binaries when rebalanceRemainingSlots is 0', () => {
     const lp = buildLP({ ...mockData, rebalanceRemainingSlots: 0 });
-    expect(lp).not.toContain('Binaries');
+    expect(lp).toContain('Binaries');
+    expect(lp).toContain('battery_charging_0');
     expect(lp).not.toContain('start_balance_');
   });
 
-  it('does NOT include Binaries block when rebalanceRemainingSlots is undefined', () => {
+  it('does NOT include rebalance binaries when rebalanceRemainingSlots is undefined', () => {
     const lp = buildLP(mockData);
-    expect(lp).not.toContain('Binaries');
+    expect(lp).toContain('Binaries');
+    expect(lp).toContain('battery_charging_0');
     expect(lp).not.toContain('start_balance_');
   });
 
@@ -546,6 +675,7 @@ describe('buildPlanSummary — empty rows', () => {
     expect(summary.loadFromPv_kWh).toBe(0);
     expect(summary.gridToBattery_kWh).toBe(0);
     expect(summary.batteryToGrid_kWh).toBe(0);
+    expect(summary.pvCurtailed_kWh).toBe(0);
     expect(summary.importEnergy_kWh).toBe(0);
   });
 
@@ -684,11 +814,12 @@ describe('buildLP — EV charging (MILP)', () => {
     evDepartureSlot: 4,        // deadline at slot index 3 (0-based)
   };
 
-  it('does not include EV variables or Binaries when ev is not set', () => {
+  it('does not include EV variables when ev is not set', () => {
     const lp = buildLP(base);
     expect(lp).not.toContain('grid_to_ev_');
     expect(lp).not.toContain('ev_on_');
-    expect(lp).not.toContain('Binaries');
+    expect(lp).toContain('Binaries');
+    expect(lp).toContain('battery_charging_0');
   });
 
   it('includes EV flow variables in Bounds for every slot', () => {

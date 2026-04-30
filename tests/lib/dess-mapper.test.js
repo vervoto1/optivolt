@@ -684,6 +684,7 @@ describe('mapRowsToDessV2', () => {
     const rows = [makeRow({ ec: -1 })];
     const { perSlot } = mapRowsToDessV2(rows, cfg);
     expect(perSlot[0].feedin).toBe(FeedIn.blocked);
+    expect(perSlot[0].restrictions).toBe(Restrictions.batteryToGrid);
   });
 
   it('allows feed-in when export price is positive', () => {
@@ -717,6 +718,32 @@ describe('mapRowsToDessV2', () => {
     const v2Result = mapRowsToDessV2(rows, cfg);
     expect(v2Result.diagnostics).toHaveProperty('pvExportTippingPoint_cents_per_kWh');
     expect(v2Result.diagnostics.pvExportTippingPoint_cents_per_kWh).toBe(25);
+  });
+
+  it('does not use negative-price battery export as an export tipping point', () => {
+    const rows = [
+      makeRow({ b2g: 100, ec: -20, ic: 100 }),
+      makeRow({ ec: -10, ic: 100 }),
+    ];
+    const result = mapRowsToDessV2(rows, cfg);
+
+    expect(result.diagnostics.batteryExportTippingPoint_cents_per_kWh).toBe(Infinity);
+    expect(result.perSlot[1].feedin).toBe(FeedIn.blocked);
+    expect(result.perSlot[1].strategy).toBe(Strategy.selfConsumption);
+    expect(result.perSlot[1].restrictions).toBe(Restrictions.batteryToGrid);
+  });
+
+  it('does not use negative-price PV export as a PV export tipping point', () => {
+    const rows = [
+      makeRow({ pv2g: 500, ec: -5, ic: 100 }),
+      makeRow({ pv: 1000, load: 200, ec: -1, ic: 100 }),
+    ];
+    const result = mapRowsToDessV2(rows, cfg);
+
+    expect(result.diagnostics.pvExportTippingPoint_cents_per_kWh).toBe(Infinity);
+    expect(result.perSlot[1].feedin).toBe(FeedIn.blocked);
+    expect(result.perSlot[1].strategy).toBe(Strategy.selfConsumption);
+    expect(result.perSlot[1].restrictions).toBe(Restrictions.batteryToGrid);
   });
 
   describe('EV load inflation of g2l does not affect strategy or restrictions', () => {
@@ -914,4 +941,3 @@ describe('mapRowsToDessV2', () => {
     });
   });
 });
-

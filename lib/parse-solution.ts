@@ -33,6 +33,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   const pv2l = Array(T).fill(0);
   const pv2b = Array(T).fill(0);
   const pv2g = Array(T).fill(0);
+  const pvCurtail = Array(T).fill(0);
   const b2l = Array(T).fill(0);
   const b2g = Array(T).fill(0);
   const soc = Array(T).fill(0);
@@ -53,6 +54,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
     else if (name.startsWith("pv_to_load_")) pv2l[t] = v;
     else if (name.startsWith("pv_to_battery_")) pv2b[t] = v;
     else if (name.startsWith("pv_to_grid_")) pv2g[t] = v;
+    else if (name.startsWith("pv_curtail_")) pvCurtail[t] = v;
     else if (name.startsWith("battery_to_load_")) b2l[t] = v;
     else if (name.startsWith("battery_to_grid_")) b2g[t] = v;
     else if (name.startsWith("soc_")) soc[t] = v;
@@ -84,6 +86,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
       pv2l: round(pv2l[t]),
       pv2b: round(pv2b[t]),
       pv2g: round(pv2g[t]),
+      pvCurtail: round(pvCurtail[t]),
       b2l: round(b2l[t]),
       b2g: round(b2g[t]),
 

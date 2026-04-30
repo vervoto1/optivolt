@@ -57,6 +57,7 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     { key: "pv2l", headerHtml: "pv2l", fmt: x => fmtEnergy(x), tip: "Solar → Load" },
     { key: "pv2b", headerHtml: "pv2b", fmt: x => fmtEnergy(x), tip: "Solar → Battery" },
     { key: "pv2g", headerHtml: "pv2g", fmt: x => fmtEnergy(x), tip: "Solar → Grid" },
+    { key: "pvCurtail", headerHtml: "PV<br>curt.", fmt: x => fmtEnergy(x), tip: "Curtailed solar" },
 
     { key: "g2b", headerHtml: "g2b", fmt: x => fmtEnergy(x), tip: "Grid → Battery" },
     { key: "b2g", headerHtml: "b2g", fmt: x => fmtEnergy(x), tip: "Battery → Grid" },
@@ -131,7 +132,7 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     },
   ];
 
-  const SUMMABLE_KEYS = new Set(["load", "pv", "g2l", "b2l", "pv2l", "pv2b", "pv2g", "g2b", "b2g", "ev_charge", "imp", "exp"]);
+  const SUMMABLE_KEYS = new Set(["load", "pv", "g2l", "b2l", "pv2l", "pv2b", "pv2g", "pvCurtail", "g2b", "b2g", "ev_charge", "imp", "exp"]);
 
   const totals = {};
   for (const key of SUMMABLE_KEYS) {
