@@ -77,7 +77,8 @@
     "minGridHeadroomW": 100,
     "negativePriceThreshold_cents_per_kWh": 0,
     "portalId": "c0619ab6bd28",
-    "acsystemInstance": 0
+    "acsystemInstance": 0,
+    "enphaseSwitchEntity": ""
   },
   "cvPhase": {
     "enabled": false,

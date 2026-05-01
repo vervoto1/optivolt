@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.14 - 2026-05-01
+
+- Toggle an optional Enphase Envoy production switch via Home Assistant alongside the Victron `Pv/Disable` write whenever PV curtailment engages
+- Surface the controlled targets (Victron portal ID, AC system instance, Enphase HA entity) directly on the PV Curtailment card instead of hiding them under "Advanced"
+
 ## 0.7.13 - 2026-05-01
 
 - Block shore optimizer while PV curtailment owns an active PV disable

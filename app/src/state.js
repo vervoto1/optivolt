@@ -100,6 +100,7 @@ export function snapshotUI(els) {
       negativePriceThreshold_cents_per_kWh: num(els.pvCurtailPriceThreshold?.value) ?? 0,
       portalId: els.pvCurtailPortalId?.value ?? 'c0619ab6bd28',
       acsystemInstance: num(els.pvCurtailAcsystemInstance?.value) ?? 0,
+      enphaseSwitchEntity: els.pvCurtailEnphaseSwitch?.value ?? '',
     },
 
     // HA Price Config — always send complete object (shallow merge safe)
@@ -249,6 +250,7 @@ export function hydrateUI(els, obj = {}) {
   if (els.pvCurtailPriceThreshold) els.pvCurtailPriceThreshold.value = obj.pvCurtailment?.negativePriceThreshold_cents_per_kWh ?? 0;
   if (els.pvCurtailPortalId) els.pvCurtailPortalId.value = obj.pvCurtailment?.portalId ?? 'c0619ab6bd28';
   if (els.pvCurtailAcsystemInstance) els.pvCurtailAcsystemInstance.value = obj.pvCurtailment?.acsystemInstance ?? 0;
+  if (els.pvCurtailEnphaseSwitch) els.pvCurtailEnphaseSwitch.value = obj.pvCurtailment?.enphaseSwitchEntity ?? '';
 
   // HA Price Sensor
   if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';

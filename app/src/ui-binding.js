@@ -120,6 +120,7 @@ export function getElements() {
     pvCurtailPriceThreshold: document.getElementById('pv-curtail-price-threshold'),
     pvCurtailPortalId: document.getElementById('pv-curtail-portal-id'),
     pvCurtailAcsystemInstance: document.getElementById('pv-curtail-acsystem-instance'),
+    pvCurtailEnphaseSwitch: document.getElementById('pv-curtail-enphase-switch'),
 
     // HA Price Sensor
     haPriceSensor: document.getElementById('ha-price-sensor'),

@@ -304,6 +304,7 @@ function normalizePvCurtailment(pvCurtailment: PvCurtailmentConfig): PvCurtailme
     ),
     portalId: expectString(pvCurtailment.portalId, 'pvCurtailment.portalId').trim(),
     acsystemInstance: Math.max(0, Math.round(expectFiniteNumber(pvCurtailment.acsystemInstance, 'pvCurtailment.acsystemInstance'))),
+    enphaseSwitchEntity: expectString(pvCurtailment.enphaseSwitchEntity ?? '', 'pvCurtailment.enphaseSwitchEntity').trim(),
   };
 }
 

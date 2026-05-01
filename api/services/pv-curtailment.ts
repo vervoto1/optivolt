@@ -2,6 +2,7 @@ import type { Settings, PvCurtailmentConfig, PlanRowWithDess } from '../types.ts
 import type { SolverConfig } from '../../lib/types.ts';
 import { decidePvCurtailment, type PvCurtailmentDecision } from '../../lib/pv-curtailment.ts';
 import { getVictronSerial, writeVictronSetting } from './mqtt-service.ts';
+import { resolveHaHttpConfig } from './ha-config.ts';
 
 interface ActivePlan {
   cfg: Pick<SolverConfig, 'stepSize_m' | 'maxGridImport_W'>;
@@ -34,6 +35,8 @@ const GATE_BLOCK_LOG_INTERVAL_MS = 60_000;
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let activeConfig: PvCurtailmentConfig | null = null;
+let activeHaUrl = '';
+let activeHaToken = '';
 let activePlan: ActivePlan | null = null;
 let tickInFlight = false;
 let ownsDisable = false;
@@ -54,6 +57,8 @@ export function startPvCurtailment(settings: Settings): void {
   const cfg = settings.pvCurtailment;
   serviceGeneration += 1;
   activeConfig = cfg ?? null;
+  activeHaUrl = settings.haUrl ?? '';
+  activeHaToken = settings.haToken ?? '';
   activePlan = null;
   lastDecision = null;
   lastGateBlockSignature = null;
@@ -182,6 +187,12 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
     ownsDisable = disabled;
     pushWriteRecord(record);
     console.info('[pv-curtailment] dry-run Pv/Disable write', record);
+    if (cfg.enphaseSwitchEntity) {
+      console.info('[pv-curtailment] dry-run Enphase switch toggle', {
+        entity: cfg.enphaseSwitchEntity,
+        turnOn: !disabled,
+      });
+    }
     return;
   }
 
@@ -192,6 +203,40 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
   lastWriteAtMs = Date.now();
   pushWriteRecord(record);
   console.info('[pv-curtailment] Pv/Disable write', record);
+
+  if (cfg.enphaseSwitchEntity) {
+    try {
+      await callHaSwitch(cfg.enphaseSwitchEntity, !disabled);
+      console.info('[pv-curtailment] Enphase switch toggle', {
+        entity: cfg.enphaseSwitchEntity,
+        turnOn: !disabled,
+      });
+    } catch (err) {
+      console.warn('[pv-curtailment] Enphase switch toggle failed:', (err as Error).message);
+    }
+  }
+}
+
+async function callHaSwitch(entityId: string, turnOn: boolean): Promise<void> {
+  const haConfig = resolveHaHttpConfig(activeHaUrl, activeHaToken);
+  if (!haConfig) {
+    throw new Error('Home Assistant credentials not configured');
+  }
+  const { baseUrl, token } = haConfig;
+  const service = turnOn ? 'turn_on' : 'turn_off';
+  const url = `${baseUrl}/api/services/switch/${service}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ entity_id: entityId }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`HA service call returned ${res.status} for switch.${service} ${entityId}`);
+  }
 }
 
 function logGateBlock(decision: PvCurtailmentDecision): void {

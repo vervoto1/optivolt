@@ -126,6 +126,7 @@ export interface PvCurtailmentConfig {
   negativePriceThreshold_cents_per_kWh: number;
   portalId: string;
   acsystemInstance: number;
+  enphaseSwitchEntity: string;
 }
 
 // ----------------------------- Persisted data ---------------------------
