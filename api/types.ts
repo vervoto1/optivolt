@@ -1,4 +1,5 @@
 import type { TimeSeries, PlanRow, DessSlot, TerminalSocValuation } from '../lib/types.ts';
+import type { PvCurtailmentSlot } from '../lib/pv-curtailment.ts';
 import type { DayFilter, Aggregation } from '../lib/load-predictor-historical.ts';
 import type { HaSensor, HaDerivedSensor } from '../lib/ha-postprocess.ts';
 
@@ -47,6 +48,7 @@ export interface Settings {
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
   shoreOptimizer?: ShoreOptimizerConfig;
+  pvCurtailment?: PvCurtailmentConfig;
   cvPhase?: CvPhaseConfig;
   adaptiveLearning?: AdaptiveLearningConfig;
   evEnabled: boolean;
@@ -115,6 +117,17 @@ export interface ShoreOptimizerConfig {
   batteryInstance: number;
 }
 
+export interface PvCurtailmentConfig {
+  enabled: boolean;
+  dryRun: boolean;
+  tickMs: number;
+  minPvPowerW: number;
+  minGridHeadroomW: number;
+  negativePriceThreshold_cents_per_kWh: number;
+  portalId: string;
+  acsystemInstance: number;
+}
+
 // ----------------------------- Persisted data ---------------------------
 
 export interface SocData {
@@ -140,6 +153,7 @@ export interface Data {
 
 export interface PlanRowWithDess extends PlanRow {
   dess: DessSlot;
+  pvControl?: PvCurtailmentSlot;
 }
 
 // ----------------------------- Adaptive learning -------------------------

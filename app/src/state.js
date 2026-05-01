@@ -90,6 +90,18 @@ export function snapshotUI(els) {
       batteryInstance: num(els.shoreOptBatteryInstance?.value) ?? 512,
     },
 
+    // PV Curtailment — always send complete object (shallow merge safe)
+    pvCurtailment: {
+      enabled: els.pvCurtailEnabled?.checked ?? false,
+      dryRun: els.pvCurtailDryRun?.checked ?? true,
+      tickMs: Math.max(1000, num(els.pvCurtailTickMs?.value) ?? 30000),
+      minPvPowerW: Math.max(0, num(els.pvCurtailMinPvPowerW?.value) ?? 100),
+      minGridHeadroomW: Math.max(0, num(els.pvCurtailMinGridHeadroomW?.value) ?? 100),
+      negativePriceThreshold_cents_per_kWh: num(els.pvCurtailPriceThreshold?.value) ?? 0,
+      portalId: els.pvCurtailPortalId?.value ?? 'c0619ab6bd28',
+      acsystemInstance: num(els.pvCurtailAcsystemInstance?.value) ?? 0,
+    },
+
     // HA Price Config — always send complete object (shallow merge safe)
     haPriceConfig: {
       sensor: els.haPriceSensor?.value ?? '',
@@ -227,6 +239,16 @@ export function hydrateUI(els, obj = {}) {
   if (els.shoreOptAcInputIndex) els.shoreOptAcInputIndex.value = obj.shoreOptimizer?.acInputIndex ?? 1;
   if (els.shoreOptMpptInstance) els.shoreOptMpptInstance.value = obj.shoreOptimizer?.mpptInstance ?? 0;
   if (els.shoreOptBatteryInstance) els.shoreOptBatteryInstance.value = obj.shoreOptimizer?.batteryInstance ?? 512;
+
+  // PV Curtailment
+  if (els.pvCurtailEnabled) els.pvCurtailEnabled.checked = obj.pvCurtailment?.enabled ?? false;
+  if (els.pvCurtailDryRun) els.pvCurtailDryRun.checked = obj.pvCurtailment?.dryRun ?? true;
+  if (els.pvCurtailTickMs) els.pvCurtailTickMs.value = obj.pvCurtailment?.tickMs ?? 30000;
+  if (els.pvCurtailMinPvPowerW) els.pvCurtailMinPvPowerW.value = obj.pvCurtailment?.minPvPowerW ?? 100;
+  if (els.pvCurtailMinGridHeadroomW) els.pvCurtailMinGridHeadroomW.value = obj.pvCurtailment?.minGridHeadroomW ?? 100;
+  if (els.pvCurtailPriceThreshold) els.pvCurtailPriceThreshold.value = obj.pvCurtailment?.negativePriceThreshold_cents_per_kWh ?? 0;
+  if (els.pvCurtailPortalId) els.pvCurtailPortalId.value = obj.pvCurtailment?.portalId ?? 'c0619ab6bd28';
+  if (els.pvCurtailAcsystemInstance) els.pvCurtailAcsystemInstance.value = obj.pvCurtailment?.acsystemInstance ?? 0;
 
   // HA Price Sensor
   if (els.haPriceSensor) els.haPriceSensor.value = obj.haPriceConfig?.sensor ?? '';

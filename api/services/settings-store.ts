@@ -24,11 +24,18 @@ export async function loadSettings(): Promise<Settings> {
           ...(settings.shoreOptimizer ?? {}),
         } as Settings['shoreOptimizer']
       : undefined;
+    const mergedPvCurtailment = (defaults.pvCurtailment || settings.pvCurtailment)
+      ? {
+          ...(defaults.pvCurtailment ?? {}),
+          ...(settings.pvCurtailment ?? {}),
+        } as Settings['pvCurtailment']
+      : undefined;
     return normalizeSettings({
       ...defaults,
       ...settings,
       dataSources: mergedDataSources,
       ...(mergedShoreOptimizer ? { shoreOptimizer: mergedShoreOptimizer } : {}),
+      ...(mergedPvCurtailment ? { pvCurtailment: mergedPvCurtailment } : {}),
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;

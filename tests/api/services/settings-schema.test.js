@@ -57,6 +57,16 @@ function validSettings() {
       mpptInstance: 0,
       batteryInstance: 512,
     },
+    pvCurtailment: {
+      enabled: false,
+      dryRun: true,
+      tickMs: 30000,
+      minPvPowerW: 100,
+      minGridHeadroomW: 100,
+      negativePriceThreshold_cents_per_kWh: 0,
+      portalId: 'c0619ab6bd28',
+      acsystemInstance: 0,
+    },
     cvPhase: { enabled: false, thresholds: [{ soc_percent: 95, maxChargePower_W: 1200 }] },
     adaptiveLearning: { enabled: false, mode: 'suggest', minDataDays: 3 },
   };
@@ -168,6 +178,12 @@ describe('settings-schema', () => {
       expect(() => normalizeSettings(s)).toThrow('shoreOptimizer must be an object');
     });
 
+    it('throws on non-object pvCurtailment', () => {
+      const s = validSettings();
+      s.pvCurtailment = 'bad';
+      expect(() => normalizeSettings(s)).toThrow('pvCurtailment must be an object');
+    });
+
     it('normalizes shoreOptimizer limits and instances', () => {
       const s = validSettings();
       s.shoreOptimizer.maxShoreA = 200;
@@ -187,6 +203,25 @@ describe('settings-schema', () => {
       const s = validSettings();
       s.shoreOptimizer.enabled = 'yes';
       expect(() => normalizeSettings(s)).toThrow('shoreOptimizer.enabled must be a boolean');
+    });
+
+    it('normalizes pvCurtailment numeric fields', () => {
+      const s = validSettings();
+      s.pvCurtailment.tickMs = 500;
+      s.pvCurtailment.minPvPowerW = -10;
+      s.pvCurtailment.minGridHeadroomW = -1;
+      s.pvCurtailment.acsystemInstance = 0.7;
+      const result = normalizeSettings(s);
+      expect(result.pvCurtailment.tickMs).toBe(1000);
+      expect(result.pvCurtailment.minPvPowerW).toBe(0);
+      expect(result.pvCurtailment.minGridHeadroomW).toBe(0);
+      expect(result.pvCurtailment.acsystemInstance).toBe(1);
+    });
+
+    it('throws on invalid pvCurtailment boolean', () => {
+      const s = validSettings();
+      s.pvCurtailment.enabled = 'yes';
+      expect(() => normalizeSettings(s)).toThrow('pvCurtailment.enabled must be a boolean');
     });
 
     it('throws on non-object cvPhase', () => {
@@ -281,6 +316,14 @@ describe('settings-schema', () => {
       expect(merged.shoreOptimizer.enabled).toBe(true);
       expect(merged.shoreOptimizer.dryRun).toBe(true);
       expect(merged.shoreOptimizer.multiInstance).toBe(6);
+    });
+
+    it('merges pvCurtailment patches without dropping defaults', () => {
+      const base = validSettings();
+      const merged = mergeSettings(base, { pvCurtailment: { enabled: true } });
+      expect(merged.pvCurtailment.enabled).toBe(true);
+      expect(merged.pvCurtailment.dryRun).toBe(true);
+      expect(merged.pvCurtailment.acsystemInstance).toBe(0);
     });
 
     it('keeps existing haToken when patch omits it', () => {

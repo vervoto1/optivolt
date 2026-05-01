@@ -69,6 +69,16 @@
     "mpptInstance": 0,
     "batteryInstance": 512
   },
+  "pvCurtailment": {
+    "enabled": false,
+    "dryRun": true,
+    "tickMs": 30000,
+    "minPvPowerW": 100,
+    "minGridHeadroomW": 100,
+    "negativePriceThreshold_cents_per_kWh": 0,
+    "portalId": "c0619ab6bd28",
+    "acsystemInstance": 0
+  },
   "cvPhase": {
     "enabled": false,
     "thresholds": [

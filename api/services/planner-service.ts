@@ -3,6 +3,7 @@
 import highsFactory from '../../vendor/highs-build/highs.js';
 /* v8 ignore end */
 import { mapRowsToDessV2 } from '../../lib/dess-mapper.ts';
+import { annotatePvCurtailmentSlots } from '../../lib/pv-curtailment.ts';
 import { buildLP } from '../../lib/build-lp.ts';
 import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
@@ -16,6 +17,7 @@ import { fetchEvLoadFromHA } from './ha-ev-service.ts';
 import { HttpError } from '../http-errors.ts';
 import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
+import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
 import type { ShoreOptimizerSlotMode } from '../../lib/shore-optimizer.ts';
@@ -230,7 +232,8 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const { perSlot, diagnostics } = mapRowsToDessV2(rows, cfg);
 
-  const rowsWithDess: PlanRowWithDess[] = rows.map((row, i) => ({ ...row, dess: perSlot[i] }));
+  const pvControl = annotatePvCurtailmentSlots(rows, cfg, settings.pvCurtailment);
+  const rowsWithDess: PlanRowWithDess[] = rows.map((row, i) => ({ ...row, dess: perSlot[i], pvControl: pvControl[i] }));
 
   // Post-solve bookkeeping: if rebalancing is enabled but hasn't started, check actual SoC
   if (settings.rebalanceEnabled && (data.rebalanceState?.startMs == null)) {
@@ -264,6 +267,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   );
 
   lastPlan = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow };
+  updatePvCurtailmentPlan({ cfg, rows: rowsWithDess });
 
   // Persist plan snapshot for adaptive learning (fire-and-forget)
   const snapshotCreatedAtMs = Date.now();

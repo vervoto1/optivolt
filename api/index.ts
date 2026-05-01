@@ -1,6 +1,7 @@
 import app from './app.ts';
 import { startAutoCalculate, stopAutoCalculate } from './services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from './services/dess-price-refresh.ts';
+import { startPvCurtailment, stopPvCurtailment } from './services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from './services/shore-optimizer.ts';
 import { loadSettings } from './services/settings-store.ts';
 
@@ -11,6 +12,7 @@ const host = process.env.HOST ?? '0.0.0.0';
 async function shutdown() {
   stopAutoCalculate();
   stopDessPriceRefresh();
+  await stopPvCurtailment();
   stopShoreOptimizer();
   process.exit(0);
 }
@@ -26,6 +28,7 @@ app.listen(port, host, () => {
     .then(settings => {
       startAutoCalculate(settings);
       startDessPriceRefresh(settings);
+      startPvCurtailment(settings);
       startShoreOptimizer(settings);
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));

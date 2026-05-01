@@ -59,6 +59,14 @@ function makeEls() {
     shoreOptAcInputIndex: { value: '1' },
     shoreOptMpptInstance: { value: '0' },
     shoreOptBatteryInstance: { value: '512' },
+    pvCurtailEnabled: { checked: false },
+    pvCurtailDryRun: { checked: true },
+    pvCurtailTickMs: { value: '30000' },
+    pvCurtailMinPvPowerW: { value: '100' },
+    pvCurtailMinGridHeadroomW: { value: '100' },
+    pvCurtailPriceThreshold: { value: '0' },
+    pvCurtailPortalId: { value: 'c0619ab6bd28' },
+    pvCurtailAcsystemInstance: { value: '0' },
     haPriceSensor: { value: '' },
     haPriceInterval: { value: '60' },
     haPriceTodayAttr: { value: 'today_hourly_prices' },
@@ -203,6 +211,39 @@ describe('state.js', () => {
     expect(snapshot.shoreOptimizer.dryRun).toBe(false);
     expect(snapshot.shoreOptimizer.maxShoreA).toBe(22.5);
     expect(snapshot.shoreOptimizer.multiInstance).toBe(6);
+  });
+
+  it('hydrateUI sets PV curtailment config', () => {
+    const els = makeEls();
+    hydrateUI(els, {
+      pvCurtailment: {
+        enabled: true,
+        dryRun: false,
+        tickMs: 5000,
+        minPvPowerW: 200,
+        minGridHeadroomW: 300,
+        negativePriceThreshold_cents_per_kWh: -1,
+        portalId: 'portal',
+        acsystemInstance: 2,
+      },
+    });
+    expect(els.pvCurtailEnabled.checked).toBe(true);
+    expect(els.pvCurtailDryRun.checked).toBe(false);
+    expect(els.pvCurtailTickMs.value).toBe(5000);
+    expect(els.pvCurtailMinGridHeadroomW.value).toBe(300);
+    expect(els.pvCurtailAcsystemInstance.value).toBe(2);
+  });
+
+  it('snapshotUI includes PV curtailment config', () => {
+    const els = makeEls();
+    els.pvCurtailEnabled.checked = true;
+    els.pvCurtailDryRun.checked = false;
+    els.pvCurtailMinGridHeadroomW.value = '250';
+    const snapshot = snapshotUI(els);
+    expect(snapshot.pvCurtailment.enabled).toBe(true);
+    expect(snapshot.pvCurtailment.dryRun).toBe(false);
+    expect(snapshot.pvCurtailment.minGridHeadroomW).toBe(250);
+    expect(snapshot.pvCurtailment.acsystemInstance).toBe(0);
   });
 
   it('hydrateUI sets HA price config', () => {

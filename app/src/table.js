@@ -58,6 +58,13 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     { key: "pv2b", headerHtml: "pv2b", fmt: x => fmtEnergy(x), tip: "Solar → Battery" },
     { key: "pv2g", headerHtml: "pv2g", fmt: x => fmtEnergy(x), tip: "Solar → Grid" },
     { key: "pvCurtail", headerHtml: "PV<br>curt.", fmt: x => fmtEnergy(x), tip: "Curtailed solar" },
+    {
+      key: "pv_control",
+      headerHtml: "PV<br>ctrl",
+      fmt: (_, ri) => fmtPvControl(rows[ri]?.pvControl),
+      tip: "PV disable decision",
+      cellTip: true,
+    },
 
     { key: "g2b", headerHtml: "g2b", fmt: x => fmtEnergy(x), tip: "Grid → Battery" },
     { key: "b2g", headerHtml: "b2g", fmt: x => fmtEnergy(x), tip: "Battery → Grid" },
@@ -244,6 +251,19 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     if (v === 0 || v === "0") return "no";
     if (v === 1 || v === "1") return "yes";
     return "–";
+  }
+
+  function fmtPvControl(control) {
+    if (!control) return { text: "–", tip: "No PV curtailment decision" };
+    const label = control.disable ? "off" : "on";
+    const reason = control.reason || "unknown";
+    const headroom = Math.round(Number(control.currentGridHeadroom_W) || 0);
+    const remainingHeadroom = Math.round(Number(control.remainingGridHeadroom_Wh) || 0);
+    const remainingPv = Math.round(Number(control.remainingPv_Wh) || 0);
+    return {
+      text: label,
+      tip: `${reason}; headroom ${headroom} W; remaining headroom ${remainingHeadroom} Wh; remaining PV to replace ${remainingPv} Wh`,
+    };
   }
 
   function intThin(x) {

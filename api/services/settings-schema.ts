@@ -7,6 +7,7 @@ import type {
   HaPriceConfig,
   DessPriceRefreshConfig,
   ShoreOptimizerConfig,
+  PvCurtailmentConfig,
   CvPhaseConfig,
   AdaptiveLearningConfig,
 } from '../types.ts';
@@ -21,6 +22,7 @@ export type SettingsPatch = Partial<Settings> & {
   haPriceConfig?: Partial<HaPriceConfig>;
   dessPriceRefresh?: Partial<DessPriceRefreshConfig>;
   shoreOptimizer?: Partial<ShoreOptimizerConfig>;
+  pvCurtailment?: Partial<PvCurtailmentConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
   adaptiveLearning?: Partial<AdaptiveLearningConfig>;
 };
@@ -108,6 +110,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     haPriceConfig: patch.haPriceConfig ? { ...base.haPriceConfig, ...patch.haPriceConfig } as HaPriceConfig : base.haPriceConfig,
     dessPriceRefresh: patch.dessPriceRefresh ? { ...base.dessPriceRefresh, ...patch.dessPriceRefresh } as DessPriceRefreshConfig : base.dessPriceRefresh,
     shoreOptimizer: patch.shoreOptimizer ? { ...base.shoreOptimizer, ...patch.shoreOptimizer } as ShoreOptimizerConfig : base.shoreOptimizer,
+    pvCurtailment: patch.pvCurtailment ? { ...base.pvCurtailment, ...patch.pvCurtailment } as PvCurtailmentConfig : base.pvCurtailment,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
     adaptiveLearning: patch.adaptiveLearning ? { ...base.adaptiveLearning, ...patch.adaptiveLearning } as AdaptiveLearningConfig : base.adaptiveLearning,
     /* v8 ignore end */
@@ -170,6 +173,9 @@ export function normalizeSettings(settings: Settings): Settings {
   }
   if (normalized.shoreOptimizer) {
     normalized.shoreOptimizer = normalizeShoreOptimizer(normalized.shoreOptimizer);
+  }
+  if (normalized.pvCurtailment) {
+    normalized.pvCurtailment = normalizePvCurtailment(normalized.pvCurtailment);
   }
   if (normalized.cvPhase) {
     normalized.cvPhase = normalizeCvPhase(normalized.cvPhase);
@@ -280,6 +286,24 @@ function normalizeShoreOptimizer(shoreOptimizer: ShoreOptimizerConfig): ShoreOpt
     acInputIndex: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.acInputIndex, 'shoreOptimizer.acInputIndex'))),
     mpptInstance: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.mpptInstance, 'shoreOptimizer.mpptInstance'))),
     batteryInstance: Math.max(0, Math.round(expectFiniteNumber(shoreOptimizer.batteryInstance, 'shoreOptimizer.batteryInstance'))),
+  };
+}
+
+function normalizePvCurtailment(pvCurtailment: PvCurtailmentConfig): PvCurtailmentConfig {
+  assertObject(pvCurtailment, 'pvCurtailment');
+
+  return {
+    enabled: expectBoolean(pvCurtailment.enabled, 'pvCurtailment.enabled'),
+    dryRun: expectBoolean(pvCurtailment.dryRun, 'pvCurtailment.dryRun'),
+    tickMs: Math.max(1000, Math.round(expectFiniteNumber(pvCurtailment.tickMs, 'pvCurtailment.tickMs'))),
+    minPvPowerW: Math.max(0, Math.round(expectFiniteNumber(pvCurtailment.minPvPowerW, 'pvCurtailment.minPvPowerW'))),
+    minGridHeadroomW: Math.max(0, Math.round(expectFiniteNumber(pvCurtailment.minGridHeadroomW, 'pvCurtailment.minGridHeadroomW'))),
+    negativePriceThreshold_cents_per_kWh: expectFiniteNumber(
+      pvCurtailment.negativePriceThreshold_cents_per_kWh,
+      'pvCurtailment.negativePriceThreshold_cents_per_kWh',
+    ),
+    portalId: expectString(pvCurtailment.portalId, 'pvCurtailment.portalId').trim(),
+    acsystemInstance: Math.max(0, Math.round(expectFiniteNumber(pvCurtailment.acsystemInstance, 'pvCurtailment.acsystemInstance'))),
   };
 }
 

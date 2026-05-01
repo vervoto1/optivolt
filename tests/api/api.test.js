@@ -10,6 +10,7 @@ vi.mock('../../api/services/efficiency-calibrator.ts');
 vi.mock('../../api/services/plan-accuracy-service.ts');
 vi.mock('../../api/services/auto-calculate.ts');
 vi.mock('../../api/services/dess-price-refresh.ts');
+vi.mock('../../api/services/pv-curtailment.ts');
 vi.mock('../../api/services/shore-optimizer.ts');
 vi.mock('../../api/services/planner-service.ts');
 vi.mock('../../api/services/data-store.ts');
@@ -23,6 +24,7 @@ import { loadCalibration, calibrate, resetCalibration } from '../../api/services
 import { evaluateRecentPlans } from '../../api/services/plan-accuracy-service.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../../api/services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/dess-price-refresh.ts';
+import { startPvCurtailment, stopPvCurtailment } from '../../api/services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
 import { planAndMaybeWrite } from '../../api/services/planner-service.ts';
 
@@ -87,6 +89,16 @@ const mockSettings = {
     time: '12:00',
     durationMinutes: 60,
   },
+  pvCurtailment: {
+    enabled: false,
+    dryRun: true,
+    tickMs: 30000,
+    minPvPowerW: 100,
+    minGridHeadroomW: 100,
+    negativePriceThreshold_cents_per_kWh: 0,
+    portalId: 'c0619ab6bd28',
+    acsystemInstance: 0,
+  },
   cvPhase: {
     enabled: true,
     thresholds: [{ soc_percent: 95, maxChargePower_W: 1200 }],
@@ -121,6 +133,8 @@ describe('Route contracts', () => {
     stopAutoCalculate.mockReturnValue();
     startDessPriceRefresh.mockReturnValue();
     stopDessPriceRefresh.mockReturnValue();
+    startPvCurtailment.mockReturnValue();
+    stopPvCurtailment.mockReturnValue();
     startShoreOptimizer.mockReturnValue();
     stopShoreOptimizer.mockReturnValue();
     evaluateRecentPlans.mockResolvedValue([]);
@@ -174,6 +188,8 @@ describe('Route contracts', () => {
     expect(startAutoCalculate).toHaveBeenCalled();
     expect(stopDessPriceRefresh).toHaveBeenCalled();
     expect(startDessPriceRefresh).toHaveBeenCalled();
+    expect(stopPvCurtailment).toHaveBeenCalled();
+    expect(startPvCurtailment).toHaveBeenCalled();
     expect(stopShoreOptimizer).toHaveBeenCalled();
     expect(startShoreOptimizer).toHaveBeenCalled();
   });

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.12 - 2026-05-01
+
+- Add planner-driven Victron PV curtailment control for negative-price periods, disabling PV only when the plan has enough grid headroom through the remaining negative-price block
+- Write Victron `acsystem/<instance>/Pv/Disable` with dry-run support, ownership-aware restore, and settings controls
+- Surface per-slot PV control decisions in the optimizer table
+
 ## 0.7.11 - 2026-04-30
 
 - Fix SoC parsing: exclude `soc_shortfall` slack variables from SoC reconstruction, resolving jumpy/incorrect SoC display and false simultaneous charge/discharge in plans

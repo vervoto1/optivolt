@@ -111,6 +111,16 @@ export function getElements() {
     shoreOptBatteryInstance: document.getElementById('shore-opt-battery-instance'),
     shoreOptMinShoreA: document.getElementById('shore-opt-min-shore-a'),
 
+    // PV Curtailment
+    pvCurtailEnabled: document.getElementById('pv-curtail-enabled'),
+    pvCurtailDryRun: document.getElementById('pv-curtail-dry-run'),
+    pvCurtailTickMs: document.getElementById('pv-curtail-tick-ms'),
+    pvCurtailMinPvPowerW: document.getElementById('pv-curtail-min-pv-power-w'),
+    pvCurtailMinGridHeadroomW: document.getElementById('pv-curtail-min-grid-headroom-w'),
+    pvCurtailPriceThreshold: document.getElementById('pv-curtail-price-threshold'),
+    pvCurtailPortalId: document.getElementById('pv-curtail-portal-id'),
+    pvCurtailAcsystemInstance: document.getElementById('pv-curtail-acsystem-instance'),
+
     // HA Price Sensor
     haPriceSensor: document.getElementById('ha-price-sensor'),
     haPriceInterval: document.getElementById('ha-price-interval'),
