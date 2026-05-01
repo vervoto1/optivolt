@@ -19,8 +19,13 @@ vi.mock('../../../api/services/planner-service.ts', () => ({
   getCurrentSlotMode: vi.fn().mockReturnValue('grid_charge'),
 }));
 
+vi.mock('../../../api/services/pv-curtailment.ts', () => ({
+  getPvCurtailmentStatus: vi.fn().mockReturnValue({ enabled: false, ownsDisable: false }),
+}));
+
 import { requestVictronSetting, subscribeVictronJson, writeVictronSetting } from '../../../api/services/mqtt-service.ts';
 import { getCurrentSlotMode } from '../../../api/services/planner-service.ts';
+import { getPvCurtailmentStatus } from '../../../api/services/pv-curtailment.ts';
 import {
   getShoreOptimizerStatus,
   startShoreOptimizer,
@@ -70,6 +75,7 @@ describe('shore-optimizer service', () => {
     subscriptions.clear();
     unsubscribeFns.length = 0;
     getCurrentSlotMode.mockReturnValue('grid_charge');
+    getPvCurtailmentStatus.mockReturnValue({ enabled: false, ownsDisable: false });
   });
 
   afterEach(() => {
@@ -163,6 +169,24 @@ describe('shore-optimizer service', () => {
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(writeVictronSetting).not.toHaveBeenCalled();
+  });
+
+  it('blocks while PV curtailment owns an active PV disable', async () => {
+    getPvCurtailmentStatus.mockReturnValue({ enabled: true, ownsDisable: true });
+    startShoreOptimizer(makeSettings());
+    await flushPromises();
+
+    emit('N/c0619ab6bd28/multi/6/Ac/In/1/CurrentLimit', 10);
+    emit('N/c0619ab6bd28/battery/512/Dc/0/Power', 500);
+    emit('N/c0619ab6bd28/multi/6/Pv/0/MppOperationMode', 1);
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(console.debug).toHaveBeenCalledWith(
+      '[shore-optimizer] gate blocked',
+      expect.objectContaining({ reason: 'pv_curtailment_active' }),
+    );
   });
 
   it('blocks when MQTT readings are stale', async () => {

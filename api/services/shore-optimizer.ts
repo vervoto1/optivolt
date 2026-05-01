@@ -6,6 +6,7 @@ import {
   type ShoreOptimizerSlotMode,
 } from '../../lib/shore-optimizer.ts';
 import { getCurrentSlotMode } from './planner-service.ts';
+import { getPvCurtailmentStatus } from './pv-curtailment.ts';
 import { getVictronSerial, requestVictronSetting, subscribeVictronJson, writeVictronSetting } from './mqtt-service.ts';
 
 interface Reading<T> {
@@ -187,6 +188,12 @@ async function tick(): Promise<void> {
     lastTickAtMs = nowMs;
     latestSlotMode = getCurrentSlotMode(nowMs);
     requestReadingsIfDue(nowMs);
+
+    const pvCurtailmentStatus = getPvCurtailmentStatus();
+    if (pvCurtailmentStatus.enabled && pvCurtailmentStatus.ownsDisable) {
+      logGateBlock('pv_curtailment_active', normalizeMppOperationMode(mppOperationMode.value));
+      return;
+    }
 
     const stateFresh =
       !isStale(currentShoreA, nowMs)

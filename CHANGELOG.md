@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.13 - 2026-05-01
+
+- Block shore optimizer while PV curtailment owns an active PV disable
+- Add UI descriptions for PV Curtailment and Grid & Solar Power Optimizer cards
+
 ## 0.7.12 - 2026-05-01
 
 - Add planner-driven Victron PV curtailment control for negative-price periods, disabling PV only when the plan has enough grid headroom through the remaining negative-price block
