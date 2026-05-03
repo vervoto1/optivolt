@@ -466,6 +466,22 @@ describe('VictronMqttClient — readSocPercent', () => {
     expect(result.soc_percent).toBeNull();
     expect(result.raw).toBeDefined();
   });
+
+  it('rethrows the error when the only configured path times out', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    // No scheduleMessage: the system-path read times out and is rethrown.
+    await expect(client.readSocPercent({ timeoutMs: 50 })).rejects.toThrow();
+  });
+
+  it('falls through to the system path when the battery-instance path times out', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    // Battery-instance path: no message → readSetting times out and the error is swallowed.
+    // System path: succeeds.
+    scheduleMessage('N/ser1/system/0/Dc/Battery/Soc', { value: 42 }, 80);
+
+    const result = await client.readSocPercent({ timeoutMs: 60, batteryInstance: 512 });
+    expect(result.soc_percent).toBe(42);
+  });
 });
 
 describe('VictronMqttClient — writeScheduleSlot', () => {

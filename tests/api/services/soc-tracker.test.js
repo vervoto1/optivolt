@@ -114,6 +114,12 @@ describe('soc-tracker', () => {
     const stored = await loadSocSamples();
     expect(stored).toHaveLength(3);
   });
+
+  it('omits batteryInstance when shoreOptimizer is not configured', async () => {
+    loadSettings.mockResolvedValue({});
+    await sampleAndStoreSoc();
+    expect(readVictronSocPercent).toHaveBeenCalledWith({ timeoutMs: 5000 });
+  });
 });
 
 describe('findClosestSample', () => {

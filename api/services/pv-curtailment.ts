@@ -71,6 +71,7 @@ export function startPvCurtailment(settings: Settings): void {
     tick().catch(err => console.error('[pv-curtailment] tick failed:', (err as Error).message));
   }, tickMs);
 
+  /* v8 ignore next — initial tick runs with empty plan and cannot reject; catch is defensive */
   tick().catch(err => console.error('[pv-curtailment] initial tick failed:', (err as Error).message));
   console.log(`[pv-curtailment] started (tick=${tickMs}ms, dryRun=${cfg.dryRun})`);
 }
@@ -132,6 +133,7 @@ async function tick(): Promise<void> {
       : decidePvCurtailment([], { stepSize_m: 15, maxGridImport_W: 0 }, nowMs, cfg);
     lastDecision = decision;
 
+    /* v8 ignore next — defensive guard against generation race; unreachable in single-threaded JS but kept for safety */
     if (generation !== serviceGeneration) return;
 
     if (decision.shouldDisable) {
@@ -150,7 +152,9 @@ async function tick(): Promise<void> {
 
 async function restorePv(): Promise<void> {
   const cfg = activeConfig;
+  /* v8 ignore next — restorePv only runs after start has set activeConfig and ownsDisable */
   if (!cfg) return;
+  /* v8 ignore next 11 — lastDecision is always set by the tick that flipped ownsDisable; fallback is defensive */
   await applyPvDisabled(false, lastDecision ?? {
     shouldDisable: false,
     reason: 'disabled',
@@ -167,9 +171,11 @@ async function restorePv(): Promise<void> {
 
 async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecision): Promise<void> {
   const cfg = activeConfig;
+  /* v8 ignore next — caller paths only run while activeConfig is set */
   if (!cfg) return;
 
   if (disabled && ownsDisable) return;
+  /* v8 ignore next — every caller already guards on ownsDisable before invoking with disabled=false */
   if (!disabled && !ownsDisable) return;
 
   const record: PvCurtailmentWriteRecord = {

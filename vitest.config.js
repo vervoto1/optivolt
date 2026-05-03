@@ -16,6 +16,7 @@ export default defineConfig({
         '**/node_modules/**',
         '**/AGENTS.md',
         '**/types.ts',
+        '**/*.http',
         'api/index.ts',
         'api/defaults/**',
         'tests/**',

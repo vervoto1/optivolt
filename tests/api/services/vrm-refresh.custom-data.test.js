@@ -123,4 +123,20 @@ describe('vrm-refresh logic with custom data', () => {
       soc: expect.objectContaining({ value: 50, timestamp: '2024-01-01T00:00:00.000Z' }) // Strictly Preserved
     }));
   });
+
+  it('passes the configured batteryInstance to the MQTT SoC reader', async () => {
+    loadSettings.mockResolvedValue({
+      dataSources: { prices: 'vrm', load: 'vrm', pv: 'vrm', soc: 'mqtt' },
+      shoreOptimizer: { batteryInstance: 256 },
+    });
+    mockFetchForecasts.mockResolvedValue({ timestamps: ['2024-01-01T10:00:00.000Z'], load_W: [1], pv_W: [2] });
+    mockFetchPrices.mockResolvedValue({ timestamps: ['2024-01-01T10:00:00.000Z'], importPrice_cents_per_kwh: [3], exportPrice_cents_per_kwh: [4] });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(mqttService.readVictronSocPercent).toHaveBeenCalledWith({
+      timeoutMs: 5000,
+      batteryInstance: 256,
+    });
+  });
 });

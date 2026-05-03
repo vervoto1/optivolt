@@ -127,6 +127,37 @@ describe('pv curtailment decision', () => {
     expect(decision.reason).toBe('insufficient_remaining_grid_headroom');
   });
 
+  it('returns no_expected_pv when current PV is below the minimum threshold', () => {
+    const decision = decidePvCurtailment([row(0, { pv: 50 })], cfg, START, policy);
+    expect(decision.shouldDisable).toBe(false);
+    expect(decision.reason).toBe('no_expected_pv');
+  });
+
+  it('coerces non-numeric pv/imp values to zero', () => {
+    const decision = decidePvCurtailment(
+      [row(0, { pv: 'abc', imp: undefined, ic: -10, ec: -10 })],
+      cfg,
+      START,
+      policy,
+    );
+    expect(decision.shouldDisable).toBe(false);
+    expect(decision.reason).toBe('no_expected_pv');
+    expect(decision.currentPv_W).toBe(0);
+    expect(decision.currentGridImport_W).toBe(0);
+  });
+
+  it('coerces non-numeric pv/imp inside the remaining-energy aggregation', () => {
+    const rows = [
+      row(0, { pv: 500, imp: 2000 }),
+      row(1, { pv: 'NaN', imp: 'oops' }),
+      row(2, { pv: 500, imp: 2000, ic: 5, ec: 5 }),
+    ];
+    const decision = decidePvCurtailment(rows, cfg, START, policy);
+    expect(decision.shouldDisable).toBe(true);
+    expect(decision.reason).toBe('negative_price_grid_headroom');
+    expect(decision.remainingPv_Wh).toBe(125);
+  });
+
   it('annotates every row with the decision from that row to the end of its negative price block', () => {
     const rows = [
       row(0, { pv: 500, imp: 2000 }),
