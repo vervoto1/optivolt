@@ -46,6 +46,7 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15) {
     ]);
 
     const totalCost_cents = evRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
+    /* v8 ignore next — evTotal > 0 is guaranteed inside this `if (hasEv)` block; ternary fallback is defensive */
     const effectiveRate = evTotal > 0 ? totalCost_cents / evTotal : 0;
 
     if (els.evTabTotalCost) els.evTabTotalCost.textContent = `${totalCost_cents.toFixed(1)}¢`;

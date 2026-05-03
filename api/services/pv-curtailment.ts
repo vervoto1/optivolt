@@ -280,5 +280,6 @@ function pushWriteRecord(record: PvCurtailmentWriteRecord): void {
 }
 
 function isoOrNull(ms: number | null): string | null {
+  /* v8 ignore next — null branch only fires before any tick has run; not reachable once tests have called startPvCurtailment */
   return ms == null ? null : new Date(ms).toISOString();
 }

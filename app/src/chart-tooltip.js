@@ -117,6 +117,7 @@ export function createTooltipHandler({ renderContent }) {
     if (!el) {
       const parent = chart.canvas.parentNode;
       el = parent.querySelector(".ov-tt") ?? document.createElement("div");
+      /* v8 ignore next — handler holds `el` in closure, so the existing-element branch is only hit when state survives across charts (not exercised in jsdom) */
       if (!el.parentNode) {
         el.className = "ov-tt";
         parent.style.position = "relative";

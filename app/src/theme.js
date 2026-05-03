@@ -40,15 +40,17 @@ if (mq.addEventListener) {
 // system → opposite-of-system → other override → back to system
 btn?.addEventListener('click', () => {
   const stored = getStoredTheme();
-  let next = null;
+  let next;
 
   if (!stored) {
     // From system: go to explicit opposite so the toggle "does something"
     next = mq.matches ? 'light' : 'dark';
   } else if (stored === 'dark') {
     next = 'light';
-  } else if (stored === 'light') {
-    next = null; // back to system
+  } else {
+    // stored === 'light': back to system
+    // (getStoredTheme normalizes any other value to null, so this is the only remaining case)
+    next = null;
   }
 
   if (next) {

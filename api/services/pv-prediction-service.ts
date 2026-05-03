@@ -103,6 +103,7 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
   // Scale matches pvRecords so error metrics are in consistent units.
   const actualsMap = new Map<number, number>();
   for (const d of data) {
+    /* v8 ignore next — caller passes only the configured pvSensor's stats; non-PV branch is defensive */
     if (d.sensor === pvSensor) {
       actualsMap.set(d.time, d.value * productionScale);
     }

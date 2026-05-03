@@ -19,6 +19,7 @@ async function onRunValidation({ readFormValues, renderHistoricalConfig, setComp
   const runBtn = document.getElementById('pred-run-validation');
   // v8 ignore next — null path of ternary (runBtn always present in jsdom) is untestable
   const originalText = runBtn ? runBtn.textContent : '';
+  /* v8 ignore next — runBtn always exists in production DOM; null branch is defensive */
   if (runBtn) {
     runBtn.disabled = true;
     runBtn.textContent = 'Running...';

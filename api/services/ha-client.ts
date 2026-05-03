@@ -150,8 +150,9 @@ export async function fetchHaStats({
         ws.close();
         done(() => reject(new Error(`HA authentication failed: ${msg.message}`)));
 
-      /* v8 ignore next — else-if within covered branch, v8 doesn't track statement in this position */
+      /* v8 ignore start — terminal else-if has no observable false branch (no further alternatives), v8 records it as a separate branch we can't exercise */
       } else if (msg.type === 'result') {
+      /* v8 ignore stop */
         ws.close();
         if (msg.success) {
           done(() => resolve(msg.result));

@@ -26,6 +26,7 @@ export async function loadSettings(): Promise<Settings> {
       : undefined;
     const mergedPvCurtailment = (defaults.pvCurtailment || settings.pvCurtailment)
       ? {
+          /* v8 ignore next — default settings always include pvCurtailment; ?? fallback is defensive */
           ...(defaults.pvCurtailment ?? {}),
           ...(settings.pvCurtailment ?? {}),
         } as Settings['pvCurtailment']

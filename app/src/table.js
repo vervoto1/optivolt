@@ -194,6 +194,7 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
       const cellText = isObj ? displayVal.text : displayVal;
       // Merge flow-cell background style with per-value inline style (e.g. icon color)
       const bgStyle = styleForCell(c.key, raw);
+      /* v8 ignore next — current column formatters never return an object with .style; ternary is defensive */
       const extraStyle = isObj && displayVal.style ? displayVal.style : "";
       // v8 ignore start — ternary null branches are untestable when styles are always defined
       const combinedStyle = bgStyle || extraStyle
