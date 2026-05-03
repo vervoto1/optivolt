@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.16 - 2026-05-04
+
+- Style the Prediction Accuracy Curve (by SoC%) chart to match the other line charts in the predictions tab — drop the heavy dot markers, use the standard line weight and tension, and let low-sample SoC bands show as actual gaps
+
 ## 0.7.15 - 2026-05-04
 
 - Fix hourly aggregation in the power flows chart: EV flow stacks (Solar/Battery/Grid → EV), prices, and EV SoC were being dropped during 1-hour bucketing, and the tooltip was indexed against the original 15-min rows instead of the aggregated buckets

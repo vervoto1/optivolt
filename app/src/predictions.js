@@ -745,8 +745,6 @@ function renderEfficiencyCurveChart(calibration) {
   // Labels show SoC% with phase indicator
   const labels = [];
   const data = [];
-  const pointColors = [];
-  const pointRadii = [];
   const sampleCounts = [];
 
   // Left half: charge phase (0% → 100%)
@@ -754,15 +752,7 @@ function renderEfficiencyCurveChart(calibration) {
     labels.push(`${soc}%`);
     const n = chargeSamples?.[soc] ?? 0;
     sampleCounts.push(n);
-    if (n >= minSamples) {
-      data.push(chargeCurve[soc] * 100);
-      pointColors.push('rgb(34, 197, 94)');
-      pointRadii.push(3);
-    } else {
-      data.push(null);
-      pointColors.push('transparent');
-      pointRadii.push(0);
-    }
+    data.push(n >= minSamples ? chargeCurve[soc] * 100 : null);
   }
 
   // Right half: discharge phase (100% → 0%)
@@ -770,15 +760,7 @@ function renderEfficiencyCurveChart(calibration) {
     labels.push(`${soc}%`);
     const n = dischargeSamples?.[soc] ?? 0;
     sampleCounts.push(n);
-    if (n >= minSamples) {
-      data.push(dischargeCurve[soc] * 100);
-      pointColors.push('rgb(249, 115, 22)');
-      pointRadii.push(3);
-    } else {
-      data.push(null);
-      pointColors.push('transparent');
-      pointRadii.push(0);
-    }
+    data.push(n >= minSamples ? dischargeCurve[soc] * 100 : null);
   }
 
   const totalPoints = labels.length; // 200
@@ -801,10 +783,9 @@ function renderEfficiencyCurveChart(calibration) {
           },
           backgroundColor: 'transparent',
           borderWidth: 2,
-          pointRadius: pointRadii,
-          pointBackgroundColor: pointColors,
-          tension: 0.4,
-          spanGaps: true,
+          pointRadius: 0,
+          tension: 0.2,
+          spanGaps: false,
           fill: false,
         },
         {
