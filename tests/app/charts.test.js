@@ -825,5 +825,25 @@ describe('charts.js', () => {
       // Values are signed in kWh (abs value * sign)
       expect(g2lDs).toBeDefined();
     });
+
+    it('preserves EV flow stacks when aggregating to hourly', () => {
+      const canvas = mockCanvas();
+      const base = new Date('2024-01-15T08:00:00Z').getTime();
+      const rows = Array.from({ length: 4 }, (_, i) => ({
+        timestampMs: base + i * 900000,
+        g2l: 100, b2l: 0, pv2l: 0, pv2b: 0, pv2g: 0, pvCurtail: 0,
+        g2b: 0, b2g: 0, load: 100, pv: 0, imp: 100, exp: 0,
+        evLoad: 1000,
+        g2ev: 600, pv2ev: 200, b2ev: 200,
+        soc: 5000, soc_percent: 50, ev_soc_percent: 30 + i, ic: 10, ec: 5,
+      }));
+      drawFlowsBarStackSigned(canvas, rows, 15, null, { aggregateMinutes: 60 });
+      const labels = canvas._chart.config.data.datasets.map(d => d.label);
+      // EV flow stacks must survive aggregation
+      expect(labels).toContain('Grid → EV');
+      expect(labels).toContain('Solar → EV');
+      expect(labels).toContain('Battery → EV');
+      expect(labels).toContain('EV charging');
+    });
   });
 });

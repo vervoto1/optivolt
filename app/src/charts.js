@@ -312,18 +312,27 @@ function aggregateRows(rows, inputStep_m, targetStep_m) {
     buckets.get(bucketTs).push(r);
   }
 
-  const keys = ['g2l', 'g2b', 'pv2l', 'pv2b', 'pv2g', 'pvCurtail', 'b2l', 'b2g', 'load', 'pv', 'imp', 'exp', 'evLoad'];
+  // Power/energy flows averaged across the bucket (W → constant power, summing kWh later)
+  const avgKeys = [
+    'g2l', 'g2b', 'g2ev',
+    'pv2l', 'pv2b', 'pv2g', 'pv2ev', 'pvCurtail',
+    'b2l', 'b2g', 'b2ev',
+    'load', 'pv', 'imp', 'exp', 'evLoad',
+    'ic', 'ec',
+  ];
 
   return [...buckets.entries()]
     .sort(([a], [b]) => a - b)
     .map(([ts, group]) => {
       const agg = { timestampMs: ts };
-      for (const k of keys) {
+      for (const k of avgKeys) {
         agg[k] = group.reduce((sum, r) => sum + (r[k] ?? 0), 0) / group.length;
       }
       // SoC: use last value in the bucket (end-of-period)
-      agg.soc = group[group.length - 1].soc;
-      agg.soc_percent = group[group.length - 1].soc_percent;
+      const last = group[group.length - 1];
+      agg.soc = last.soc;
+      agg.soc_percent = last.soc_percent;
+      agg.ev_soc_percent = last.ev_soc_percent;
       return agg;
     });
 }
@@ -414,7 +423,7 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
           mode: "index",
           intersect: false,
           enabled: false,
-          external: makeFlowsTooltip(rows, flowSpecs, h),
+          external: makeFlowsTooltip(effectiveRows, flowSpecs, h),
           callbacks: { title: axis.tooltipTitleCb },
         }
       }
