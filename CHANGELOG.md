@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.15 - 2026-05-04
+
+- Fix hourly aggregation in the power flows chart: EV flow stacks (Solar/Battery/Grid → EV), prices, and EV SoC were being dropped during 1-hour bucketing, and the tooltip was indexed against the original 15-min rows instead of the aggregated buckets
+- Align the Charge/Discharge Prediction Accuracy metric tiles and "Prediction Accuracy Curve (by SoC%)" sub-heading with the rest of the predictions tab styling (summary-panel + stat-label/stat-value, sidebar-label)
+
 ## 0.7.14 - 2026-05-01
 
 - Toggle an optional Enphase Envoy production switch via Home Assistant alongside the Victron `Pv/Disable` write whenever PV curtailment engages
