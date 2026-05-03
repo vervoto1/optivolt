@@ -108,6 +108,14 @@ describe('theme.js', () => {
     expect(localStorage.getItem('optivolt-theme')).toBeNull();
   });
 
+  it('treats an unrecognized stored value as system mode', async () => {
+    setupDOM({ prefersDark: false, storedTheme: 'sepia' });
+    await loadTheme();
+    // getStoredTheme() returns null for unknown values; the click then cycles from system → dark.
+    btn.click();
+    expect(localStorage.getItem('optivolt-theme')).toBe('dark');
+  });
+
   it('media query change re-applies theme in system mode', async () => {
     setupDOM({ prefersDark: false });
     await loadTheme();

@@ -252,6 +252,18 @@ describe('ev-tab.js', () => {
       expect(els.evTabModeRows.innerHTML).toBe('');
     });
 
+    it('skips rows missing ev_soc_percent when computing the EV row set', () => {
+      const els = makeEls();
+      const rows = [
+        { timestampMs: Date.now(), ev_charge: 3000, ev_charge_mode: 'max', g2ev: 1500, ic: 10 },
+        { timestampMs: Date.now() + 900000, ev_soc_percent: 50, ev_charge: 3000, ev_charge_mode: 'max', g2ev: 1500, ic: 10 },
+      ];
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 1.5 });
+      // Mode-row counts reflect only rows whose ev_soc_percent > 0.
+      expect(els.evTabModeRows.innerHTML).toContain('max');
+      expect(els.evTabModeRows.innerHTML).toContain('1');
+    });
+
     it('handles null evTabModeRows gracefully', () => {
       const els = makeEls();
       delete els.evTabModeRows;
