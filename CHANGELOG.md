@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.17 - 2026-05-04
+
+- Reach 100% coverage across statements, branches, functions, and lines (Codecov verified). Adds focused tests for PV-curtailment service (Enphase HA switch path, restore-on-stop, recentWrites overflow, dedup logging, overlapping-tick guard, interval-fired tick rejection), Victron MQTT SoC multi-path fallback + rethrow, soc-tracker / vrm-refresh battery-instance plumbing, lib/pv-curtailment defensive coercion, and small UI branch coverage in ev-tab and theme. Annotates remaining unreachable defensive guards with `v8 ignore` comments and collapses an unreachable `else if` in `theme.js`. Excludes `*.http` fixtures from coverage parsing.
+
 ## 0.7.16 - 2026-05-04
 
 - Style the Prediction Accuracy Curve (by SoC%) chart to match the other line charts in the predictions tab — drop the heavy dot markers, use the standard line weight and tension, and let low-sample SoC bands show as actual gaps
