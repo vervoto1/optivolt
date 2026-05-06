@@ -5,8 +5,8 @@ import css from "@eslint/css";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig([
-  // Ignore generated files in app/lib and vendor directory
-  { ignores: ["app/lib/**", "vendor/**", "coverage/**"] },
+  // Ignore generated files in app/lib and vendor directories
+  { ignores: ["app/lib/**", "vendor/**", "app/vendor/**", "coverage/**"] },
   {
     files: ["**/*.{js,mjs,cjs}"],
     plugins: { js },

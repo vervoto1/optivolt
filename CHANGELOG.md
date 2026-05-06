@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.18 - 2026-05-06
+
+- Vendor browser dependencies locally so the UI works behind reverse proxies that inject a strict `Content-Security-Policy`. Tailwind Play CDN, Chart.js v4 UMD, and patternomaly v1.3.2 now ship from `app/vendor/`; Outfit and JetBrains Mono are self-hosted under `app/vendor/fonts/` (latin + latin-ext subsets) with a generated `fonts.css`. Removes runtime dependency on `cdn.tailwindcss.com`, `cdn.jsdelivr.net`, `fonts.googleapis.com`, and `fonts.gstatic.com` — the add-on is now fully offline-capable.
+- Add manual prediction adjustment feature so users can override forecast values from the UI; when multiple adjustments overlap, the baseline is picked by latest `updatedAt` instead of array order
+- Add robust linear PV model using direct + diffuse radiation, with radiation feature guard and CV consistency
+- Add optimizer quick-settings panel for fast tuning without opening the full settings tab
+- Add net grid cost display and DESS detail toggle in the optimizer summary
+- Add configurable block feed-in on negative export prices, with negative-price grid injection highlighted on the flows chart and the zero line emphasised in the price chart
+- Add rebalance nudge: track last full-SoC timestamp and prompt rebalancing after 10 days without a full charge
+- Add buy-price color strip to the flows chart, refresh charts on theme changes, and clean up optimizer cost-table labels
+- Use new MQTT topic for `targetsoc` to match the current Venus OS Dynamic ESS schema
+- Decompose monolithic frontend modules and extract dedicated prediction services
+- Fix race condition in `runCombinedPredictionForecast` and in combined forecast persistence (two concurrent writes are now collapsed into one, with best-effort persistence and an early short-circuit)
+- Fix buy-price strip border not updating on theme toggle and restore the canvas fallback scan in `getRenderedCharts`
+- Update npm dependencies
+
 ## 0.7.17 - 2026-05-04
 
 - Reach 100% coverage across statements, branches, functions, and lines (Codecov verified). Adds focused tests for PV-curtailment service (Enphase HA switch path, restore-on-stop, recentWrites overflow, dedup logging, overlapping-tick guard, interval-fired tick rejection), Victron MQTT SoC multi-path fallback + rethrow, soc-tracker / vrm-refresh battery-instance plumbing, lib/pv-curtailment defensive coercion, and small UI branch coverage in ev-tab and theme. Annotates remaining unreachable defensive guards with `v8 ignore` comments and collapses an unreachable `else if` in `theme.js`. Excludes `*.http` fixtures from coverage parsing.
