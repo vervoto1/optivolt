@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import supertest from 'supertest';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import haRouter from '../../../api/routes/ha.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
+import { get } from '../helpers/express-test-client.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -38,8 +38,6 @@ function makeServer() {
 // ---------------------------------------------------------------------------
 
 describe('GET /ha/entity/:entityId', () => {
-  const request = supertest(makeServer());
-
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -48,7 +46,7 @@ describe('GET /ha/entity/:entityId', () => {
     const settings = {}; // No haUrl
     (loadSettings as ReturnType<typeof vi.fn>).mockResolvedValue(settings);
 
-    const res = await request.get('/ha/entity/sensor.temperature');
+    const res = await get(makeServer(), '/ha/entity/sensor.temperature');
     expect(res.status).toBe(422);
     expect(res.body.message).toBe('HA URL is not configured');
   });
@@ -64,7 +62,7 @@ describe('GET /ha/entity/:entityId', () => {
       last_updated: '2024-01-01T00:00:00Z',
     });
 
-    const res = await request.get('/ha/entity/sensor.temperature');
+    const res = await get(makeServer(), '/ha/entity/sensor.temperature');
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('22.5');
   });
@@ -74,7 +72,7 @@ describe('GET /ha/entity/:entityId', () => {
     (loadSettings as ReturnType<typeof vi.fn>).mockResolvedValue(settings);
     (fetchHaEntityState as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection refused'));
 
-    const res = await request.get('/ha/entity/sensor.temperature');
+    const res = await get(makeServer(), '/ha/entity/sensor.temperature');
     expect(res.status).toBe(422);
     expect(res.body.message).toBe('Connection refused');
   });
@@ -90,7 +88,7 @@ describe('GET /ha/entity/:entityId', () => {
       last_updated: '2024-01-01T00:00:00Z',
     });
 
-    const res = await request.get('/ha/entity/sensor%2Fmy%20sensor');
+    const res = await get(makeServer(), '/ha/entity/sensor%2Fmy%20sensor');
     expect(res.status).toBe(200);
   });
 });

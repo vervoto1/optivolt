@@ -149,6 +149,10 @@ export function normalizeSettings(settings: Settings): Settings {
     [normalized.minSoc_percent, normalized.maxSoc_percent] = [normalized.maxSoc_percent, normalized.minSoc_percent];
   }
 
+  normalized.optimizerQuickSettings = Array.isArray(normalized.optimizerQuickSettings)
+    ? normalized.optimizerQuickSettings.filter((id): id is string => typeof id === 'string')
+    : [];
+
   // v8 ignore next — null path of ?? already covered, v8 double-counts in String() call
   normalized.haUrl = String(normalized.haUrl ?? '').trim();
   // v8 ignore next — null path of ?? already covered
@@ -158,6 +162,31 @@ export function normalizeSettings(settings: Settings): Settings {
   }
 
   normalized.dataSources = normalizeDataSources(normalized.dataSources);
+  normalized.evEnabled = normalized.evEnabled == null
+    ? false
+    : expectBoolean(normalized.evEnabled, 'evEnabled');
+  normalized.evMinChargeCurrent_A = Math.max(0, Math.round(
+    Number.isFinite(normalized.evMinChargeCurrent_A) ? normalized.evMinChargeCurrent_A : 0,
+  ));
+  normalized.evMaxChargeCurrent_A = Math.max(0, Math.round(
+    Number.isFinite(normalized.evMaxChargeCurrent_A) ? normalized.evMaxChargeCurrent_A : 0,
+  ));
+  if (normalized.evMaxChargeCurrent_A < normalized.evMinChargeCurrent_A) {
+    [normalized.evMinChargeCurrent_A, normalized.evMaxChargeCurrent_A] = [normalized.evMaxChargeCurrent_A, normalized.evMinChargeCurrent_A];
+  }
+  normalized.evBatteryCapacity_kWh = Math.max(
+    0,
+    Number.isFinite(normalized.evBatteryCapacity_kWh) ? normalized.evBatteryCapacity_kWh : 0,
+  );
+  normalized.evTargetSoc_percent = normalizeSocPercent(
+    Number.isFinite(normalized.evTargetSoc_percent) ? normalized.evTargetSoc_percent : 0,
+  );
+  normalized.evChargeEfficiency_percent = normalizeSocPercent(
+    Number.isFinite(normalized.evChargeEfficiency_percent) ? normalized.evChargeEfficiency_percent : 100,
+  );
+  normalized.evSocSensor = String(normalized.evSocSensor ?? '').trim();
+  normalized.evPlugSensor = String(normalized.evPlugSensor ?? '').trim();
+  normalized.evDepartureTime = String(normalized.evDepartureTime ?? '');
 
   if (normalized.evConfig) {
     normalized.evConfig = normalizeEvConfig(normalized.evConfig);

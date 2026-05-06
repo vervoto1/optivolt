@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import request from 'supertest';
 import app from '../../api/app.ts';
+import { get } from './helpers/express-test-client.js';
 
 vi.mock('../../api/services/settings-store.ts');
 vi.mock('../../api/services/ha-client.ts');
@@ -30,7 +30,7 @@ describe('GET /ha/entity/:entityId', () => {
   it('returns entity state for a valid entity', async () => {
     fetchHaEntityState.mockResolvedValue(mockEntityState);
 
-    const res = await request(app).get('/ha/entity/sensor.ev_battery_level');
+    const res = await get(app, '/ha/entity/sensor.ev_battery_level');
 
     expect(res.status).toBe(200);
     expect(res.body.entity_id).toBe('sensor.ev_battery_level');
@@ -45,7 +45,7 @@ describe('GET /ha/entity/:entityId', () => {
   it('returns 422 when entity is not found in HA', async () => {
     fetchHaEntityState.mockRejectedValue(new Error('HA returned 404 for entity "sensor.unknown"'));
 
-    const res = await request(app).get('/ha/entity/sensor.unknown');
+    const res = await get(app, '/ha/entity/sensor.unknown');
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain('404');
@@ -54,7 +54,7 @@ describe('GET /ha/entity/:entityId', () => {
   it('passes URL-decoded entity ID to fetchHaEntityState', async () => {
     fetchHaEntityState.mockResolvedValue(mockEntityState);
 
-    await request(app).get('/ha/entity/sensor.test%20entity');
+    await get(app, '/ha/entity/sensor.test%20entity');
 
     expect(fetchHaEntityState).toHaveBeenCalledWith(
       expect.objectContaining({ entityId: 'sensor.test entity' }),

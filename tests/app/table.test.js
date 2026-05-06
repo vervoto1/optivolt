@@ -91,7 +91,7 @@ describe('renderTable', () => {
       makeRow({ dess: { strategy: -1, restrictions: -1, feedin: '1', socTarget_percent: 90 }, timestampMs: new Date('2024-01-15T09:15:00Z').getTime() }),
       makeRow({ dess: { strategy: null, restrictions: null, feedin: '0', socTarget_percent: 95 }, timestampMs: new Date('2024-01-15T09:30:00Z').getTime() }),
     ];
-    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false, showDess: true });
     const html = table.innerHTML;
     expect(html).toContain('TS');
     expect(html).toContain('SC');
@@ -166,7 +166,7 @@ describe('renderTable', () => {
       makeRow({ dess: { strategy: 0, restrictions: 0, feedin: '0', socTarget_percent: 50 }, timestampMs: new Date('2024-01-15T08:30:00Z').getTime() }),
       makeRow({ dess: { strategy: 0, restrictions: 0, feedin: 2, socTarget_percent: 50 }, timestampMs: new Date('2024-01-15T08:45:00Z').getTime() }),
     ];
-    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false, showDess: true });
     const html = table.innerHTML;
     expect(html).toContain('yes');
     expect(html).toContain('no');
@@ -175,14 +175,14 @@ describe('renderTable', () => {
   it('handles unknown strategy values', () => {
     const table = document.createElement('table');
     const rows = [makeRow({ dess: { strategy: 99, restrictions: 99, feedin: 1, socTarget_percent: 50 } })];
-    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false, showDess: true });
     expect(table.innerHTML).toContain('99');
   });
 
   it('handles string restriction values "-1"', () => {
     const table = document.createElement('table');
     const rows = [makeRow({ dess: { strategy: '-1', restrictions: '-1', feedin: '-1', socTarget_percent: 50 } })];
-    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
+    renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false, showDess: true });
     expect(table.innerHTML).toContain('?');
   });
 

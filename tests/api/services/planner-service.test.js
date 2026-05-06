@@ -15,6 +15,7 @@ import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/servi
 import { fetchEvLoadFromHA } from '../../../api/services/ha-ev-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
+import { FeedIn } from '../../../lib/dess-mapper.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const MID_SLOT_NOW_STRING = '2024-01-01T00:22:00Z';
@@ -92,6 +93,23 @@ describe('computePlan — rebalance bookkeeping', () => {
     );
   });
 
+  it('returns a rebalance nudge in the computed plan', async () => {
+    loadSettings.mockResolvedValue(baseSettings);
+    loadData.mockResolvedValue({
+      ...baseData,
+      lastFullSocAt: '2023-12-20T00:00:00.000Z',
+    });
+
+    const result = await computePlan();
+
+    expect(result.rebalanceNudge).toMatchObject({
+      lastFullSocAt: '2023-12-20T00:00:00.000Z',
+      daysSinceLastFullSoc: 12,
+      rebalanceRecommended: true,
+      thresholdDays: 10,
+    });
+  });
+
   it('clears startMs and disables rebalancing when cycle is complete (remainingSlots = 0)', async () => {
     // holdHours=2, stepSize=60min → holdSlots=2; started 2h ago → remainingSlots=0
     const startMs = NOW_MS - 2 * 60 * 60_000;
@@ -108,6 +126,59 @@ describe('computePlan — rebalance bookkeeping', () => {
     expect(saveData).toHaveBeenCalledWith(
       expect.objectContaining({ rebalanceState: { startMs: null } })
     );
+  });
+
+  it('keeps feed-in allowed on negative export prices when blocking is disabled', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, blockFeedInOnNegativePrices: false });
+    loadData.mockResolvedValue({
+      ...baseData,
+      exportPrice: { ...baseData.exportPrice, values: [-1, -1, -1, -1, -1] },
+    });
+
+    const result = await computePlan();
+
+    expect(result.rows[0].dess.feedin).toBe(FeedIn.allowed);
+  });
+
+  it('includes original prediction values on rows when manual adjustments changed them', async () => {
+    loadSettings.mockResolvedValue(baseSettings);
+    loadData.mockResolvedValue({
+      ...baseData,
+      pv: { start: NOW_STRING, step: 60, values: [100, 0, 0, 0, 0] },
+      predictionAdjustments: [
+        {
+          id: 'load-add',
+          series: 'load',
+          mode: 'add',
+          value_W: 100,
+          start: NOW_STRING,
+          end: '2024-01-01T01:00:00.000Z',
+          createdAt: NOW_STRING,
+          updatedAt: NOW_STRING,
+        },
+        {
+          id: 'pv-off',
+          series: 'pv',
+          mode: 'set',
+          value_W: 0,
+          start: NOW_STRING,
+          end: '2024-01-01T01:00:00.000Z',
+          createdAt: NOW_STRING,
+          updatedAt: NOW_STRING,
+        },
+      ],
+    });
+
+    const result = await computePlan();
+
+    expect(result.rows[0]).toMatchObject({
+      load: 600,
+      originalLoad: 500,
+      pv: 0,
+      originalPv: 100,
+    });
+    expect(result.rows[1].originalLoad).toBeUndefined();
+    expect(result.rows[1].originalPv).toBeUndefined();
   });
 });
 

@@ -44,8 +44,8 @@ describe('ui-binding', () => {
 
   describe('wireGlobalInputs', () => {
     it('wires input/change events on inputs and selects', () => {
-      const input1 = createEl('input', 'test-input');
-      const select1 = createEl('select', 'test-select');
+      const input1 = createEl('input', 'test-input', { 'data-settings-input': '' });
+      const select1 = createEl('select', 'test-select', { 'data-settings-input': '' });
       const tableKwh = createEl('input', 'table-kwh');
       const updateData = createEl('input', 'update-data-before-run');
       const pushVictron = createEl('input', 'push-to-victron');

@@ -41,15 +41,25 @@ interface SegmentTippingPoints {
   pvExportTp: number;
 }
 
-export function mapRowsToDess(rows: PlanRow[], cfg: SolverConfig): DessResult {
+export interface DessMapperOptions {
+  blockFeedInOnNegativePrices?: boolean;
+}
+
+function feedInForRow(row: PlanRow, options: DessMapperOptions): number {
+  return options.blockFeedInOnNegativePrices !== false && row.ec < 0
+    ? FeedIn.blocked
+    : FeedIn.allowed;
+}
+
+export function mapRowsToDess(rows: PlanRow[], cfg: SolverConfig, options: DessMapperOptions = {}): DessResult {
   const segments = buildSegments(rows, cfg);
   const perSlot = new Array<DessSlot>(rows.length);
 
   for (let t = 0; t < rows.length; t++) {
     const row = rows[t];
 
-    // Feed-in: allow unless export price is negative.
-    const feedin = row.ec < 0 ? FeedIn.blocked : FeedIn.allowed;
+    const feedin = feedInForRow(row, options);
+    const feedinAllowed = feedin === FeedIn.allowed;
 
     // Primitive flows — all non-negative by LP construction
     /* v8 ignore start — destructured assignments are v8 counting artifacts */
@@ -343,7 +353,7 @@ function computeDessDiagnostics(rows: PlanRow[], segments: Segment[], cfg: Solve
  *      (only when expected PV > expected load)
  *   5. else                         → selfConsumption + block both
  */
-export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult {
+export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: DessMapperOptions = {}): DessResult {
   const segments = buildSegments(rows, cfg);
   const perSlot = new Array<DessSlot>(rows.length);
 
@@ -361,8 +371,7 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig): DessResult 
   for (let t = 0; t < rows.length; t++) {
     const row = rows[t];
 
-    // Feed-in: same rule as v1
-    const feedin = row.ec < 0 ? FeedIn.blocked : FeedIn.allowed;
+    const feedin = feedInForRow(row, options);
     const feedinAllowed = feedin === FeedIn.allowed;
 
     const importCost = row.ic;

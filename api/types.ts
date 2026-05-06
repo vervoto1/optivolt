@@ -36,8 +36,10 @@ export interface Settings {
   dischargeEfficiency_percent: number;
   batteryCost_cent_per_kWh: number;
   idleDrain_W: number;
+  blockFeedInOnNegativePrices: boolean;
   terminalSocValuation: TerminalSocValuation;
   terminalSocCustomPrice_cents_per_kWh: number;
+  optimizerQuickSettings: string[];
   dataSources: DataSources;
   rebalanceEnabled: boolean;
   rebalanceHoldHours: number;
@@ -140,14 +142,31 @@ export interface RebalanceState {
   startMs: number | null;
 }
 
+export type PredictionAdjustmentSeries = 'load' | 'pv';
+export type PredictionAdjustmentMode = 'set' | 'add';
+
+export interface PredictionAdjustment {
+  id: string;
+  series: PredictionAdjustmentSeries;
+  mode: PredictionAdjustmentMode;
+  value_W: number;
+  start: string;
+  end: string;
+  label?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Data {
   load: TimeSeries;
   pv: TimeSeries;
   importPrice: TimeSeries;
   exportPrice: TimeSeries;
   soc: SocData;
+  lastFullSocAt?: string | null;
   rebalanceState?: RebalanceState;
   evLoad?: TimeSeries;
+  predictionAdjustments?: PredictionAdjustment[];
 }
 
 // ----------------------------- Plan rows with DESS ----------------------
@@ -251,6 +270,7 @@ export interface PredictionValidationWindow {
 
 /** Prediction mode for PV forecasting. Replaces the deprecated forecastResolution field. */
 export type PvMode = 'hourly' | 'hybrid' | '15min';
+export type PvModel = 'clearSkyRatio' | 'robustLinear';
 
 export interface PvPredictionConfig {
   latitude: number;
@@ -258,6 +278,7 @@ export interface PvPredictionConfig {
   historyDays: number;
   pvSensor: string;
   pvMode?: PvMode;
+  pvModel?: PvModel;
   /** @deprecated Use pvMode instead. 60 → 'hourly', 15 → 'hybrid'. */
   forecastResolution?: 15 | 60;
 }

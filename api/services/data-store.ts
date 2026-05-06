@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import type { Data, TimeSeries } from '../types.ts';
+import { validatePredictionAdjustment } from './prediction-adjustments.ts';
 
 const DATA_DIR = resolveDataDir();
 const DATA_PATH = path.join(DATA_DIR, 'data.json');
@@ -35,6 +36,19 @@ export function validateData(d: Data): Data {
   }
   if (d.evLoad) {
     validateTimeSeries(d.evLoad, 'evLoad');
+  }
+  if (d.lastFullSocAt !== undefined && d.lastFullSocAt !== null) {
+    if (typeof d.lastFullSocAt !== 'string' || Number.isNaN(new Date(d.lastFullSocAt).getTime())) {
+      throw new Error(`Invalid lastFullSocAt: must be null or a valid timestamp (${d.lastFullSocAt})`);
+    }
+  }
+  if (d.predictionAdjustments !== undefined) {
+    if (!Array.isArray(d.predictionAdjustments)) {
+      throw new Error("Invalid predictionAdjustments: must be an array");
+    }
+    for (const adjustment of d.predictionAdjustments) {
+      validatePredictionAdjustment(adjustment);
+    }
   }
   return d;
 }

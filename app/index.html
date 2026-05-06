@@ -268,6 +268,74 @@
       color: #e2e8f0;
     }
 
+    .quick-setting-source-label {
+      position: relative;
+      display: block;
+    }
+
+    .quick-setting-pin {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.25rem;
+      height: 1.25rem;
+      border-radius: 9999px;
+      border: 0;
+      color: #cbd5e1;
+      background: transparent;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .quick-setting-source-label>.quick-setting-pin {
+      position: absolute;
+      top: 0.0625rem;
+      right: 0.125rem;
+      z-index: 1;
+    }
+
+    .quick-setting-toggle-label>.quick-setting-pin {
+      margin-left: -0.25rem;
+    }
+
+    .quick-setting-pin:hover,
+    .quick-setting-pin:focus-visible {
+      color: #0284c7;
+      background: #f0f9ff;
+    }
+
+    .quick-setting-pin[aria-pressed="true"] {
+      color: #0284c7;
+      background: transparent;
+    }
+
+    .quick-setting-pin[aria-pressed="true"]:hover,
+    .quick-setting-pin[aria-pressed="true"]:focus-visible {
+      background: #f0f9ff;
+    }
+
+    .quick-setting-pin:focus-visible {
+      outline: 2px solid #38bdf8;
+      outline-offset: 2px;
+    }
+
+    :root.dark .quick-setting-pin {
+      color: #64748b;
+      background: transparent;
+    }
+
+    :root.dark .quick-setting-pin:hover,
+    :root.dark .quick-setting-pin:focus-visible,
+    :root.dark .quick-setting-pin[aria-pressed="true"] {
+      color: #7dd3fc;
+      background: rgba(14, 165, 233, 0.12);
+    }
+
+    :root.dark .quick-setting-pin[aria-pressed="true"] {
+      background: transparent;
+    }
+
     /* === Status text transition === */
     #status {
       transition: color 0.3s ease;
@@ -547,7 +615,7 @@
             <label class="text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Terminal
                 SoC</span>
-              <select id="terminal" class="form-select">
+              <select id="terminal" class="form-select" data-settings-input>
                 <option value="zero" selected>zero</option>
                 <option value="min">min</option>
                 <option value="avg">avg</option>
@@ -560,6 +628,7 @@
                 price</span>
               <div class="relative">
                 <input id="terminal-custom" type="number" step="0.1" min="0" placeholder="e.g. 17.4"
+                  data-settings-input
                   class="form-input pr-16 disabled:opacity-50 disabled:cursor-not-allowed" disabled />
                 <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs text-slate-400">
                   c€/kWh
@@ -570,11 +639,20 @@
 
           <!-- Rebalancing toggle -->
           <div class="mt-4">
-            <label class="toggle">
-              <input id="rebalance-enabled" type="checkbox">
+            <label id="rebalance-toggle-label" class="toggle">
+              <input id="rebalance-enabled" type="checkbox" data-settings-input>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Schedule battery rebalancing</span>
             </label>
+            <p id="rebalance-nudge"
+              class="hidden mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
+              Battery has not reached 100% recently. Consider scheduling battery rebalancing.
+            </p>
+          </div>
+
+          <div id="optimizer-quick-settings" class="hidden mt-4 pt-4 border-t border-slate-100 dark:border-white/5">
+            <div id="optimizer-quick-settings-body" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+            <input id="optimizer-quick-settings-selection" type="hidden" value="[]" data-no-autosolve />
           </div>
 
           <!-- Run options as toggles -->
@@ -636,9 +714,13 @@
                 <div class="stat-label mb-0.5">EV load</div>
                 <div id="sum-ev-kwh" class="stat-value">—</div>
               </div>
-              <div class="px-3 py-2.5 col-span-2">
+              <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
                 <div class="stat-label mb-0.5">Avg. import price</div>
                 <div id="avg-import-cent" class="stat-value">—</div>
+              </div>
+              <div class="px-3 py-2.5">
+                <div class="stat-label mb-0.5">Net cost</div>
+                <div id="net-cost-cent" class="stat-value">—</div>
               </div>
             </div>
             <div class="summary-block border-t border-slate-100 dark:border-white/5">
@@ -761,6 +843,11 @@
         <div class="mb-4 flex items-center justify-between gap-4">
           <h3 class="sidebar-label">Schedule table</h3>
           <div class="flex items-center gap-3">
+            <label class="toggle">
+              <input id="table-dess" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Show DESS details</span>
+            </label>
             <label class="toggle">
               <input id="table-kwh" type="checkbox">
               <span class="toggle-knob"></span>
@@ -927,6 +1014,14 @@
                 <option value="15min">15-min</option>
               </select>
             </label>
+            <label class="block text-sm">
+              <span
+                class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Model</span>
+              <select id="pred-pv-model" class="form-select" data-predictions-only="true">
+                <option value="clearSkyRatio" selected>Clear-sky ratio</option>
+                <option value="robustLinear">Robust linear</option>
+              </select>
+            </label>
           </div>
 
           <div class="mt-4">
@@ -1042,7 +1137,7 @@
     <section class="lg:col-span-2 space-y-6 min-w-0">
 
       <!-- Combined Forecast Chart -->
-      <section class="card">
+      <section class="card relative">
         <div class="mb-3 flex items-center justify-between gap-3">
           <h2 class="sidebar-label">Forecast</h2>
           <div class="flex items-center gap-3">
@@ -1069,6 +1164,88 @@
             </svg>
             <span>Run a forecast to see results</span>
           </div>
+        </div>
+        <div id="forecast-adjustment-popover"
+          autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"
+          class="hidden mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-slate-900/70">
+          <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 id="forecast-adjustment-title" class="text-sm font-semibold text-ink dark:text-slate-100">Manual adjustment</h3>
+              <p id="forecast-adjustment-range" class="mt-0.5 text-xs text-slate-500 dark:text-slate-400"></p>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+              <div class="flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                <button type="button" data-adjust-series="load"
+                  class="forecast-adjustment-series rounded-md px-3 py-1.5 text-sm font-medium">Load</button>
+                <button type="button" data-adjust-series="pv"
+                  class="forecast-adjustment-series rounded-md px-3 py-1.5 text-sm font-medium">PV</button>
+              </div>
+              <button id="forecast-adjustment-cancel" type="button" title="Close"
+                class="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div class="grid gap-2 sm:grid-cols-[auto_minmax(0,1fr)]">
+              <div class="flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                <button type="button" data-adjust-mode="set"
+                  class="forecast-adjustment-mode rounded-md px-3 py-2 text-sm font-medium">Set to</button>
+                <button type="button" data-adjust-mode="add"
+                  class="forecast-adjustment-mode rounded-md px-3 py-2 text-sm font-medium">Add</button>
+              </div>
+              <label class="block text-sm">
+                <span class="sr-only">Watts</span>
+                <div class="relative">
+                  <input id="forecast-adjustment-watts" type="number" step="10" class="form-input pr-10" placeholder="0"
+                    autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" />
+                  <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm font-medium text-slate-400 dark:text-slate-500">
+                    W
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Start</span>
+                <input id="forecast-adjustment-start" type="datetime-local" step="900" class="form-input"
+                  autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" />
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">End</span>
+                <input id="forecast-adjustment-end" type="datetime-local" step="900" class="form-input"
+                  autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" />
+              </label>
+            </div>
+
+            <p id="forecast-adjustment-error" class="hidden text-sm font-medium text-red-600 dark:text-red-400"></p>
+
+            <div class="flex flex-wrap items-center justify-end gap-2">
+              <div class="ml-auto flex items-center gap-2">
+                <button id="forecast-adjustment-delete" type="button"
+                  class="hidden rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/30">
+                  Delete
+                </button>
+                <button id="forecast-adjustment-save" type="button"
+                  class="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-400/50">
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 border-t border-slate-100 pt-3 dark:border-white/5">
+          <div class="mb-2 flex items-center justify-between">
+            <h3 class="sidebar-label">Manual adjustments</h3>
+            <span id="prediction-adjustments-count" class="text-xs font-medium text-slate-400 dark:text-slate-500"></span>
+          </div>
+          <div id="prediction-adjustments-list" class="space-y-2"></div>
         </div>
       </section>
 
@@ -1275,44 +1452,49 @@
 
         <div id="system-settings-body" class="grid grid-cols-2 gap-3">
           <label class="text-sm">Battery capacity (Wh)
-            <input id="cap" type="number" class="form-input" />
+            <input id="cap" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">
             <span class="whitespace-nowrap">Battery cost (c€/kWh)</span>
-            <input id="bwear" type="number" class="form-input" />
+            <input id="bwear" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Min SoC (%)
-            <input id="minsoc" type="number" class="form-input" />
+            <input id="minsoc" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Max SoC (%)
-            <input id="maxsoc" type="number" class="form-input" />
+            <input id="maxsoc" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Max charge (W)
-            <input id="pchg" type="number" class="form-input" />
+            <input id="pchg" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Max discharge (W)
-            <input id="pdis" type="number" class="form-input" />
+            <input id="pdis" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Max grid import (W)
-            <input id="gimp" type="number" class="form-input" />
+            <input id="gimp" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Max grid export (W)
-            <input id="gexp" type="number" class="form-input" />
+            <input id="gexp" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Charge efficiency (%)
-            <input id="etaC" type="number" class="form-input" />
+            <input id="etaC" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Discharge efficiency (%)
-            <input id="etaD" type="number" class="form-input" />
+            <input id="etaD" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Step (min)
-            <input id="step" type="number" class="form-input" />
+            <input id="step" type="number" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Idle drain (W)
-            <input id="idle-drain" type="number" min="0" step="1" class="form-input" />
+            <input id="idle-drain" type="number" min="0" step="1" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Rebalance hold (h)
-            <input id="rebalance-hold-hours" type="number" min="0.25" step="0.25" class="form-input" />
+            <input id="rebalance-hold-hours" type="number" min="0.25" step="0.25" class="form-input" data-settings-input />
+          </label>
+          <label class="toggle col-span-2 mt-2">
+            <input id="block-feedin-negative-prices" type="checkbox" checked data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm">Block feed-in when export price is negative</span>
           </label>
         </div>
       </section>
@@ -1580,26 +1762,26 @@
           </div>
           <div class="grid grid-cols-2 gap-3">
             <label class="text-sm">Prices
-              <select id="source-prices" class="form-select">
+              <select id="source-prices" class="form-select" data-settings-input>
                 <option value="vrm">Victron VRM</option>
                 <option value="api">API</option>
                 <option value="ha">Home Assistant</option>
               </select>
             </label>
             <label class="text-sm">Load prediction
-              <select id="source-load" class="form-select">
+              <select id="source-load" class="form-select" data-settings-input>
                 <option value="vrm">Victron VRM</option>
                 <option value="api">API</option>
               </select>
             </label>
             <label class="text-sm">PV prediction
-              <select id="source-pv" class="form-select">
+              <select id="source-pv" class="form-select" data-settings-input>
                 <option value="vrm">Victron VRM</option>
                 <option value="api">API</option>
               </select>
             </label>
             <label class="text-sm">Current SoC
-              <select id="source-soc" class="form-select">
+              <select id="source-soc" class="form-select" data-settings-input>
                 <option value="mqtt">Victron MQTT</option>
                 <option value="api">API</option>
               </select>
@@ -1683,10 +1865,12 @@
           <div class="space-y-3">
             <label class="block text-sm">WebSocket URL
               <input id="pred-ha-url" type="url" placeholder="ws://homeassistant.local:8123/api/websocket"
-                class="form-input" />
+                class="form-input" data-settings-input />
             </label>
             <label class="block text-sm">Access Token
-              <input id="pred-ha-token" type="password" placeholder="eyJ…" class="form-input" />
+              <input id="pred-ha-token" type="password" placeholder="eyJ…" class="form-input"
+                autocomplete="new-password" spellcheck="false" data-lpignore="true" data-1p-ignore="true"
+                data-bwignore="true" data-form-type="other" data-settings-input />
             </label>
           </div>
         </section>
@@ -1700,31 +1884,31 @@
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-sm">Min charge current (A)
                 <input id="ev-min-charge-current" type="number" min="6" max="32" step="1"
-                  class="form-input" />
+                  class="form-input" data-settings-input />
               </label>
               <label class="block text-sm">Max charge current (A)
                 <input id="ev-max-charge-current" type="number" min="6" max="32" step="1"
-                  class="form-input" />
+                  class="form-input" data-settings-input />
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-sm">EV battery capacity (kWh)
                 <input id="ev-battery-capacity" type="number" min="1" step="0.1"
-                  class="form-input" />
+                  class="form-input" data-settings-input />
               </label>
               <label class="block text-sm">Charging efficiency (%)
                 <input id="ev-charge-efficiency" type="number" min="50" max="100" step="1"
-                  class="form-input" />
+                  class="form-input" data-settings-input />
               </label>
             </div>
             <label class="block text-sm">SoC sensor entity ID
               <input id="ev-soc-sensor" type="text" placeholder="sensor.ev_battery_level"
-                class="form-input font-mono text-xs" data-no-autosolve />
+                class="form-input font-mono text-xs" data-no-autosolve data-settings-input />
               <span id="ev-soc-value" class="mt-1 block text-xs text-slate-500 dark:text-slate-400"></span>
             </label>
             <label class="block text-sm">Plug sensor entity ID
               <input id="ev-plug-sensor" type="text" placeholder="binary_sensor.ev_charger_plug"
-                class="form-input font-mono text-xs" data-no-autosolve />
+                class="form-input font-mono text-xs" data-no-autosolve data-settings-input />
               <span id="ev-plug-value" class="mt-1 block text-xs text-slate-500 dark:text-slate-400"></span>
             </label>
           </div>
@@ -1748,14 +1932,14 @@
         <h2 class="sidebar-label mb-4">Settings</h2>
         <div class="space-y-3">
           <label class="toggle">
-            <input id="ev-enabled" type="checkbox">
+            <input id="ev-enabled" type="checkbox" data-settings-input>
             <span class="toggle-knob"></span>
             <span class="text-sm text-slate-600 dark:text-slate-400">Enable EV charging</span>
           </label>
           <label class="block text-sm">
             <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Ready by</span>
             <div class="flex mt-1">
-              <input id="ev-departure-time" type="datetime-local" class="form-input flex-1 min-w-0 !mt-0 !rounded-r-none !border-r-0" step="900" />
+              <input id="ev-departure-time" type="datetime-local" class="form-input flex-1 min-w-0 !mt-0 !rounded-r-none !border-r-0" step="900" data-settings-input />
               <button id="ev-departure-quick-set" type="button" disabled title="Run a plan first"
                 class="btn-quick-set">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
@@ -1767,7 +1951,7 @@
           <label class="block text-sm">
             <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Target SoC (%)</span>
             <div class="flex mt-1">
-              <input id="ev-target-soc" type="number" min="0" max="100" step="1" class="form-input flex-1 min-w-0 !mt-0 !rounded-r-none !border-r-0" />
+              <input id="ev-target-soc" type="number" min="0" max="100" step="1" class="form-input flex-1 min-w-0 !mt-0 !rounded-r-none !border-r-0" data-settings-input />
               <button id="ev-target-soc-quick-set" type="button" disabled title="Configure EV SoC sensor first"
                 class="btn-quick-set">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">

@@ -39,7 +39,7 @@ interface ValidationRunResult {
 }
 /* v8 ignore end */
 
-interface ForecastRunResult {
+export interface ForecastRunResult {
   forecast: ForecastSeries;
   recent: PredictionResult[];
   metrics: { mae: number; rmse: number; mape: number; n: number };

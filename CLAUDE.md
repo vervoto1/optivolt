@@ -13,40 +13,35 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 ## Commands
 
 - **Run server:** `npm run api` (or `npm run dev` for nodemon + `.env.local`)
-- **Run all tests:** `npm test` (vitest, runs in watch mode)
-- **Run tests once:** `npx vitest run`
+- **Run tests in watch mode:** `npm test`
+- **Run tests once:** `npm run test:run`
 - **Run a single test file:** `npx vitest run tests/lib/build-lp.test.js`
+- **Typecheck:** `npm run typecheck`
 - **Lint:** `npm run lint`
 
 ## Architecture
 
-The system has three layers, all ESM TypeScript (no build step; runs via Node 22+ type stripping or tsx):
+The system has three layers. Server/core code is TypeScript ESM executed directly by Node 22; the browser UI is static ESM with no build step.
 
-### `lib/` — Core logic (pure, no I/O)
-- **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, etc.) and tracks `soc` (state of charge) evolution with charge/discharge efficiency. Effective load per slot is `load + evLoad` (EV demand added as a separate input). Supports CV (Constant Voltage) phase modeling via MILP binaries that reduce charge power limits at configurable high-SoC thresholds.
-- **`parse-solution.ts`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, and timestamps.
-- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics. Applies EV discharge constraint (blocks battery→grid during EV charging slots) and caps CV-aware target SoC boosts to avoid overcharging.
-- **`vrm-api.ts`** / **`victron-mqtt.ts`** — VRM REST client and MQTT client for writing schedules to Victron. MQTT supports TLS via `tls` and `rejectUnauthorized` config options.
-- **`dess-mapper.ts` DESS limitation** — DESS in Node-RED mode (Mode 4) does not directly follow schedule slot SoC targets. It computes its own internal `TargetSoc` via an opaque algorithm that often diverges from the slot values OptiVolt writes. This means charging/discharging power may be lower than planned.
+### `lib/` — Core logic (pure, no I/O unless noted)
+- **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, EV flows, etc.) and tracks `soc` evolution with charge/discharge efficiency. Supports CV phase modeling via MILP binaries.
+- **`parse-solution.ts`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, EV decisions, and timestamps.
+- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics. Applies EV discharge constraints and CV-aware target SoC caps.
+- **`vrm-api.ts`** / **`victron-mqtt.ts`** — VRM REST client and MQTT client for writing schedules to Victron. MQTT supports TLS settings.
 
 ### `api/` — Express server
-- **`app.ts`** — Express app setup. Mounts routes at `/calculate`, `/settings`, `/vrm`, and serves the static UI from `app/`.
+- **`app.ts`** — Express app setup. Mounts routes at `/calculate`, `/settings`, `/data`, `/vrm`, `/predictions`, `/plan-accuracy`, `/ev`, `/ha`, and serves the static UI from `app/`.
 - **`index.ts`** — Server entry point (listens on `HOST`/`PORT`).
-- **Routes** (`api/routes/`): `calculate.ts`, `settings.ts`, `vrm.ts`, `plan-accuracy.ts`.
+- **Routes** (`api/routes/`): `calculate.ts`, `settings.ts`, `data.ts`, `vrm.ts`, `predictions.ts`, `plan-accuracy.ts`, `ev.ts`, `ha.ts`.
 - **Services** (`api/services/`):
-  - `planner-service.ts` — Orchestrates the full pipeline: refresh VRM data → load settings/data → build LP → solve with HiGHS → parse → map to DESS → optionally write via MQTT.
-  - `settings-store.ts` / `data-store.ts` — JSON file persistence under `DATA_DIR` (defaults to `data/`).
-  - `config-builder.ts` — Merges persisted settings + data into solver inputs. When adaptive learning is in `auto` mode, applies calibration multipliers to charge/discharge efficiency via `applyCalibration()`.
+  - `planner-service.ts` — Orchestrates the full pipeline: refresh VRM data, load settings/data, build LP, solve with HiGHS, parse, map to DESS, optionally write via MQTT.
+  - `settings-store.ts` / `data-store.ts` / `prediction-config-store.ts` — JSON file persistence under `DATA_DIR` (defaults to `data/`).
+  - `config-builder.ts` — Merges persisted settings + data into solver inputs and applies adaptive-learning calibration in `auto` mode.
   - `vrm-refresh.ts` — Fetches time-series from VRM and persists to `data.json`.
-  - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT. Ensures DESS Mode 4 (Custom/Node-RED) is active before writing, so VRM cloud stops overriding local schedules. Writes both `Soc` and `TargetSoc` fields for Venus OS >= 3.20 compatibility. Fills all 48 schedule slots per write. Reads `MQTT_TLS` and `MQTT_TLS_INSECURE` env vars for SSL/TLS support.
-  - `ha-ev-service.ts` — Reads EV Smart Charging schedule from HA REST API (uses supervisor proxy when running as add-on).
-  - `ha-price-service.ts` — Reads electricity prices from HA sensor (e.g., GE Spot). Supports hourly (repeat 4×) and 15-min price intervals.
-  - `dess-price-refresh.ts` — Daily timer that temporarily switches DESS to Mode 1 (Auto/VRM) so Victron can refresh prices. Exports `isPriceRefreshWindowActive()` which `mqtt-service.ts` checks to skip schedule writes during the window. Explicitly restores Mode 4 and triggers forced recalc at window end.
-  - `auto-calculate.ts` — Internal timer that calls `planAndMaybeWrite()` on a configurable interval. Concurrency guard skips tick when calculation is in progress. Also triggers SoC sampling and periodic calibration when adaptive learning is enabled.
-  - `plan-history-store.ts` — Ring buffer (max 2000) of plan snapshots storing predicted SoC trajectories. Written after each `computePlan()` for adaptive learning comparison.
-  - `soc-tracker.ts` — Samples actual battery SoC from MQTT (`readVictronSocPercent`) and actual load/PV from VRM data at each auto-calculate tick. Persists to `DATA_DIR/soc-samples.json` (ring buffer, 30 days). Actual load/PV stored alongside SoC for confound filtering in the calibrator.
-  - `plan-accuracy-service.ts` — Compares predicted SoC (from plan snapshots) vs actual SoC (from soc-tracker) per elapsed slot. Computes deviation metrics (mean/max absolute deviation).
-  - `efficiency-calibrator.ts` — Per-SoC-band efficiency calibration (100-point curves for charge and discharge). Builds curves from chronologically-sorted EMA of observed SoC deltas. Filters out confounded slots where actual load/PV deviated >20% from predicted. Runs every ~4 hours when adaptive learning is enabled. Persists to `DATA_DIR/calibration.json`. Supports reset via `POST /plan-accuracy/calibration/reset`.
+  - `prediction-forecast-runner.ts` / `prediction-adjustment-store.ts` — Prediction orchestration, forecast persistence policy, and manual adjustment CRUD.
+  - `mqtt-service.ts` — Writes Dynamic ESS schedule via MQTT, including Mode 4 management and `Soc`/`TargetSoc` compatibility.
+  - `ha-ev-service.ts` / `ha-price-service.ts` — Home Assistant EV schedule and price sensor readers.
+  - `auto-calculate.ts`, `plan-history-store.ts`, `soc-tracker.ts`, `plan-accuracy-service.ts`, `efficiency-calibrator.ts` — Auto-calculate and adaptive-learning support.
 - **Defaults** (`api/defaults/`): `default-settings.json` and `default-data.json` used when no persisted files exist.
 
 ### `optivolt/` — Home Assistant add-on
@@ -59,11 +54,11 @@ The system has three layers, all ESM TypeScript (no build step; runs via Node 22
 
 ### `app/` — Static web UI (no build step)
 - `index.html` + `main.js` — Entry points.
-- `app/src/` — Browser modules: API client, config store, charts, table, utils.
+- `app/src/` — Browser modules: API client, config store, chart barrels/modules, predictions modules, EV modules, table, utils.
 - The UI calls the Express API on the same origin. Time-series data is display-only (comes from VRM, not editable).
 
 ### Data flow
-Settings and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings` and triggers computation via `POST /calculate`. The LP is always built server-side from persisted state — the client never sends LP parameters directly. `evLoad` can be sourced from the HA EV Smart Charging integration (via `ha-ev-service.ts`) or injected manually via `POST /data`. Electricity prices can be sourced from VRM, pushed via `POST /data`, or read from an HA sensor (via `ha-price-service.ts`).
+Settings, prediction config, and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings`, prediction config via `/predictions/config`, and triggers computation via `POST /calculate`. The LP is always built server-side from persisted state — the client never sends LP parameters directly. `evLoad` can be sourced from Home Assistant or injected manually via `POST /data`; electricity prices can come from VRM, `POST /data`, or a Home Assistant sensor.
 
 ## Testing
 
@@ -72,6 +67,7 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 ## Code conventions
 
 - ESM modules throughout (`"type": "module"` in package.json).
+- TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules.
 - Node.js >= 22 required.
 - Express 5.
 - Unused variables prefixed with `_` (eslint rule).

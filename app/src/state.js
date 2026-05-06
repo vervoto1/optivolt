@@ -1,4 +1,5 @@
 import { SOLUTION_COLORS } from "./charts.js";
+import { parseQuickSettingSelection, writeQuickSettingSelection } from "./optimizer-quick-settings.js";
 
 // ---------- UI <-> settings snapshot ----------
 /* v8 ignore start — all optional-chaining (?.) branches are untestable when els is always a complete DOM element map */
@@ -17,10 +18,12 @@ export function snapshotUI(els) {
     dischargeEfficiency_percent: num(els.etaD?.value),
     batteryCost_cent_per_kWh: num(els.bwear?.value),
     idleDrain_W: num(els.idleDrain?.value),
+    blockFeedInOnNegativePrices: !!els.blockFeedInOnNegativePrices?.checked,
 
     // ALGORITHM
     terminalSocValuation: els.terminal?.value || "zero",
     terminalSocCustomPrice_cents_per_kWh: num(els.terminalCustom?.value),
+    optimizerQuickSettings: parseQuickSettingSelection(els.optimizerQuickSettingsSelection?.value),
 
     // DATA
     dataSources: {
@@ -153,6 +156,9 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.etaD, obj.dischargeEfficiency_percent);
   setIfDef(els.bwear, obj.batteryCost_cent_per_kWh);
   setIfDef(els.idleDrain, obj.idleDrain_W);
+  if (els.blockFeedInOnNegativePrices && obj.blockFeedInOnNegativePrices != null) {
+    els.blockFeedInOnNegativePrices.checked = !!obj.blockFeedInOnNegativePrices;
+  }
 
   // DATA (display-only metadata)
   updatePlanMeta(els, obj.initialSoc_percent, obj.tsStart);
@@ -162,6 +168,9 @@ export function hydrateUI(els, obj = {}) {
     els.terminal.value = String(obj.terminalSocValuation);
   }
   setIfDef(els.terminalCustom, obj.terminalSocCustomPrice_cents_per_kWh);
+  if (obj.optimizerQuickSettings !== undefined) {
+    writeQuickSettingSelection(els.optimizerQuickSettingsSelection, obj.optimizerQuickSettings);
+  }
 
   // DATA
   if (els.sourcePrices && obj.dataSources?.prices) els.sourcePrices.value = obj.dataSources.prices;
@@ -268,6 +277,7 @@ export function hydrateUI(els, obj = {}) {
   }
 
   updateTerminalCustomUI(els);
+  updateRebalanceNudgeUI(els, obj.rebalanceNudge);
 }
 
 // Plan metadata helper
@@ -313,6 +323,7 @@ export function updateSummaryUI(els, summary) {
     setText(els.sumLoadBatt, "—");
     setText(els.sumLoadPv, "—");
     setText(els.avgImport, "—");
+    setText(els.netCost, "—");
     setText(els.gridBatteryTp, "—");
     setText(els.gridChargeTp, "—");
     setText(els.batteryExportTp, "—");
@@ -335,6 +346,7 @@ export function updateSummaryUI(els, summary) {
     loadFromBattery_kWh,
     loadFromPv_kWh,
     avgImportPrice_cents_per_kWh,
+    netGridCost_cents,
     gridBatteryTippingPoint_cents_per_kWh,
     gridChargeTippingPoint_cents_per_kWh,
     batteryExportTippingPoint_cents_per_kWh,
@@ -351,6 +363,7 @@ export function updateSummaryUI(els, summary) {
   setText(els.sumLoadBatt, formatKWh(loadFromBattery_kWh));
   setText(els.sumLoadPv, formatKWh(loadFromPv_kWh));
   setText(els.avgImport, formatCentsPerKWh(avgImportPrice_cents_per_kWh));
+  setText(els.netCost, formatCostCents(netGridCost_cents));
   setText(els.gridBatteryTp, formatTippingPoint(gridBatteryTippingPoint_cents_per_kWh, "↓"));
   setText(els.gridChargeTp, formatTippingPoint(gridChargeTippingPoint_cents_per_kWh, "↓"));
   // Show battery export tp if present, otherwise fall back to PV export tp
@@ -463,6 +476,27 @@ function updateRebalanceStatus(els, status) {
   }
 }
 
+export function updateRebalanceNudgeUI(els, nudge) {
+  const lastFullText = formatLastFullSoc(nudge?.lastFullSocAt);
+  const title = `Schedule battery rebalancing. Last 100% SoC: ${lastFullText}.`;
+  if (els.rebalanceToggleLabel) els.rebalanceToggleLabel.title = title;
+
+  if (!els.rebalanceNudge) return;
+
+  const recommended = !!nudge?.rebalanceRecommended;
+  const alreadyEnabled = !!els.rebalanceEnabled?.checked;
+  const shouldShow = recommended && !alreadyEnabled;
+  els.rebalanceNudge.classList.toggle("hidden", !shouldShow);
+
+  if (shouldShow) {
+    const days = nudge.daysSinceLastFullSoc;
+    const threshold = nudge.thresholdDays;
+    els.rebalanceNudge.textContent = days == null
+      ? `Battery has not reached 100% in over ${threshold} days. Consider scheduling battery rebalancing.`
+      : `Battery last reached 100% ${days} days ago. Consider scheduling battery rebalancing.`;
+  }
+}
+
 export function updateTerminalCustomUI(els) {
   const isCustom = els.terminal?.value === "custom";
   if (els.terminalCustom) els.terminalCustom.disabled = !isCustom;
@@ -537,6 +571,19 @@ function setText(el, txt) {
   /* v8 ignore stop */
 }
 
+function formatLastFullSoc(value) {
+  if (!value) return "not recorded yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "not recorded yet";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function formatKWh(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
@@ -544,16 +591,23 @@ export function formatKWh(v) {
   return `${n.toFixed(2)} kWh`;
 }
 
-function formatCentsPerKWh(v) {
-  if (v === null || v === undefined) return "—";
+function toFinite(v) {
+  if (v === null || v === undefined) return null;
   const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return `${n.toFixed(2)} c€/kWh`;
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatCentsPerKWh(v) {
+  const n = toFinite(v);
+  return n === null ? "—" : `${n.toFixed(2)} c€/kWh`;
+}
+
+function formatCostCents(v) {
+  const n = toFinite(v);
+  return n === null ? "—" : `${n.toFixed(2)} c€`;
 }
 
 function formatTippingPoint(v, symbol) {
-  if (v === null || v === undefined) return "—";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  return `${symbol} ${n.toFixed(2)} c€`;
+  const n = toFinite(v);
+  return n === null ? "—" : `${symbol} ${n.toFixed(2)} c€`;
 }

@@ -169,6 +169,8 @@ describe('Route contracts', () => {
   });
 
   it('POST /settings structurally merges nested config and restarts timers', async () => {
+    vi.useRealTimers();
+
     const res = await post(routes.settingsRouter, '/', {
       evConfig: { enabled: true },
       haToken: '',

@@ -30,6 +30,9 @@ export function buildPlanSummary(
       batteryToGrid_kWh: 0,
       pvCurtailed_kWh: 0,
       importEnergy_kWh: 0,
+      importCost_cents: 0,
+      exportCost_cents: 0,
+      netGridCost_cents: 0,
       avgImportPrice_cents_per_kWh: null,
       gridBatteryTippingPoint_cents_per_kWh:
         dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh ?? null,
@@ -63,6 +66,8 @@ export function buildPlanSummary(
   let pvCurtailed = 0;
   let importEnergy = 0;
   let priceTimesEnergy = 0;
+  let importCost = 0;
+  let exportCost = 0;
   let evFromGrid = 0;
   let evFromPv   = 0;
   let evFromBat  = 0;
@@ -78,6 +83,7 @@ export function buildPlanSummary(
     const b2gK = W2kWh(row.b2g);
     const pvCurtailK = W2kWh(row.pvCurtail ?? 0);
     const impK = W2kWh(row.imp);
+    const expK = W2kWh(row.exp);
 
     loadTotal += loadK;
     pvTotal += pvK;
@@ -93,6 +99,8 @@ export function buildPlanSummary(
     if (impK > 0) {
       priceTimesEnergy += row.ic * impK;
     }
+    importCost += finiteOr(row.importCost_cents, impK * row.ic);
+    exportCost += finiteOr(row.exportCost_cents, expK * row.ec);
     evFromGrid += W2kWh(row.g2ev ?? 0);
     evFromPv   += W2kWh(row.pv2ev ?? 0);
     evFromBat  += W2kWh(row.b2ev ?? 0);
@@ -112,6 +120,9 @@ export function buildPlanSummary(
     batteryToGrid_kWh: batteryToGrid,
     pvCurtailed_kWh: pvCurtailed,
     importEnergy_kWh: importEnergy,
+    importCost_cents: importCost,
+    exportCost_cents: exportCost,
+    netGridCost_cents: importCost - exportCost,
     avgImportPrice_cents_per_kWh: avgImportPrice,
     gridBatteryTippingPoint_cents_per_kWh:
       Number.isFinite(dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh)
@@ -135,4 +146,9 @@ export function buildPlanSummary(
     evChargeFromPv_kWh:      evFromPv,
     evChargeFromBattery_kWh: evFromBat,
   };
+}
+
+function finiteOr(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }

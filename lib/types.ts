@@ -106,6 +106,8 @@ export interface PlanRow {
   load: number;       // expected load W
   pv: number;         // expected PV W
   evLoad: number;  // expected EV load W
+  originalLoad?: number; // unadjusted prediction W when a manual adjustment changed the slot
+  originalPv?: number;   // unadjusted prediction W when a manual adjustment changed the slot
   ic: number;  // import price c€/kWh
   ec: number;  // export price c€/kWh
   g2l: number;   // grid → load W
@@ -118,6 +120,8 @@ export interface PlanRow {
   b2g: number;   // battery → grid W
   imp: number;   // total import W (g2l + g2b)
   exp: number;   // total export W (pv2g + b2g)
+  importCost_cents: number;  // import energy cost for this slot, in c€
+  exportCost_cents: number;  // export energy value for this slot, in c€
   soc: number;   // battery SoC Wh
   soc_percent: number;  // battery SoC %
   g2ev: number;         // grid → EV W
@@ -173,6 +177,9 @@ export interface PlanSummary {
   batteryToGrid_kWh: number;
   pvCurtailed_kWh: number;
   importEnergy_kWh: number;
+  importCost_cents: number;
+  exportCost_cents: number;
+  netGridCost_cents: number;
   avgImportPrice_cents_per_kWh: number | null;
   gridBatteryTippingPoint_cents_per_kWh: number | null;
   gridChargeTippingPoint_cents_per_kWh: number | null;

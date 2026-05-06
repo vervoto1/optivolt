@@ -1,4 +1,5 @@
 import { SOLUTION_COLORS } from "./charts.js";
+import { escapeHtml } from "./utils.js";
 
 /**
  * Render the results table and unit label.
@@ -12,9 +13,9 @@ import { SOLUTION_COLORS } from "./charts.js";
  * @param {HTMLElement}  opts.targets.table       - <table> element to write into
  * @param {HTMLElement}  [opts.targets.tableUnit] - element for the "Units: ..." label
  * @param {boolean}      opts.showKwh             - whether to display kWh instead of W
+ * @param {boolean}      opts.showDess            - whether to display DESS metadata columns
  */
-export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSettings }) {
-  // v8 ignore next — null path of ||= on targets is untestable in jsdom tests
+export function renderTable({ rows, cfg, targets, showKwh, showDess = false, rebalanceWindow, evSettings }) {
   const { table, tableUnit } = targets || {};
   if (!table || !Array.isArray(rows) || rows.length === 0) return;
 
@@ -48,8 +49,8 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     }},
     { key: "load", headerHtml: "Exp.<br>load", fmt: x => fmtEnergy(x, { dash: false }), tip: "Expected Load" },
     { key: "pv", headerHtml: "Exp.<br>PV", fmt: x => fmtEnergy(x, { dash: false }), tip: "Expected PV" },
-    { key: "ic", headerHtml: "Import<br>cost", fmt: dec2Thin },
-    { key: "ec", headerHtml: "Export<br>cost", fmt: dec2Thin },
+    { key: "ic", headerHtml: "Import<br>price", fmt: dec2Thin, tip: "Import price (c€/kWh)" },
+    { key: "ec", headerHtml: "Export<br>price", fmt: dec2Thin, tip: "Export price (c€/kWh)" },
 
     { key: "g2l", headerHtml: "g2l", fmt: x => fmtEnergy(x), tip: "Grid → Load" },
     { key: "b2l", headerHtml: "b2l", fmt: x => fmtEnergy(x), tip: "Battery → Load" },
@@ -104,30 +105,34 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
 
     { key: "imp", headerHtml: "Grid<br>import", fmt: x => fmtEnergy(x), tip: "Grid Import" },
     { key: "exp", headerHtml: "Grid<br>export", fmt: x => fmtEnergy(x), tip: "Grid Export" },
+    { key: "importCost_cents", headerHtml: "Import<br>cost", fmt: fmtCost, tip: "Import cost for this slot" },
+    { key: "exportCost_cents", headerHtml: "Export<br>value", fmt: fmtCost, tip: "Export value for this slot" },
 
-    {
-      key: "dess_strategy",
-      headerHtml: "DESS<br>strategy",
-      fmt: (_, ri) => fmtDessStrategy(rows[ri]?.dess?.strategy),
-      tip: 'DESS strategy: TS=Target SoC, SC=Self-consumption, PB=Pro battery, PG=Pro grid',
-      cellTip: true,
-    },
-    {
-      key: "dess_restrictions",
-      headerHtml: "Restr.",
-      fmt: (_, ri) => fmtDessRestrictions(rows[ri]?.dess?.restrictions),
-      tip: 'Grid↔battery restrictions',
-      cellTip: true,
-    },
-    {
-      key: "dess_feedin",
-      headerHtml: "Feed-in",
-      fmt: (_, ri) => {
-        const d = rows[ri]?.dess;
-        return fmtDessFeedin(d?.feedin);
+    ...(showDess ? [
+      {
+        key: "dess_strategy",
+        headerHtml: "DESS<br>strategy",
+        fmt: (_, ri) => fmtDessStrategy(rows[ri]?.dess?.strategy),
+        tip: 'DESS strategy: TS=Target SoC, SC=Self-consumption, PB=Pro battery, PG=Pro grid',
+        cellTip: true,
       },
-      tip: '1=allowed, 0=blocked; "?" = unknown',
-    },
+      {
+        key: "dess_restrictions",
+        headerHtml: "Restr.",
+        fmt: (_, ri) => fmtDessRestrictions(rows[ri]?.dess?.restrictions),
+        tip: 'Grid↔battery restrictions',
+        cellTip: true,
+      },
+      {
+        key: "dess_feedin",
+        headerHtml: "Feed-in",
+        fmt: (_, ri) => {
+          const d = rows[ri]?.dess;
+          return fmtDessFeedin(d?.feedin);
+        },
+        tip: '1=allowed, 0=blocked; "?" = unknown',
+      },
+    ] : []),
     {
       key: "dess_soc_target",
       headerHtml: "Soc→",
@@ -139,7 +144,11 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     },
   ];
 
-  const SUMMABLE_KEYS = new Set(["load", "pv", "g2l", "b2l", "pv2l", "pv2b", "pv2g", "pvCurtail", "g2b", "b2g", "ev_charge", "imp", "exp"]);
+  const MONEY_SUMMABLE_KEYS = new Set(["importCost_cents", "exportCost_cents"]);
+  const SUMMABLE_KEYS = new Set([
+    "load", "pv", "g2l", "b2l", "pv2l", "pv2b", "pv2g", "pvCurtail",
+    "g2b", "b2g", "ev_charge", "imp", "exp", "importCost_cents", "exportCost_cents",
+  ]);
 
   const totals = {};
   for (const key of SUMMABLE_KEYS) {
@@ -150,13 +159,16 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     const baseCls = "px-2 py-1.5 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900";
     // Time column: Σ badge
     if (ci === 0) {
-      return `<th class="${baseCls}" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200/80 dark:bg-slate-700/60 text-[9px] font-bold text-slate-400 dark:text-slate-500" title="Column totals (kWh)">Σ</span></th>`;
+      return `<th class="${baseCls}" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200/80 dark:bg-slate-700/60 text-[9px] font-bold text-slate-400 dark:text-slate-500" title="Column totals">Σ</span></th>`;
     }
     if (!SUMMABLE_KEYS.has(c.key)) {
       return `<th class="${baseCls}"></th>`;
     }
-    // Totals are always in kWh — summing W across slots is not meaningful energy
     const total = totals[c.key];
+    if (MONEY_SUMMABLE_KEYS.has(c.key)) {
+      return `<th class="${baseCls} text-right font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400" scope="col">${fmtCost(total, { dash: false })}</th>`;
+    }
+    // Energy totals are always in kWh — summing W across slots is not meaningful energy
     const displayVal = dec2Thin(W2kWh(total));
     const color = SOLUTION_COLORS[c.key];
     if (color) {
@@ -279,6 +291,12 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     return `${groupThin(i)}.${f}`;
   }
 
+  function fmtCost(x, { dash = true } = {}) {
+    const n = Number(x) || 0;
+    if (dash && Math.abs(n) < 0.005) return "–";
+    return dec2Thin(n);
+  }
+
   // rgb(…, …, …) → rgba(…, …, …, a)
   function rgbToRgba(rgb, alpha = 0.16) {
     const m = /rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/.exec(rgb || "");
@@ -307,13 +325,4 @@ export function renderTable({ rows, cfg, targets, showKwh, rebalanceWindow, evSe
     return parts.length > 1 ? `${neg}${intPart}.${parts[1]}` : `${neg}${intPart}`;
   }
 
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, m => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "\"": "&quot;",
-      "'": "&#039;"
-    }[m]));
-  }
 }

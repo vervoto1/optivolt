@@ -70,6 +70,28 @@ describe('Data route integration', () => {
     expect(saved.exportPrice.values).toEqual([5, 5]);
   });
 
+  it('POST /data records lastFullSocAt when API SoC reaches 100%', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+    await writeData({
+      load: { start: '2024-01-01T00:00:00Z', step: 15, values: [500, 500] },
+      pv: { start: '2024-01-01T00:00:00Z', step: 15, values: [0, 0] },
+      importPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [10, 10] },
+      exportPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [5, 5] },
+      soc: { value: 50, timestamp: '2024-01-01T00:00:00Z' },
+    });
+
+    const res = await post(dataRouter, '/', {
+      soc: { value: 100, timestamp: '2024-02-01T12:00:00.000Z' },
+    });
+
+    const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'data.json'), 'utf8'));
+    expect(res.status).toBe(200);
+    expect(saved.soc).toEqual({ value: 100, timestamp: '2024-02-01T12:00:00.000Z' });
+    expect(saved.lastFullSocAt).toBe('2024-02-01T12:00:00.000Z');
+  });
+
   it('POST /data rejects keys whose source is not api', async () => {
     await writeSettings({
       dataSources: { prices: 'vrm', load: 'api', pv: 'api', soc: 'api' },

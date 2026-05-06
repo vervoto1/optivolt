@@ -1,7 +1,9 @@
 import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
-import { loadData } from './data-store.ts';
+import { loadData, saveData } from './data-store.ts';
 import { loadCalibration, generateThresholdsFromCurve } from './efficiency-calibrator.ts';
+import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
+import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
@@ -197,8 +199,19 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
 }
 
 export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings }> {
-  const [settings, data] = await Promise.all([loadSettings(), loadData()]);
+  const [settings, loadedData] = await Promise.all([loadSettings(), loadData()]);
   const startMs = getQuarterStart(new Date(), settings.stepSize_m);
+  const pruned = pruneExpiredPredictionAdjustments(loadedData, startMs);
+  let data = pruned.data;
+  let shouldSaveData = pruned.changed;
+
+  const observedData = recordFullSocObservation(data);
+  if (observedData !== data) {
+    data = observedData;
+    shouldSaveData = true;
+  }
+
+  if (shouldSaveData) await saveData(data);
 
   let evState: { pluggedIn: boolean; soc_percent: number } | undefined;
   if (settings.evEnabled && settings.evSocSensor && settings.evPlugSensor) {
@@ -220,7 +233,8 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
     }
   }
 
-  let cfg = buildSolverConfigFromSettings(settings, data, startMs, evState);
+  const adjustedData = applyPredictionAdjustmentsToData(data);
+  let cfg = buildSolverConfigFromSettings(settings, adjustedData, startMs, evState);
 
   // Apply calibration when adaptive learning is in 'auto' mode
   if (settings.adaptiveLearning?.enabled && settings.adaptiveLearning.mode === 'auto') {

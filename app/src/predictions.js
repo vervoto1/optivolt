@@ -1,208 +1,98 @@
 /**
  * predictions.js
  *
- * Self-contained browser module for the Predictions tab.
+ * Coordinator for the Predictions tab.
  */
 
 import {
-  fetchPredictionConfig,
-  savePredictionConfig,
+  fetchStoredData,
   runPvForecast,
   runCombinedForecast,
-  fetchPlanAccuracy,
-  fetchCalibration,
-  fetchStoredSettings,
-  saveStoredSettings,
-  triggerCalibration,
 } from './api/api.js';
-import { debounce } from './utils.js';
-import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from './charts.js';
-import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from './chart-tooltip.js';
-import { initValidation } from './predictions-validation.js';
+import {
+  applyAdjustmentsToForecastSeries,
+  futureForecastSeries,
+} from './predictions/forecast-series.js';
+import { renderLoadAccuracyChart, renderPvAccuracyChart } from './predictions/accuracy-charts.js';
+import {
+  hydratePredictionForm,
+  savePredictionFormToServer,
+  wirePredictionForm,
+} from './predictions/config-form.js';
+import { createForecastChartController } from './predictions/forecast-chart.js';
+import { initAdaptiveLearning } from './predictions/adaptive-learning.js';
+
+export {
+  applyAdjustmentsToForecastSeries,
+  buildForecastSelectionRange,
+  forecastSeriesFromCategoryX,
+  futureForecastSeries,
+} from './predictions/forecast-series.js';
 
 let lastLoadForecast = null;
 let lastPvForecast = null;
+let lastLoadForecastRaw = null;
+let lastPvForecastRaw = null;
+
+const forecastChart = createForecastChartController({
+  getForecasts: () => ({
+    load: lastLoadForecast,
+    pv: lastPvForecast,
+    rawLoad: lastLoadForecastRaw,
+    rawPv: lastPvForecastRaw,
+  }),
+  onAdjustmentsChanged: refreshAdjustedForecastsFromRaw,
+});
 
 export async function initPredictionsTab() {
-  await hydrateForm();
-  wireForm();
+  await hydratePredictionForm();
+  await forecastChart.loadAdjustments();
+  await hydrateForecastsFromStoredData();
+  wirePredictionForm({
+    onForecastAll,
+    onPvForecast,
+    onForecastResolutionChange: forecastChart.render,
+  });
+  forecastChart.wireAdjustmentPopover();
   onForecastAll();
-  hydrateAdaptiveLearning();
+  initAdaptiveLearning();
 }
 
-// ---------------------------------------------------------------------------
-/* v8 ignore start — comment-only line is a v8 counting artifact */ // Chart helpers
-/* v8 ignore end */
-// ---------------------------------------------------------------------------
-
-const stripe = (c) => window.pattern?.draw('diagonal', c) || c;
-
-/** Aggregate a ForecastSeries into { timestamps[], values[] } with the given stepMinutes. */
-function aggregateForecastKwh(forecast, stepMinutes = 60) {
-  const timeMap = new Map();
-  const values = forecast.values || [];
-  const startTs = new Date(forecast.start).getTime();
-  const inputStepMs = (forecast.step || 15) * 60 * 1000;
-  const targetStepMs = stepMinutes * 60 * 1000;
-
-  for (let i = 0; i < values.length; i++) {
-    const ts = startTs + i * inputStepMs;
-    const bucketTs = Math.floor(ts / targetStepMs) * targetStepMs;
-    if (!timeMap.has(bucketTs)) timeMap.set(bucketTs, 0);
-    timeMap.set(bucketTs, timeMap.get(bucketTs) + values[i] * (inputStepMs / 3600000));
-  }
-
-  const timestamps = [...timeMap.keys()].sort((a, b) => a - b);
-  const aggregatedKwh = timestamps.map(k => timeMap.get(k) / 1000);
-  return { timestamps, values: aggregatedKwh };
+function refreshAdjustedForecastsFromRaw() {
+  const predictionAdjustments = forecastChart.getAdjustments();
+  lastLoadForecast = lastLoadForecastRaw
+    ? applyAdjustmentsToForecastSeries(lastLoadForecastRaw, predictionAdjustments, 'load')
+    : null;
+  lastPvForecast = lastPvForecastRaw
+    ? applyAdjustmentsToForecastSeries(lastPvForecastRaw, predictionAdjustments, 'pv')
+    : null;
 }
 
-// ---------------------------------------------------------------------------
-// Form hydration
-// ---------------------------------------------------------------------------
-
-async function hydrateForm() {
+async function hydrateForecastsFromStoredData() {
   try {
-    const config = await fetchPredictionConfig();
-    applyConfigToForm(config);
+    const data = await fetchStoredData();
+    const load = futureForecastSeries(data?.load);
+    const pv = futureForecastSeries(data?.pv);
+    if (!load && !pv) return;
+
+    lastLoadForecastRaw = load;
+    lastPvForecastRaw = pv;
+    refreshAdjustedForecastsFromRaw();
+    forecastChart.render();
+    if (load) updateStoredForecastMetrics('load', load, lastLoadForecast);
+    if (pv) updateStoredForecastMetrics('pv', pv, lastPvForecast);
   } catch (err) {
-    console.error('Failed to load prediction config:', err);
+    console.error('Failed to load stored forecast data:', err);
   }
 }
-
-function applyConfigToForm(config) {
-  setVal('pred-sensors', config.sensors ? JSON.stringify(config.sensors, null, 2) : '');
-  setVal('pred-derived', config.derived ? JSON.stringify(config.derived, null, 2) : '');
-
-  // Populate both sensor dropdowns from the same list
-  const allSensors = [...(config.sensors || []), ...(config.derived || [])];
-
-  for (const selectId of ['pred-active-sensor', 'pred-pv-sensor']) {
-    const select = document.getElementById(selectId);
-    if (!select) continue;
-    select.innerHTML = '<option value="" disabled selected>Select a sensor…</option>';
-    for (const s of allSensors) {
-      const opt = document.createElement('option');
-      opt.textContent = s.name || s.id;
-      opt.value = opt.textContent;
-      select.appendChild(opt);
-    }
-  }
-
-  setVal('pred-active-type', config.activeType ?? 'historical');
-  setVal('pred-fixed-load-w', config.fixedPredictor?.load_W ?? '');
-  renderHistoricalConfig(config.historicalPredictor ?? null);
-  renderPvConfig(config.pvConfig ?? null);
-  updatePredictorFieldVisibility();
-}
-
-function updatePredictorFieldVisibility() {
-  const type = getVal('pred-active-type') || 'historical';
-  const isFixed = type === 'fixed';
-  document.getElementById('pred-fixed-fields')?.classList.toggle('hidden', !isFixed);
-  document.getElementById('pred-historical-fields')?.classList.toggle('hidden', isFixed);
-}
-
-// ---------------------------------------------------------------------------
-// Wire form inputs
-// ---------------------------------------------------------------------------
-
-function wireForm() {
-  const debouncedSave = debounce(saveFormToServer, 600);
-
-  for (const el of document.querySelectorAll('[data-predictions-only="true"]')) {
-    el.addEventListener('input', debouncedSave);
-    el.addEventListener('change', debouncedSave);
-  }
-
-  document.getElementById('pred-active-type')
-    ?.addEventListener('change', updatePredictorFieldVisibility);
-
-  initValidation({ readFormValues, renderHistoricalConfig, setComparisonStatus });
-
-  document.getElementById('pred-load-forecast')
-    ?.addEventListener('click', onForecastAll);
-  document.getElementById('pred-pv-forecast')
-    ?.addEventListener('click', onPvForecast);
-  document.getElementById('forecast-chart-15m')
-    ?.addEventListener('change', renderCombinedForecastChart);
-
-  const settingsToggle = document.getElementById('pred-settings-toggle');
-  const settingsBody = document.getElementById('pred-settings-body');
-  const settingsIcon = document.getElementById('pred-settings-toggle-icon');
-
-  if (settingsToggle && settingsBody) {
-    settingsToggle.addEventListener('click', () => {
-      const isHidden = settingsBody.classList.contains('hidden');
-      settingsBody.classList.toggle('hidden', !isHidden);
-      if (settingsIcon) {
-        settingsIcon.style.transform = isHidden ? 'rotate(180deg)' : '';
-      }
-    });
-  }
-}
-
-async function saveFormToServer() {
-  try {
-    const partial = readFormValues();
-    await savePredictionConfig(partial);
-  } catch (err) {
-    console.error('Failed to save prediction config:', err);
-  }
-}
-
-function readFormValues() {
-  const sensors = parseSilently(getVal('pred-sensors'));
-  const derived = parseSilently(getVal('pred-derived'));
-
-  const activeType = getVal('pred-active-type') || 'historical';
-
-  const activeSensor = getVal('pred-active-sensor');
-  const activeLookback = getVal('pred-active-lookback');
-
-  const historicalPredictor = activeSensor ? {
-    sensor: activeSensor,
-    lookbackWeeks: activeLookback ? parseInt(activeLookback, 10) : 4,
-    dayFilter: getVal('pred-active-filter') || 'same',
-    aggregation: getVal('pred-active-agg') || 'mean',
-  } : null;
-
-  const fixedLoadW = getVal('pred-fixed-load-w');
-  const fixedLoadWParsed = fixedLoadW !== '' ? parseFloat(fixedLoadW) : NaN;
-  const fixedPredictor = Number.isFinite(fixedLoadWParsed) && fixedLoadWParsed >= 0 ? { load_W: fixedLoadWParsed } : null;
-
-  const pvConfig = {
-    pvSensor: getVal('pred-pv-sensor') || 'Solar Generation',
-    latitude: parseFloat(getVal('pred-pv-lat')) || 0,
-    longitude: parseFloat(getVal('pred-pv-lon')) || 0,
-    historyDays: parseInt(getVal('pred-pv-history'), 10) || 14,
-    pvMode: getVal('pred-pv-mode') || 'hourly',
-  };
-
-  return {
-    ...(sensors !== null ? { sensors } : {}),
-    ...(derived !== null ? { derived } : {}),
-    activeType,
-    ...(historicalPredictor ? { historicalPredictor } : {}),
-    ...(fixedPredictor ? { fixedPredictor } : {}),
-    pvConfig,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Combined forecast (runs on init and "Forecast Load" button)
-// ---------------------------------------------------------------------------
 
 async function onForecastAll() {
   updateStatus('load', 'Running load forecast…');
   updateStatus('pv', 'Running PV forecast…');
 
   try {
-    const partial = readFormValues();
-    await savePredictionConfig(partial);
-
+    await savePredictionFormToServer();
     const result = await runCombinedForecast();
-
     updateForecastUI('load', result.load);
     updateForecastUI('pv', result.pv);
   } catch (err) {
@@ -212,19 +102,12 @@ async function onForecastAll() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PV-only forecast ("Forecast PV" button)
-// ---------------------------------------------------------------------------
-
 async function onPvForecast() {
   updateStatus('pv', 'Running PV forecast…');
 
   try {
-    const partial = readFormValues();
-    await savePredictionConfig(partial);
-
+    await savePredictionFormToServer();
     const result = await runPvForecast();
-
     updateForecastUI('pv', result);
   } catch (err) {
     console.error(err);
@@ -232,26 +115,26 @@ async function onPvForecast() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared Status & Metrics Renderers
-// ---------------------------------------------------------------------------
-
 function updateForecastUI(type, result) {
   const label = type === 'load' ? 'Load' : 'PV';
-  if (result) {
-    if (type === 'load') {
-      lastLoadForecast = result.forecast ?? null;
-      renderLoadAccuracyChart(result.recent);
-    } else {
-      lastPvForecast = result.forecast ?? null;
-      renderPvAccuracyChart(result.recent);
-    }
-    renderCombinedForecastChart();
-    updateMetrics(type, result);
-    updateStatus(type, `${label} forecast updated`);
-  } else {
+  if (!result) {
     updateStatus(type, `${label} forecast skipped`);
+    return;
   }
+
+  if (type === 'load') {
+    lastLoadForecastRaw = result.rawForecast ?? result.forecast ?? null;
+    lastLoadForecast = result.forecast ?? null;
+    renderLoadAccuracyChart(result.recent);
+  } else {
+    lastPvForecastRaw = result.rawForecast ?? result.forecast ?? null;
+    lastPvForecast = result.forecast ?? null;
+    renderPvAccuracyChart(result.recent);
+  }
+  refreshAdjustedForecastsFromRaw();
+  forecastChart.render();
+  updateMetrics(type, result);
+  updateStatus(type, `${label} forecast updated`);
 }
 
 function updateStatus(prefix, msg, isError = false) {
@@ -268,15 +151,8 @@ function updateMetrics(prefix, resultObject) {
 
   const values = resultObject.forecast.values || [];
   const peak = values.length ? Math.max(...values) : 0;
-
-  // Calculate load specific metrics if we are dealing with load data
-  let min = 0;
-  if (prefix === 'load') {
-    min = values.length ? Math.min(...values) : 0;
-  }
-
+  const min = prefix === 'load' && values.length ? Math.min(...values) : 0;
   const totalKwh = values.reduce((a, b) => a + b, 0) * 0.25 / 1000;
-
   const avgErrorW = resultObject.metrics?.mae ?? 0;
 
   setEl(`${prefix}-summary-total`, totalKwh.toFixed(1));
@@ -287,643 +163,13 @@ function updateMetrics(prefix, resultObject) {
   }
 }
 
-function renderCombinedForecastChart() {
-  const canvas = document.getElementById('forecast-chart');
-  if (!canvas) return;
-
-  const is15m = document.getElementById('forecast-chart-15m')?.checked;
-  const stepMinutes = is15m ? 15 : 60;
-
-  const loadAgg = lastLoadForecast ? aggregateForecastKwh(lastLoadForecast, stepMinutes) : { timestamps: [], values: [] };
-  const pvAgg = lastPvForecast ? aggregateForecastKwh(lastPvForecast, stepMinutes) : { timestamps: [], values: [] };
-
-  const allTs = [...new Set([...loadAgg.timestamps, ...pvAgg.timestamps])].sort((a, b) => a - b);
-  const axis = buildTimeAxisFromTimestamps(allTs);
-
-  const loadMap = new Map(loadAgg.timestamps.map((t, i) => [t, loadAgg.values[i]]));
-  const pvMap = new Map(pvAgg.timestamps.map((t, i) => [t, pvAgg.values[i]]));
-
-  renderChart(canvas, {
-    type: 'bar',
-    data: {
-      labels: axis.labels,
-      datasets: [
-        {
-          label: 'Load',
-          data: allTs.map(t => loadMap.get(t) ?? null),
-          backgroundColor: stripe(SOLUTION_COLORS.g2l),
-          borderColor: SOLUTION_COLORS.g2l,
-          borderWidth: 1,
-          hoverBackgroundColor: stripe(toRGBA(SOLUTION_COLORS.g2l, 0.6)),
-        },
-        {
-          label: 'Solar',
-          data: allTs.map(t => pvMap.get(t) ?? null),
-          backgroundColor: stripe(SOLUTION_COLORS.pv2g),
-          borderColor: SOLUTION_COLORS.pv2g,
-          borderWidth: 1,
-          hoverBackgroundColor: stripe(toRGBA(SOLUTION_COLORS.pv2g, 0.6)),
-        },
-      ],
-    },
-    options: getBaseOptions({ ...axis, yTitle: 'kWh' }, {
-      ...getChartAnimations('bar', allTs.length),
-      plugins: {
-        tooltip: {
-          mode: 'index',
-          intersect: false,
-          enabled: false,
-          external: createTooltipHandler({
-            renderContent: (_idx, tooltip) => { // v8 ignore next — tooltip callback, untestable in jsdom
-              const time = tooltip.title?.[0] ?? ''; // v8 ignore next
-              let html = ttHeader(time); // v8 ignore next
-              for (const pt of (tooltip.dataPoints ?? [])) { // v8 ignore next
-                if (pt.raw == null) continue; // v8 ignore next
-                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`); // v8 ignore next
-              } // v8 ignore next
-              return html; // v8 ignore next
-            },
-          }),
-          callbacks: { title: axis.tooltipTitleCb },
-        },
-      },
-    }),
-  });
-}
-
-function renderLoadAccuracyChart(recentData) {
-  renderAccuracyCharts(
-    'load-accuracy-chart',
-    'load-accuracy-diff-chart',
-    'load-daily-net-error',
-    recentData,
-    {
-      actualLabel: 'Actual',
-      predLabel: 'Prediction',
-      actualColor: 'rgb(14, 165, 233)',
-      predColor: 'rgb(249, 115, 22)',
-      valueActual: d => d.actual,
-      valuePred: d => d.predicted,
-    }
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PV: status, metrics, charts
-// ---------------------------------------------------------------------------
-
-
-
-function renderPvAccuracyChart(recentData) {
-  renderAccuracyCharts(
-    'pv-accuracy-chart',
-    'pv-accuracy-diff-chart',
-    'pv-daily-net-error',
-    recentData,
-    {
-      actualLabel: 'Actual',
-      predLabel: 'Predicted',
-      actualColor: 'rgb(14, 165, 233)',
-      predColor: 'rgb(249, 115, 22)',
-      valueActual: d => d.actual ?? 0,
-      valuePred: d => d.predicted ?? 0,
-    }
-  );
-}
-
-function buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId) {
-  const daySpans = new Map();
-  for (let i = 0; i < timestamps.length; i++) {
-    const dateStr = new Date(timestamps[i]).toLocaleDateString('en-CA');
-    if (!daySpans.has(dateStr)) daySpans.set(dateStr, { first: i, last: i });
-    else daySpans.get(dateStr).last = i;
-  }
-  const days = [...daySpans.entries()];
-  let lastChartGeometry = null; // skip HTML rebuild when horizontal geometry hasn't changed
-
-  return {
-    id: 'dayDividers',
-    afterDraw(chart) { // v8 ignore next — Canvas2D plugin callback, untestable in jsdom
-      const { ctx, chartArea, scales } = chart; // v8 ignore next
-      if (!scales.x || !chartArea) return; // v8 ignore next
-
-      ctx.save(); // v8 ignore next — Canvas2D calls, untestable in jsdom
-      ctx.setLineDash([3, 3]); // v8 ignore next
-      ctx.strokeStyle = 'rgba(148,163,184,0.3)'; // v8 ignore next
-      ctx.lineWidth = 1; // v8 ignore next
-      ctx.font = '9px system-ui, sans-serif'; // v8 ignore next
-      ctx.fillStyle = 'rgba(148,163,184,0.5)'; // v8 ignore next
-      ctx.textAlign = 'center'; // v8 ignore next
-
-      for (let i = 0; i < days.length; i++) { // v8 ignore next
-        const [_dateStr, { first, last }] = days[i]; // v8 ignore next
-        if (i > 0) { // v8 ignore next
-          const x = scales.x.getPixelForValue(first); // v8 ignore next
-          ctx.beginPath(); // v8 ignore next
-          ctx.moveTo(x, chartArea.top); // v8 ignore next
-          ctx.lineTo(x, chartArea.bottom); // v8 ignore next
-          ctx.stroke(); // v8 ignore next
-        }
-        const midX = (scales.x.getPixelForValue(first) + scales.x.getPixelForValue(last)) / 2; // v8 ignore next
-        const dayName = new Date(timestamps[first]).toLocaleDateString('en-US', { weekday: 'short' }); // v8 ignore next
-        ctx.fillText(dayName, midX, chartArea.top + 10); // v8 ignore next
-      } // v8 ignore next
-
-      ctx.restore(); // v8 ignore next
-
-      const geometry = `${chartArea.left},${chartArea.right}`; // v8 ignore next
-      if (!netErrorContainerId || !dayNetWh || geometry === lastChartGeometry) return; // v8 ignore next
-      lastChartGeometry = geometry; // v8 ignore next
-
-      const container = document.getElementById(netErrorContainerId); // v8 ignore next
-      if (!container) return; // v8 ignore next
-
-      let html = `<div style="position:absolute;top:2px;left:${chartArea.left}px;font-size:9px;font-weight:600;letter-spacing:0.08em;color:rgba(148,163,184,0.45);text-transform:uppercase;">net error (kWh)</div>`; // v8 ignore next
-
-      for (const [dateStr, { first, last }] of days) { // v8 ignore next
-        const midX = (scales.x.getPixelForValue(first) + scales.x.getPixelForValue(last)) / 2; // v8 ignore next
-        const netKwh = (dayNetWh.get(dateStr) ?? 0) / 1000; // v8 ignore next
-        const color = netKwh >= 0 ? 'rgb(139,201,100)' : 'rgb(233,122,131)'; // v8 ignore next
-        const sign = netKwh >= 0 ? '+' : '−'; // v8 ignore next
-        html += `<div style="position:absolute;top:16px;left:${midX}px;transform:translateX(-50%);font-size:11px;font-weight:600;color:${color};white-space:nowrap">${sign}${fmtKwh(Math.abs(netKwh))}</div>`; // v8 ignore next
-      } // v8 ignore next
-
-      container.style.position = 'relative'; // v8 ignore next
-      container.style.height = '32px'; // v8 ignore next
-      container.innerHTML = html; // v8 ignore next
-      container.classList.remove('hidden'); // v8 ignore next
-    },
-  };
-}
-
-function renderAccuracyCharts(overlayCanvasId, diffCanvasId, netErrorContainerId, recentData, options, extra = {}) {
-  const overlayCanvas = document.getElementById(overlayCanvasId);
-  const diffCanvas = document.getElementById(diffCanvasId);
-  if (!overlayCanvas || !recentData || recentData.length === 0) return;
-
-  const sorted = [...recentData].sort((a, b) => a.time - b.time);
-  const axis = buildTimeAxisFromTimestamps(sorted.map(d => d.time));
-
-  const scale = extra.noKwhConversion ? 1 : 1 / 1000;
-  const yTitle = extra.yTitle || 'kWh';
-  const yTitleDiff = extra.yTitleDiff || 'kWh diff';
-
-  const timestamps = sorted.map(d => d.time);
-
-  const dayNetWh = new Map();
-  for (const d of sorted) {
-    const actual = options.valueActual(d);
-    const pred = options.valuePred(d);
-    if (actual == null || pred == null) continue;
-    const dateStr = new Date(d.time).toLocaleDateString('en-CA');
-    dayNetWh.set(dateStr, (dayNetWh.get(dateStr) ?? 0) + (pred - actual));
-  }
-
-  const dayDividersPlugin = buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId);
-  const dayDividersPluginDiff = buildDayDividersPlugin(timestamps, null, null);
-
-  // Chart 1: two clean lines, solid legend swatch (backgroundColor = line color, fill: false)
-  renderChart(overlayCanvas, {
-    type: 'line',
-    data: {
-      labels: axis.labels,
-      datasets: [
-        {
-          label: options.actualLabel,
-          data: sorted.map(d => options.valueActual(d) * scale),
-          borderColor: options.actualColor,
-          backgroundColor: options.actualColor,
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.3,
-          fill: false,
-        },
-        {
-          label: options.predLabel,
-          data: sorted.map(d => options.valuePred(d) * scale),
-          borderColor: options.predColor,
-          backgroundColor: options.predColor,
-          borderWidth: 1.5,
-          pointRadius: 0,
-          tension: 0.3,
-          fill: false,
-        },
-      ],
-    },
-    options: getBaseOptions({ ...axis, yTitle }, {
-      ...getChartAnimations('line', sorted.length),
-      plugins: {
-        tooltip: {
-          mode: 'index',
-          intersect: false,
-          enabled: false,
-          external: createTooltipHandler({
-            renderContent: (_idx, tooltip) => { // v8 ignore next — tooltip callback, untestable in jsdom
-              const time = tooltip.title?.[0] ?? ''; // v8 ignore next
-              let html = ttHeader(time); // v8 ignore next
-              for (const pt of (tooltip.dataPoints ?? [])) { // v8 ignore next
-                html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${fmtKwh(pt.raw)} kWh`); // v8 ignore next
-              } // v8 ignore next
-              return html; // v8 ignore next
-            },
-          }),
-          callbacks: { title: axis.tooltipTitleCb },
-        },
-      },
-    }),
-    plugins: [dayDividersPlugin],
-  });
-
-  // Chart 2: predicted − actual difference area, no legend
-  if (!diffCanvas) return;
-  renderChart(diffCanvas, {
-    type: 'line',
-    data: {
-      labels: axis.labels,
-      datasets: [
-        {
-          label: 'Difference (pred − actual)',
-          data: sorted.map(d => (options.valuePred(d) - options.valueActual(d)) * scale),
-          borderColor: 'rgba(100,116,139,0.6)',
-          backgroundColor: 'transparent',
-          borderWidth: 1,
-          pointRadius: 0,
-          tension: 0.3,
-          fill: { target: 'origin', above: 'rgba(139,201,100,0.45)', below: 'rgba(233,122,131,0.45)' },
-        },
-      ],
-    },
-    options: getBaseOptions({ ...axis, yTitle: yTitleDiff }, {
-      ...getChartAnimations('line', sorted.length),
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          mode: 'index',
-          intersect: false,
-          enabled: false,
-          external: createTooltipHandler({
-            renderContent: (_idx, tooltip) => { // v8 ignore next — tooltip callback, untestable in jsdom
-              const time = tooltip.title?.[0] ?? ''; // v8 ignore next
-              const pt = tooltip.dataPoints?.[0]; // v8 ignore next
-              if (!pt) return ttHeader(time); // v8 ignore next
-              const v = pt.raw; // v8 ignore next
-              const color = v >= 0 ? 'rgb(139,201,100)' : 'rgb(233,122,131)'; // v8 ignore next
-              let html = ttHeader(time); // v8 ignore next
-              html += ttDivider(); // v8 ignore next
-              html += ttRow(color, 'Pred − Actual', `${v >= 0 ? '+' : ''}${fmtKwh(Math.abs(v))} kWh`); // v8 ignore next
-              return html; // v8 ignore next
-            },
-          }),
-          callbacks: { title: axis.tooltipTitleCb },
-        },
-      },
-    }),
-    plugins: [dayDividersPluginDiff],
-  });
-}
-
-// ---------------------------------------------------------------------------
-// (Dis)Charge Adaptive Learning
-// ---------------------------------------------------------------------------
-
-async function hydrateAdaptiveLearning() {
-  // Load current settings to populate the form
-  try {
-    const settings = await fetchStoredSettings();
-    const al = settings.adaptiveLearning ?? { enabled: false, mode: 'suggest', minDataDays: 3 };
-
-    const enabledEl = document.getElementById('adaptive-enabled');
-    const modeEl = document.getElementById('adaptive-mode');
-    const minDaysEl = document.getElementById('adaptive-min-days');
-
-    if (enabledEl) enabledEl.checked = al.enabled;
-    if (modeEl) modeEl.value = al.mode || 'suggest';
-    if (minDaysEl) minDaysEl.value = al.minDataDays ?? 3;
-
-    // Wire change handlers
-    const saveAdaptive = debounce(saveAdaptiveLearning, 600);
-    for (const el of [enabledEl, modeEl, minDaysEl]) {
-      if (el) {
-        el.addEventListener('input', saveAdaptive);
-        el.addEventListener('change', saveAdaptive);
-      }
-    }
-    // Wire calibrate button
-    const calBtn = document.getElementById('adaptive-calibrate');
-    if (calBtn) {
-      calBtn.addEventListener('click', async () => {
-        const minDays = parseInt(document.getElementById('adaptive-min-days')?.value, 10) || 1;
-        calBtn.disabled = true;
-        calBtn.textContent = 'Calibrating…';
-        calBtn.classList.add('opacity-50', 'cursor-not-allowed');
-        try {
-          const result = await triggerCalibration(minDays);
-          if (result.calibration) {
-            setEl('adaptive-status-text', 'Calibrated');
-          } else {
-            setEl('adaptive-status-text', result.message || 'No result');
-          }
-          renderSocAccuracy();
-        } catch (err) {
-          setEl('adaptive-status-text', `Error: ${err.message}`);
-        } finally {
-          calBtn.disabled = false;
-          calBtn.textContent = 'Calibrate';
-          calBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('Failed to load adaptive learning settings:', err.message);
-  }
-
-  // Load accuracy data and calibration status
-  renderSocAccuracy();
-}
-
-async function saveAdaptiveLearning() {
-  const enabled = document.getElementById('adaptive-enabled')?.checked ?? false;
-  const mode = document.getElementById('adaptive-mode')?.value ?? 'suggest';
-  const minDataDays = parseInt(document.getElementById('adaptive-min-days')?.value, 10) || 3;
-
-  try {
-    await saveStoredSettings({ adaptiveLearning: { enabled, mode, minDataDays } });
-  } catch (err) {
-    console.warn('Failed to save adaptive learning settings:', err.message);
-  }
-}
-
-async function renderSocAccuracy() {
-  try {
-    const [accuracyRes, calibrationRes] = await Promise.all([
-      fetchPlanAccuracy(),
-      fetchCalibration(),
-    ]);
-
-    const report = accuracyRes?.report;
-    const calibration = calibrationRes?.calibration;
-
-    // Update sidebar calibration status
-    if (calibration) {
-      setEl('adaptive-status-text', 'Calibrated');
-      setEl('adaptive-charge-rate', `${(calibration.effectiveChargeRate * 100).toFixed(1)}%`);
-      setEl('adaptive-discharge-rate', `${(calibration.effectiveDischargeRate * 100).toFixed(1)}%`);
-      setEl('adaptive-confidence', `${(calibration.confidence * 100).toFixed(0)}%`);
-      setEl('adaptive-samples', `${calibration.sampleCount}`);
-    } else {
-      setEl('adaptive-status-text', 'Collecting data…');
-    }
-
-    if (!report && !calibration) return;
-
-    const emptyEl = document.getElementById('soc-accuracy-empty');
-    const contentEl = document.getElementById('soc-accuracy-content');
-    if (emptyEl) emptyEl.hidden = true;
-    if (contentEl) contentEl.hidden = false;
-
-    if (report && report.deviations && report.deviations.length > 0) {
-      renderSocAccuracyCharts(report);
-    }
-
-    // Chart area calibration metrics
-    if (calibration) {
-      setEl('cal-charge-rate', `${(calibration.effectiveChargeRate * 100).toFixed(1)}%`);
-      setEl('cal-discharge-rate', `${(calibration.effectiveDischargeRate * 100).toFixed(1)}%`);
-      setEl('cal-confidence', `${(calibration.confidence * 100).toFixed(0)}%`);
-      setEl('cal-slots', `${calibration.sampleCount}`);
-      renderEfficiencyCurveChart(calibration);
-    }
-
-    if (report) {
-      setEl('cal-slots', `${report.slotsCompared}`);
-    }
-  } catch (err) {
-    console.warn('Failed to load SoC accuracy:', err.message);
-  }
-}
-
-function renderSocAccuracyCharts(report) {
-  const deviations = report.deviations;
-  const _sorted = [...deviations].sort((a, b) => a.timestampMs - b.timestampMs);
-
-  renderAccuracyCharts(
-    'soc-accuracy-chart',
-    'soc-accuracy-diff-chart',
-    null,
-    deviations.map(d => ({
-      time: d.timestampMs,
-      actual: d.actualSoc_percent,
-      predicted: d.predictedSoc_percent,
-    })),
-    {
-      actualLabel: 'Actual SoC (%)',
-      predLabel: 'Predicted SoC (%)',
-      actualColor: 'rgb(14, 165, 233)',
-      predColor: 'rgb(249, 115, 22)',
-      valueActual: d => d.actual,
-      valuePred: d => d.predicted,
-    },
-    { yTitle: '%', yTitleDiff: '% diff', noKwhConversion: true },
-  );
-}
-
-/**
- * Render the prediction accuracy curve as a parabolic charge→discharge lifecycle.
- * X-axis: 0% → 100% (charge phase, left half) then 100% → 0% (discharge phase, right half).
- * Only bands with >= minSamples are shown; others are null (gaps).
- */
-function renderEfficiencyCurveChart(calibration) {
-  const canvas = document.getElementById('efficiency-curve-chart');
-  if (!canvas) return;
-
-  const { chargeCurve, dischargeCurve, chargeSamples, dischargeSamples } = calibration;
-  if (!chargeCurve || !dischargeCurve || chargeCurve.length !== 100) return;
-
-  const minSamples = 2;
-
-  // Build the parabolic x-axis: charge 0→100, then discharge 100→0
-  // Labels show SoC% with phase indicator
-  const labels = [];
-  const data = [];
-  const sampleCounts = [];
-
-  // Left half: charge phase (0% → 100%)
-  for (let soc = 0; soc <= 99; soc++) {
-    labels.push(`${soc}%`);
-    const n = chargeSamples?.[soc] ?? 0;
-    sampleCounts.push(n);
-    data.push(n >= minSamples ? chargeCurve[soc] * 100 : null);
-  }
-
-  // Right half: discharge phase (100% → 0%)
-  for (let soc = 99; soc >= 0; soc--) {
-    labels.push(`${soc}%`);
-    const n = dischargeSamples?.[soc] ?? 0;
-    sampleCounts.push(n);
-    data.push(n >= minSamples ? dischargeCurve[soc] * 100 : null);
-  }
-
-  const totalPoints = labels.length; // 200
-
-  renderChart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Prediction accuracy',
-          data,
-          borderColor: (ctx) => {
-            // Green for charge half, orange for discharge half
-            const i = ctx.p0?.parsed?.x ?? ctx.dataIndex ?? 0;
-            return i < 100 ? 'rgb(34, 197, 94)' : 'rgb(249, 115, 22)';
-          },
-          segment: {
-            borderColor: (ctx) => ctx.p0DataIndex < 100 ? 'rgb(34, 197, 94)' : 'rgb(249, 115, 22)',
-          },
-          backgroundColor: 'transparent',
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.2,
-          spanGaps: false,
-          fill: false,
-        },
-        {
-          label: 'Baseline (100%)',
-          data: new Array(totalPoints).fill(100),
-          borderColor: 'rgba(100, 116, 139, 0.3)',
-          borderWidth: 1,
-          borderDash: [4, 4],
-          pointRadius: 0,
-          fill: false,
-        },
-        {
-          label: 'SoC lifecycle',
-          data: Array.from({ length: totalPoints }, (_, i) => {
-            // Parabolic arch: 0→100 (charge half), 100→0 (discharge half)
-            const mid = totalPoints / 2; // 100
-            const normalized = i < mid ? i / mid : (totalPoints - i) / mid; // 0→1→0
-            // Scale to y-axis range: bottom of chart (50) to near top (108)
-            return 50 + normalized * 58;
-          }),
-          borderColor: 'rgba(100, 116, 139, 0.15)',
-          backgroundColor: 'rgba(100, 116, 139, 0.04)',
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.3,
-          fill: true,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          display: true,
-          labels: {
-            generateLabels: () => [
-              { text: 'Charge', fillStyle: 'rgb(34, 197, 94)', strokeStyle: 'rgb(34, 197, 94)', lineWidth: 2 },
-              { text: 'Discharge', fillStyle: 'rgb(249, 115, 22)', strokeStyle: 'rgb(249, 115, 22)', lineWidth: 2 },
-              { text: 'Baseline', fillStyle: 'transparent', strokeStyle: 'rgba(100,116,139,0.3)', lineWidth: 1, lineDash: [4, 4] },
-              { text: 'SoC lifecycle', fillStyle: 'rgba(100,116,139,0.04)', strokeStyle: 'rgba(100,116,139,0.15)', lineWidth: 2 },
-            ],
-          },
-        },
-        tooltip: {
-          callbacks: {
-            title: (items) => {
-              const i = items[0]?.dataIndex ?? 0;
-              const soc = labels[i];
-              const phase = i < 100 ? 'Charging' : 'Discharging';
-              return `${phase} @ ${soc} SoC`;
-            },
-            afterLabel: (ctx) => {
-              if (ctx.datasetIndex >= 1) return '';
-              const n = sampleCounts[ctx.dataIndex] ?? 0;
-              return `${n} sample${n !== 1 ? 's' : ''}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          title: { display: true, text: 'Charge 0→100%                              Discharge 100→0%' },
-          ticks: {
-            maxTicksLimit: 11,
-            callback: (_v, i) => {
-              if (i === 0) return '0%';
-              if (i === 99 || i === 100) return '100%';
-              if (i === totalPoints - 1) return '0%';
-              if (i < 100 && i % 20 === 0) return `${i}%`;
-              if (i > 100 && (totalPoints - 1 - i) % 20 === 0) return `${200 - 1 - i}%`;
-              return '';
-            },
-          },
-        },
-        y: {
-          title: { display: true, text: 'Prediction accuracy %' },
-          min: 50,
-          max: 110,
-        },
-      },
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Config display
-// ---------------------------------------------------------------------------
-
-function renderHistoricalConfig(historicalPredictor) {
-  if (!historicalPredictor) return; // v8 ignore next
-  setVal('pred-active-sensor', historicalPredictor.sensor ?? '');
-  setVal('pred-active-lookback', historicalPredictor.lookbackWeeks ?? '');
-  setVal('pred-active-filter', historicalPredictor.dayFilter ?? '');
-  setVal('pred-active-agg', historicalPredictor.aggregation ?? '');
-}
-
-function renderPvConfig(pvConfig) {
-  if (!pvConfig) return;
-  setVal('pred-pv-sensor', pvConfig.pvSensor ?? '');
-  setVal('pred-pv-lat', pvConfig.latitude ?? '');
-  setVal('pred-pv-lon', pvConfig.longitude ?? '');
-  setVal('pred-pv-history', pvConfig.historyDays ?? 14);
-  // @deprecated: migrate old forecastResolution to pvMode
-  const pvMode = pvConfig.pvMode ?? (pvConfig.forecastResolution === 15 ? 'hybrid' : 'hourly');
-  setVal('pred-pv-mode', pvMode);
-}
-
-
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function setComparisonStatus(msg, isError = false) {
-  const el = document.getElementById('pred-status');
-  if (!el) return;
-  el.textContent = msg;
-  el.className = isError
-    ? 'text-sm text-red-600 dark:text-red-400'
-    : 'text-sm text-ink-soft dark:text-slate-400';
+function updateStoredForecastMetrics(prefix, rawForecast, adjustedForecast) {
+  updateMetrics(prefix, { forecast: adjustedForecast ?? rawForecast, metrics: { mae: NaN } });
+  setEl(`${prefix}-summary-error`, '--');
+  updateStatus(prefix, 'Stored data loaded');
 }
 
 function setEl(id, text) {
   const el = document.getElementById(id);
   if (el) el.textContent = text;
-}
-
-function setVal(id, value) {
-  const el = document.getElementById(id);
-  if (el) el.value = value;
-}
-
-function getVal(id) {
-  return document.getElementById(id)?.value ?? '';
-}
-
-function parseSilently(str) {
-  try { return JSON.parse(str); }
-  catch { return null; }
 }

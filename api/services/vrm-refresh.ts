@@ -9,6 +9,7 @@ import { runForecast } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
 import { withRetry } from './retry.ts';
+import { recordFullSocObservation } from './rebalance-nudge.ts';
 import type { Data } from '../types.ts';
 
 function createClientFromEnv(): VRMClient {
@@ -229,7 +230,22 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     }
   }
 
-  const nextData: Data = { load, pv, importPrice, exportPrice, soc, rebalanceState: baseData.rebalanceState, evLoad };
+  let nextData: Data = {
+    load,
+    pv,
+    importPrice,
+    exportPrice,
+    soc,
+    evLoad,
+    lastFullSocAt: baseData.lastFullSocAt,
+    rebalanceState: baseData.rebalanceState,
+    predictionAdjustments: baseData.predictionAdjustments,
+  };
+
+  if (shouldFetchSoc && socPercent !== null) {
+    nextData = recordFullSocObservation(nextData);
+  }
+
   await saveData(nextData);
 
   // Optionally keep stepSize_m in settings in sync

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import request from 'supertest';
 import app from '../../api/app.ts';
+import { get } from './helpers/express-test-client.js';
 
 vi.mock('../../api/services/planner-service.ts');
 
@@ -39,13 +39,13 @@ describe('GET /ev/schedule', () => {
 
   it('returns 404 when no plan has been computed', async () => {
     getLastPlan.mockReturnValue(null);
-    const res = await request(app).get('/ev/schedule');
+    const res = await get(app, '/ev/schedule');
     expect(res.status).toBe(404);
   });
 
   it('returns planStart, slots, and summary when a plan exists', async () => {
     getLastPlan.mockReturnValue(mockPlan);
-    const res = await request(app).get('/ev/schedule');
+    const res = await get(app, '/ev/schedule');
 
     expect(res.status).toBe(200);
     expect(res.body.planStart).toBe(new Date(START_MS).toISOString());
@@ -62,7 +62,7 @@ describe('GET /ev/schedule', () => {
 
   it('includes ev_soc_percent in each slot', async () => {
     getLastPlan.mockReturnValue(mockPlan);
-    const res = await request(app).get('/ev/schedule');
+    const res = await get(app, '/ev/schedule');
     expect(res.body.slots[0].ev_soc_percent).toBe(55);
   });
 });
@@ -76,7 +76,7 @@ describe('GET /ev/current', () => {
 
   it('returns 404 when no plan has been computed', async () => {
     getLastPlan.mockReturnValue(null);
-    const res = await request(app).get('/ev/current');
+    const res = await get(app, '/ev/current');
     expect(res.status).toBe(404);
   });
 
@@ -84,7 +84,7 @@ describe('GET /ev/current', () => {
     getLastPlan.mockReturnValue(mockPlan);
     vi.setSystemTime(START_MS + 500_000); // within slot 0
 
-    const res = await request(app).get('/ev/current');
+    const res = await get(app, '/ev/current');
 
     expect(res.status).toBe(200);
     expect(res.body.timestampMs).toBe(START_MS);
@@ -96,7 +96,7 @@ describe('GET /ev/current', () => {
     getLastPlan.mockReturnValue(mockPlan);
     vi.setSystemTime(START_MS + 1_900_000); // past slot 2
 
-    const res = await request(app).get('/ev/current');
+    const res = await get(app, '/ev/current');
 
     expect(res.body.timestampMs).toBe(START_MS + 1_800_000);
     expect(res.body.is_charging).toBe(false);
@@ -106,7 +106,7 @@ describe('GET /ev/current', () => {
     getLastPlan.mockReturnValue(mockPlan);
     vi.setSystemTime(START_MS - 10_000); // before all slots
 
-    const res = await request(app).get('/ev/current');
+    const res = await get(app, '/ev/current');
 
     expect(res.body.timestampMs).toBe(START_MS);
   });

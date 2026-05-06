@@ -6,13 +6,19 @@ export function getElements() {
     run: $("#run"),
     updateDataBeforeRun: $("#update-data-before-run"),
     pushToVictron: $("#push-to-victron"),
+    optimizerQuickSettingsSection: $("#optimizer-quick-settings"),
+    optimizerQuickSettingsBody: $("#optimizer-quick-settings-body"),
+    optimizerQuickSettingsSelection: $("#optimizer-quick-settings-selection"),
     sourcePrices: $("#source-prices"),
     sourceLoad: $("#source-load"),
     sourcePv: $("#source-pv"),
     sourceSoc: $("#source-soc"),
     sourceEvLoad: $("#source-ev-load"),
+    rebalanceToggleLabel: $("#rebalance-toggle-label"),
     rebalanceEnabled: $("#rebalance-enabled"),
+    rebalanceNudge: $("#rebalance-nudge"),
     rebalanceHoldHours: $("#rebalance-hold-hours"),
+    blockFeedInOnNegativePrices: $("#block-feedin-negative-prices"),
 
     // numeric inputs
     step: $("#step"),
@@ -40,6 +46,7 @@ export function getElements() {
     prices: $("#prices"),
     loadpv: $("#loadpv"),
     table: $("#table"),
+    tableDess: $("#table-dess"),
     tableKwh: $("#table-kwh"),
     tableUnit: $("#table-unit"),
     status: $("#status"),
@@ -53,6 +60,7 @@ export function getElements() {
     sumLoadBatt: $("#sum-load-batt-kwh"),
     sumLoadPv: $("#sum-load-pv-kwh"),
     avgImport: $("#avg-import-cent"),
+    netCost: $("#net-cost-cent"),
     gridBatteryTp: $("#tipping-point-cent"),
     gridChargeTp: $("#grid-charge-point-cent"),
     batteryExportTp: $("#export-point-cent"),
@@ -175,15 +183,13 @@ export function getElements() {
   };
 }
 
-export function wireGlobalInputs(els, { onInput, onSave = onInput, onRun, updateTerminalCustomUI }) {
-  // Auto-save whenever anything changes (except table toggler and run options).
-  // Inputs with data-no-autosolve save settings but do not trigger an auto-solve.
-  for (const el of document.querySelectorAll("input, select, textarea")) {
-    if (el === els.tableKwh) continue;
-    if (el === els.updateDataBeforeRun) continue; // Checkbox doesn't trigger auto-save
-    if (el === els.pushToVictron) continue; // Checkbox doesn't trigger auto-save
-    if (el.dataset.predictionsOnly) continue; // Predictions tab inputs handled separately
-    // v8 ignore next — null path of ternary (onInput always used in tests) is untestable
+export function wireGlobalInputs(
+  els,
+  { onInput, onSave = onInput, onRun, onTableDisplayChange = onRun, updateTerminalCustomUI }
+) {
+  // Auto-save only settings-owned controls.
+  for (const el of document.querySelectorAll("[data-settings-input]")) {
+    if (el.dataset.optimizerQuickMirror) continue; // Mirrors dispatch changes through their source input
     const handler = el.hasAttribute('data-no-autosolve') ? onSave : onInput;
     el.addEventListener("input", handler);
     el.addEventListener("change", handler);
@@ -195,8 +201,9 @@ export function wireGlobalInputs(els, { onInput, onSave = onInput, onRun, update
   // Manual recompute
   els.run?.addEventListener("click", onRun);
 
-  // Units toggle recompute
-  els.tableKwh?.addEventListener("change", onRun);
+  // Table display toggles
+  els.tableKwh?.addEventListener("change", onTableDisplayChange);
+  els.tableDess?.addEventListener("change", onTableDisplayChange);
 
   // Keyboard shortcut: Ctrl+Enter (or Cmd+Enter) to Recompute
   document.addEventListener("keydown", (e) => {
