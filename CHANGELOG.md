@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.19 - 2026-05-06
+
+- Restore the optimizer Power Flows 15m/1h toggle (`#flows-15m`). The upstream merge in 0.7.18 silently dropped the change listener and the underlying `aggregateRows` helper, leaving the checkbox in the UI but inert. The toggle now re-renders the flows chart in place: unchecked = hourly aggregation (default), checked = native 15-min slots. Tooltip and price-strip overlays receive the aggregated rows so indices line up with the bars.
+
 ## 0.7.18 - 2026-05-06
 
 - Vendor browser dependencies locally so the UI works behind reverse proxies that inject a strict `Content-Security-Policy`. Tailwind Play CDN, Chart.js v4 UMD, and patternomaly v1.3.2 now ship from `app/vendor/`; Outfit and JetBrains Mono are self-hosted under `app/vendor/fonts/` (latin + latin-ext subsets) with a generated `fonts.css`. Removes runtime dependency on `cdn.tailwindcss.com`, `cdn.jsdelivr.net`, `fonts.googleapis.com`, and `fonts.gstatic.com` — the add-on is now fully offline-capable.

@@ -31,6 +31,7 @@ function setupController() {
     evEnabled: checkbox(true),
     evTargetSoc: input('80'),
     flows: document.createElement('canvas'),
+    flows15m: checkbox(false),
     loadpv: document.createElement('canvas'),
     prices: document.createElement('canvas'),
     pushToVictron: checkbox(false),
@@ -120,6 +121,7 @@ describe('optimizer controller', () => {
       30,
       rebalanceWindow,
       tableArgs.evSettings,
+      60,
     );
     expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, tableArgs.evSettings);
     expect(services.drawPricesStepLines).toHaveBeenCalledWith(els.prices, rows, 30);
@@ -144,5 +146,30 @@ describe('optimizer controller', () => {
     expect(services.renderTable).toHaveBeenCalledTimes(1);
     expect(services.renderTable.mock.calls[0][0].showKwh).toBe(false);
     expect(services.saveConfig).toHaveBeenCalledWith({ tableShowKwh: false });
+  });
+
+  it('passes aggregateMinutes=null when flows-15m is checked, 60 when unchecked', async () => {
+    const { controller, els, rebalanceWindow, rows, services } = setupController();
+    els.flows15m.checked = true;
+    await controller.onRun();
+
+    expect(services.drawFlowsBarStackSigned).toHaveBeenLastCalledWith(
+      els.flows, rows, 30, rebalanceWindow, expect.any(Object), null,
+    );
+
+    services.drawFlowsBarStackSigned.mockClear();
+    els.flows15m.checked = false;
+    controller.onFlowsAggregationChange();
+
+    expect(services.drawFlowsBarStackSigned).toHaveBeenCalledTimes(1);
+    expect(services.drawFlowsBarStackSigned).toHaveBeenLastCalledWith(
+      els.flows, rows, 30, rebalanceWindow, expect.any(Object), 60,
+    );
+  });
+
+  it('onFlowsAggregationChange is a no-op before the first solve', () => {
+    const { controller, services } = setupController();
+    controller.onFlowsAggregationChange();
+    expect(services.drawFlowsBarStackSigned).not.toHaveBeenCalled();
   });
 });

@@ -42,6 +42,7 @@ export function getElements() {
 
     // charts + status
     flows: $("#flows"),
+    flows15m: $("#flows-15m"),
     soc: $("#soc"),
     prices: $("#prices"),
     loadpv: $("#loadpv"),
@@ -185,7 +186,14 @@ export function getElements() {
 
 export function wireGlobalInputs(
   els,
-  { onInput, onSave = onInput, onRun, onTableDisplayChange = onRun, updateTerminalCustomUI }
+  {
+    onInput,
+    onSave = onInput,
+    onRun,
+    onTableDisplayChange = onRun,
+    onFlowsAggregationChange,
+    updateTerminalCustomUI,
+  }
 ) {
   // Auto-save only settings-owned controls.
   for (const el of document.querySelectorAll("[data-settings-input]")) {
@@ -204,6 +212,10 @@ export function wireGlobalInputs(
   // Table display toggles
   els.tableKwh?.addEventListener("change", onTableDisplayChange);
   els.tableDess?.addEventListener("change", onTableDisplayChange);
+
+  if (onFlowsAggregationChange) {
+    els.flows15m?.addEventListener("change", onFlowsAggregationChange);
+  }
 
   // Keyboard shortcut: Ctrl+Enter (or Cmd+Enter) to Recompute
   document.addEventListener("keydown", (e) => {

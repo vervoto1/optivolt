@@ -38,6 +38,7 @@ export function createOptimizerController({ els, services = {} }) {
 
   let lastTableRows = [];
   let lastTableRebalanceWindow = null;
+  let lastFlowsRenderData = null;
 
   const debounceRun = deps.debounce(onRun, 250);
   const persistConfigDebounced = deps.debounce((cfg) => {
@@ -125,11 +126,26 @@ export function createOptimizerController({ els, services = {} }) {
     return true;
   }
 
+  function flowsAggregateMinutes() {
+    return els.flows15m?.checked ? null : 60;
+  }
+
   function renderAllCharts(rows, cfg, rebalanceWindow = null, evSettings = null) {
-    deps.drawFlowsBarStackSigned(els.flows, rows, cfg.stepSize_m, rebalanceWindow, evSettings);
+    lastFlowsRenderData = { rows, cfg, rebalanceWindow, evSettings };
+    deps.drawFlowsBarStackSigned(
+      els.flows, rows, cfg.stepSize_m, rebalanceWindow, evSettings, flowsAggregateMinutes(),
+    );
     deps.drawSocChart(els.soc, rows, cfg.stepSize_m, evSettings);
     deps.drawPricesStepLines(els.prices, rows, cfg.stepSize_m);
     deps.drawLoadPvGrouped(els.loadpv, rows, cfg.stepSize_m);
+  }
+
+  function onFlowsAggregationChange() {
+    if (!lastFlowsRenderData) return;
+    const { rows, cfg, rebalanceWindow, evSettings } = lastFlowsRenderData;
+    deps.drawFlowsBarStackSigned(
+      els.flows, rows, cfg.stepSize_m, rebalanceWindow, evSettings, flowsAggregateMinutes(),
+    );
   }
 
   async function persistConfig(cfg = deps.snapshotUI(els)) {
@@ -183,6 +199,7 @@ export function createOptimizerController({ els, services = {} }) {
 
   return {
     debounceRun,
+    onFlowsAggregationChange,
     onRun,
     onTableDisplayChange,
     persistConfig,

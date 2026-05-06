@@ -62,11 +62,15 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
   });
 }
 
-export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, evSettings = null) {
-  const timestampsMs = rows.map(r => r.timestampMs);
+export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, evSettings = null, aggregateMinutes = null) {
+  const shouldAggregate = aggregateMinutes && aggregateMinutes > stepSize_m;
+  const effectiveRows = shouldAggregate ? aggregateRows(rows, stepSize_m, aggregateMinutes) : rows;
+  const effectiveStep = shouldAggregate ? aggregateMinutes : stepSize_m;
+
+  const timestampsMs = effectiveRows.map(r => r.timestampMs);
   const axis = buildTimeAxisFromTimestamps(timestampsMs);
 
-  const h = Math.max(0.000001, Number(stepSize_m) / 60);
+  const h = Math.max(0.000001, Number(effectiveStep) / 60);
   const W2kWh = (x) => (x || 0) * h / 1000;
 
   const stackId = "flows";
@@ -86,13 +90,13 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   ];
 
   const nonZeroKeys = new Set();
-  for (const r of rows) for (const { key } of flowSpecs) if ((r[key] || 0) !== 0) nonZeroKeys.add(key);
+  for (const r of effectiveRows) for (const { key } of flowSpecs) if ((r[key] || 0) !== 0) nonZeroKeys.add(key);
   const datasets = flowSpecs
     .filter(spec => nonZeroKeys.has(spec.key))
     .map(spec =>
       dsBar(
         spec.label,
-        rows.map(r => spec.sign * Math.abs(W2kWh(r[spec.key]))),
+        effectiveRows.map(r => spec.sign * Math.abs(W2kWh(r[spec.key]))),
         spec.color,
         stackId
       )
@@ -101,12 +105,12 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   const plugins = rebalanceWindow
     ? [makeRebalancingPlugin(rebalanceWindow.startIdx, rebalanceWindow.endIdx)]
     : [];
-  const buyPriceStripPlugin = makeBuyPriceStripPlugin(rows);
+  const buyPriceStripPlugin = makeBuyPriceStripPlugin(effectiveRows);
   if (buyPriceStripPlugin) plugins.push(buyPriceStripPlugin);
-  const negativeInjectionPlugin = makeNegativePriceInjectionPlugin(rows, h);
+  const negativeInjectionPlugin = makeNegativePriceInjectionPlugin(effectiveRows, h);
   if (negativeInjectionPlugin) plugins.push(negativeInjectionPlugin);
   const depPlugin = evSettings?.departureTime
-    ? makeEvDeparturePlugin(rows, evSettings.departureTime)
+    ? makeEvDeparturePlugin(effectiveRows, evSettings.departureTime)
     : null;
   if (depPlugin) plugins.push(depPlugin);
 
@@ -114,13 +118,13 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
     type: "bar",
     data: { labels: axis.labels, datasets },
     options: getBaseOptions({ ...axis, yTitle: "kWh", stacked: true }, {
-      ...getChartAnimations('bar', rows.length),
+      ...getChartAnimations('bar', effectiveRows.length),
       plugins: {
         tooltip: {
           mode: "index",
           intersect: false,
           enabled: false,
-          external: makeFlowsTooltip(rows, flowSpecs, h),
+          external: makeFlowsTooltip(effectiveRows, flowSpecs, h),
           callbacks: { title: axis.tooltipTitleCb },
         }
       },
@@ -133,6 +137,42 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
     }),
     plugins,
   });
+}
+
+// Aggregate plan rows into larger time buckets (e.g. 15-min slots → 1-hour bars).
+// Power flows (W) are averaged across the bucket so kWh = avg_W * hours stays correct.
+// Prices and SoC are averaged / taken end-of-bucket so the tooltip still reflects the slot.
+function aggregateRows(rows, inputStep_m, targetStep_m) {
+  const targetStepMs = targetStep_m * 60_000;
+  const buckets = new Map();
+
+  for (const r of rows) {
+    const bucketTs = Math.floor(r.timestampMs / targetStepMs) * targetStepMs;
+    if (!buckets.has(bucketTs)) buckets.set(bucketTs, []);
+    buckets.get(bucketTs).push(r);
+  }
+
+  const avgKeys = [
+    'g2l', 'g2b', 'g2ev',
+    'pv2l', 'pv2b', 'pv2g', 'pv2ev', 'pvCurtail',
+    'b2l', 'b2g', 'b2ev',
+    'load', 'pv', 'imp', 'exp', 'evLoad',
+    'ic', 'ec',
+  ];
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([ts, group]) => {
+      const agg = { timestampMs: ts };
+      for (const k of avgKeys) {
+        agg[k] = group.reduce((sum, r) => sum + (r[k] ?? 0), 0) / group.length;
+      }
+      const last = group[group.length - 1];
+      agg.soc = last.soc;
+      agg.soc_percent = last.soc_percent;
+      agg.ev_soc_percent = last.ev_soc_percent;
+      return agg;
+    });
 }
 
 export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null) {
