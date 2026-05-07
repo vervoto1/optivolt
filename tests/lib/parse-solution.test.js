@@ -2,12 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { parseSolution } from '../../lib/parse-solution.ts';
 
 describe('parseSolution', () => {
+  // η_inv = 100 keeps the legacy lossless behavior so the numeric assertions
+  // below ("rows[0].pv2l === 100", "exportCost_cents === 2.5") match without
+  // accounting for AC↔DC inverter loss. Tests that exercise the inverter
+  // efficiency path live in build-lp-inverter-efficiency.test.js.
   const cfg = {
     load_W: [500, 600],
     pv_W: [100, 0],
     importPrice: [10, 20],
     exportPrice: [5, 5],
     batteryCapacity_Wh: 1000,
+    inverterEfficiency_percent: 100,
   };
 
   const opts = {
@@ -115,6 +120,7 @@ describe('parseSolution', () => {
     const cfgWithSignedExport = {
       ...cfg,
       exportPrice: [5, -2],
+      inverterEfficiency_percent: 100,
     };
 
     const rows = parseSolution(result, cfgWithSignedExport, opts);

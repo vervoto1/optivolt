@@ -30,7 +30,10 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   // emitted as DC W; downstream consumers (plan-summary, plan-accuracy, DESS
   // mapper, UI) expect AC-side numbers matching the AC meter VRM reports.
   // Apply η_inv once here at the LP→PlanRow boundary for those flows.
-  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
+  // Default MUST match buildLP's signature default (95) — otherwise callers
+  // who omit the field get the LP built with 95% loss and AC reported with
+  // 100%, over-stating exports by ~5%.
+  const eta_inv = (cfg.inverterEfficiency_percent ?? 95) / 100;
 
   // --- 1. Reconstruct solver columns into per-slot arrays ---
   const g2l = Array(T).fill(0);

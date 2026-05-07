@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.21 - 2026-05-07
+
+- **Fix:** Auto-split migration silently skipped for pre-v0.7.20 settings files. `loadSettings()` spreads `default-settings.json` (which now includes `inverterEfficiency_percent: 95`) before merging the user's stored settings, so the migration's "already migrated" check fired for every legacy file and the auto-split never ran. Result was effective grid→battery efficiency of 0.9025 (η_inv·η_bc) for users with legacy 95/95 instead of the intended ~0.95. Now `loadSettings` detects whether the user's raw `settings.json` had the field before the merge and strips it from defaults if not, forcing the migration to back-derive sensible values.
+- **Fix:** `parseSolution` defaulted to η_inv=100% when the field was missing, but `buildLP` defaults to 95%. Callers passing partial configs got the LP built with 5% inverter loss while the AC-side reporting (export, load served) ran lossless — over-stating exports and revenue by ~5%. `parseSolution` now defaults to 95 to match. Existing `parse-solution.test.js` fixtures opt into the legacy lossless path explicitly with `inverterEfficiency_percent: 100`.
+- **Fix:** `findHighestGridUsageCost` (DESS tipping-point helper) compared AC-reported `b2l + b2ev` against the DC `maxDischargePower_W` cap. A slot at the DC discharge limit (e.g. 4000 W DC = 3800 W AC at η_inv=95%) was mis-classified as unconstrained, so its high import price could falsely set `gridBatteryTp`, causing the DESS V2 mapper to choose grid-for-load too broadly. Now converts AC back to DC for the comparison.
+- **UI:** Renamed "Charge efficiency (%)" → "Battery Charge efficiency (%)" and "Discharge efficiency (%)" → "Battery Discharge efficiency (%)" to match the v0.7.20 semantic shift (these now represent battery-only losses; inverter conversion lives in its own field above).
+- 2 new tests covering the legacy-file migration path. All 1432 tests pass.
+
 ## 0.7.20 - 2026-05-07
 
 - Split inverter conversion losses out of the lumped charge/discharge efficiency. The LP previously applied `chargeEfficiency_percent` identically to `pv_to_battery` (DC→DC, no inverter) and `grid_to_battery` (AC→DC→battery), and applied **no** loss factor to `pv_to_grid` (DC→AC export). With prices like 26 c€ export now / 25.8 c€ import later, that math booked a tiny arbitrage profit for round-tripping solar through the grid — physically a loss because each AC↔DC crossing eats ~5%. New model:

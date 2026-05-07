@@ -228,8 +228,22 @@ function aggregateSegmentPrice(
  * Within the given segment, we look for grid→load flows and keep track of the highest price observed during these flows.
  */
 function findHighestGridUsageCost(rows: PlanRow[], segment: Segment | null, cfg: SolverConfig): number {
+  // maxDischargePower_W is the DC cap at the battery; PlanRow b2l/b2ev are AC
+  // (post-η_inv from parseSolution). Convert AC back to DC for the saturation check
+  // so a slot at the DC discharge cap isn't mis-classified as unconstrained.
+  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
   const maxDischarge = cfg.maxDischargePower_W - FLOW_EPSILON_W;
-  return aggregateSegmentPrice(rows, segment, r => r.g2l > FLOW_EPSILON_W && r.b2l + (r.b2ev ?? 0) < maxDischarge, r => r.ic, 'max');
+  return aggregateSegmentPrice(
+    rows,
+    segment,
+    r => {
+      if (r.g2l <= FLOW_EPSILON_W) return false;
+      const dischargePower_DC = eta_inv > 0 ? (r.b2l + (r.b2ev ?? 0)) / eta_inv : 0;
+      return dischargePower_DC < maxDischarge;
+    },
+    r => r.ic,
+    'max',
+  );
 }
 
 /**

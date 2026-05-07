@@ -90,6 +90,40 @@ describe('loadSettings', () => {
     expect(settings.dataSources.load).toBe('vrm');
   });
 
+  it('triggers auto-split migration when stored settings.json predates inverterEfficiency_percent', async () => {
+    // Pre-v0.7.20 settings.json has chargeEff/dischargeEff but lacks inverterEfficiency_percent.
+    // Defaults add it during merge, but the migration must still fire because the user's
+    // stored intent was the legacy combined value.
+    _set(getDefaultPath(), makeDefaults());
+    _set('/tmp/test-data/settings.json', {
+      chargeEfficiency_percent: 90,
+      dischargeEfficiency_percent: 90,
+      // inverterEfficiency_percent intentionally omitted — this is the legacy file shape
+    });
+
+    const settings = await loadSettings();
+    // After auto-split: inverter ≈ sqrt(0.90), battery ≈ 90/sqrt(0.90).
+    // sqrt(0.90) ≈ 0.9487 → 95 (rounded). 0.90/0.9487 ≈ 0.9487 → 95.
+    expect(settings.inverterEfficiency_percent).toBe(95);
+    expect(settings.chargeEfficiency_percent).toBe(95);
+    expect(settings.dischargeEfficiency_percent).toBe(95);
+  });
+
+  it('preserves user-set inverterEfficiency_percent and does not re-migrate', async () => {
+    _set(getDefaultPath(), makeDefaults());
+    _set('/tmp/test-data/settings.json', {
+      chargeEfficiency_percent: 90,
+      dischargeEfficiency_percent: 90,
+      inverterEfficiency_percent: 92,
+    });
+
+    const settings = await loadSettings();
+    // User explicitly set 92 — stays 92, no auto-split.
+    expect(settings.inverterEfficiency_percent).toBe(92);
+    expect(settings.chargeEfficiency_percent).toBe(90);
+    expect(settings.dischargeEfficiency_percent).toBe(90);
+  });
+
   it('throws when stored settings file has a non-ENOENT error', async () => {
     _set(getDefaultPath(), makeDefaults());
     // First call returns defaults, second (settings.json) throws EPERM

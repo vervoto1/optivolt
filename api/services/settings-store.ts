@@ -16,6 +16,12 @@ export async function loadSettings(): Promise<Settings> {
   const defaults = await readJson<Settings>(DEFAULT_PATH);
   try {
     const settings = await readJson<Partial<Settings>>(SETTINGS_PATH);
+    // Detect pre-v0.7.20 settings before the defaults merge: if the user's
+    // raw settings.json lacks inverterEfficiency_percent, force the migration
+    // to fire by stripping the field from defaults below. Without this,
+    // {...defaults, ...settings} hands normalizeSettings a value of 95 from
+    // the defaults file and the auto-split is silently skipped.
+    const userHadInverterEff = settings != null && Object.prototype.hasOwnProperty.call(settings, 'inverterEfficiency_percent');
     const mergedDataSources = { ...defaults.dataSources, ...settings.dataSources };
     const mergedShoreOptimizer = (defaults.shoreOptimizer || settings.shoreOptimizer)
       ? {
@@ -30,13 +36,20 @@ export async function loadSettings(): Promise<Settings> {
           ...(settings.pvCurtailment ?? {}),
         } as Settings['pvCurtailment']
       : undefined;
-    return normalizeSettings({
+    const merged = {
       ...defaults,
       ...settings,
       dataSources: mergedDataSources,
       ...(mergedShoreOptimizer ? { shoreOptimizer: mergedShoreOptimizer } : {}),
       ...(mergedPvCurtailment ? { pvCurtailment: mergedPvCurtailment } : {}),
-    });
+    };
+    // Strip the field from the merged object so the auto-split migration
+    // in normalizeSettings sees a missing inverterEfficiency_percent and
+    // back-derives a sensible split from the user's legacy chargeEff/dischargeEff.
+    if (!userHadInverterEff) {
+      delete (merged as Partial<Settings>).inverterEfficiency_percent;
+    }
+    return normalizeSettings(merged);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     return normalizeSettings(defaults);
