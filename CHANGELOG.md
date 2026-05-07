@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.20 - 2026-05-07
+
+- Split inverter conversion losses out of the lumped charge/discharge efficiency. The LP previously applied `chargeEfficiency_percent` identically to `pv_to_battery` (DC→DC, no inverter) and `grid_to_battery` (AC→DC→battery), and applied **no** loss factor to `pv_to_grid` (DC→AC export). With prices like 26 c€ export now / 25.8 c€ import later, that math booked a tiny arbitrage profit for round-tripping solar through the grid — physically a loss because each AC↔DC crossing eats ~5%. New model:
+  - New setting `inverterEfficiency_percent` (default 95) applied to every AC↔DC crossing: `pv_to_grid`, `pv_to_load`, `pv_to_ev`, `battery_to_load`, `battery_to_grid`, `battery_to_ev` (all DC→AC) and `grid_to_battery` (AC→DC).
+  - `chargeEfficiency_percent` and `dischargeEfficiency_percent` now mean **battery only** (DC→stored and stored→DC bus).
+  - LP flow variables now carry their natural source unit: `pv_to_*` are DC W from the PV bus, `grid_to_*` are AC W from grid, `battery_to_*` are DC W on the battery bus. AC↔DC factors are explicit in every constraint. ASCII diagram at the top of `lib/build-lp.ts` documents the conventions.
+  - `parse-solution.ts` applies η_inv at the LP→PlanRow boundary so downstream consumers (UI, plan summary, DESS mapper, plan accuracy) keep reading AC-meter-equivalent values.
+  - `dess-mapper.ts` saturation checks now compare DC battery flows against the DC `maxChargePower_W` / `maxDischargePower_W` correctly (previously mixed AC and DC).
+  - Auto-split migration: existing `settings.json` files lacking `inverterEfficiency_percent` get a one-time migration. The legacy single combined value is split as `inverter = sqrt(max(legacy))`, with battery factors rescaled so the combined grid→battery / battery-export round-trip approximately matches old behavior. Default 95/95 → 97/97/97.
+  - New setting appears in the UI immediately above charge/discharge efficiency on the System tab; also available in optimizer quick settings.
+  - Added regression test for the user's exact scenario (PV at 26 c€, import at 25.8 c€): solver now correctly prefers `pv→battery` direct over the round trip when the spread is below the new ~10% physical round-trip loss threshold.
+  - 15 new unit tests covering the η_inv physics on every flow path. All 1430 tests pass.
+
 ## 0.7.19 - 2026-05-06
 
 - Restore the optimizer Power Flows 15m/1h toggle (`#flows-15m`). The upstream merge in 0.7.18 silently dropped the change listener and the underlying `aggregateRows` helper, leaving the checkbox in the UI but inert. The toggle now re-renders the flows chart in place: unchecked = hourly aggregation (default), checked = native 15-min slots. Tooltip and price-strip overlays receive the aggregated rows so indices line up with the bars.

@@ -34,6 +34,7 @@ export interface Settings {
   maxGridExport_W: number;
   chargeEfficiency_percent: number;
   dischargeEfficiency_percent: number;
+  inverterEfficiency_percent: number;
   batteryCost_cent_per_kWh: number;
   idleDrain_W: number;
   blockFeedInOnNegativePrices: boolean;
@@ -206,6 +207,7 @@ export interface PlanSnapshotSlot {
 export interface PlanSnapshotConfig {
   chargeEfficiency_percent: number;
   dischargeEfficiency_percent: number;
+  inverterEfficiency_percent: number;
   maxChargePower_W: number;
   maxDischargePower_W: number;
   batteryCapacity_Wh: number;

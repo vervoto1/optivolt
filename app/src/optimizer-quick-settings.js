@@ -7,6 +7,7 @@ export const QUICK_SETTING_DEFS = [
   { id: "maxDischargePower_W", selector: "#pdis", label: "Max discharge (W)", kind: "number" },
   { id: "maxGridImport_W", selector: "#gimp", label: "Max grid import (W)", kind: "number" },
   { id: "maxGridExport_W", selector: "#gexp", label: "Max grid export (W)", kind: "number" },
+  { id: "inverterEfficiency_percent", selector: "#etaInv", label: "Inverter efficiency (%)", kind: "number" },
   { id: "chargeEfficiency_percent", selector: "#etaC", label: "Charge efficiency (%)", kind: "number" },
   { id: "dischargeEfficiency_percent", selector: "#etaD", label: "Discharge efficiency (%)", kind: "number" },
   { id: "stepSize_m", selector: "#step", label: "Step (min)", kind: "number" },

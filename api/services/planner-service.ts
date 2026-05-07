@@ -337,6 +337,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     config: {
       chargeEfficiency_percent: cfg.chargeEfficiency_percent,
       dischargeEfficiency_percent: cfg.dischargeEfficiency_percent,
+      inverterEfficiency_percent: cfg.inverterEfficiency_percent,
       maxChargePower_W: cfg.maxChargePower_W,
       maxDischargePower_W: cfg.maxDischargePower_W,
       batteryCapacity_Wh: cfg.batteryCapacity_Wh,

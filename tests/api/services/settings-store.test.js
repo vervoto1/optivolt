@@ -36,6 +36,7 @@ function makeDefaults(overrides = {}) {
     maxGridExport_W: 5000,
     chargeEfficiency_percent: 95,
     dischargeEfficiency_percent: 95,
+    inverterEfficiency_percent: 95,
     batteryCost_cent_per_kWh: 0,
     idleDrain_W: 0,
     terminalSocCustomPrice_cents_per_kWh: 0,

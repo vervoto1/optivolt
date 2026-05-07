@@ -35,9 +35,40 @@ const NUMERIC_FIELDS: (keyof Settings)[] = [
   'stepSize_m', 'batteryCapacity_Wh', 'minSoc_percent', 'maxSoc_percent',
   'maxChargePower_W', 'maxDischargePower_W',
   'maxGridImport_W', 'maxGridExport_W', 'chargeEfficiency_percent',
-  'dischargeEfficiency_percent', 'batteryCost_cent_per_kWh', 'idleDrain_W',
+  'dischargeEfficiency_percent', 'inverterEfficiency_percent',
+  'batteryCost_cent_per_kWh', 'idleDrain_W',
   'terminalSocCustomPrice_cents_per_kWh', 'rebalanceHoldHours',
 ];
+
+/**
+ * Pre-v0.7.20 settings did not have inverterEfficiency_percent.
+ * The legacy chargeEfficiency_percent / dischargeEfficiency_percent values
+ * were applied as a single lumped factor, which silently bundled the
+ * inverter's DC↔AC conversion into the battery efficiency. The new model
+ * splits them. To preserve the user's existing combined grid→battery /
+ * battery-export round-trip behavior we back out an inverter value that,
+ * times the (rescaled) battery efficiency, equals the legacy combined value.
+ *
+ * For default-equal settings (e.g. 95/95) this gives ~97.47/97.47/97.47.
+ * For asymmetric legacy values we anchor the inverter at sqrt(max(legacy))
+ * so neither battery efficiency exceeds 100%.
+ */
+function autoSplitLegacyEfficiency(settings: Settings): void {
+  // Already migrated — leave alone.
+  if (Number.isFinite(settings.inverterEfficiency_percent)) return;
+
+  const legacy_charge = Number.isFinite(settings.chargeEfficiency_percent)
+    ? Math.max(0.01, Math.min(100, settings.chargeEfficiency_percent)) / 100
+    : 0.95;
+  const legacy_discharge = Number.isFinite(settings.dischargeEfficiency_percent)
+    ? Math.max(0.01, Math.min(100, settings.dischargeEfficiency_percent)) / 100
+    : 0.95;
+  const anchor = Math.max(legacy_charge, legacy_discharge);
+  const inverter = Math.sqrt(anchor);
+  settings.inverterEfficiency_percent = Math.max(1, Math.min(100, Math.round(inverter * 100)));
+  settings.chargeEfficiency_percent = Math.max(1, Math.min(100, Math.round((legacy_charge / inverter) * 100)));
+  settings.dischargeEfficiency_percent = Math.max(1, Math.min(100, Math.round((legacy_discharge / inverter) * 100)));
+}
 
 function isObject(value: unknown): value is JsonRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -127,6 +158,10 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
 export function normalizeSettings(settings: Settings): Settings {
   const normalized: Settings = { ...settings };
 
+  // Migrate pre-v0.7.20 settings that lack inverterEfficiency_percent.
+  // Must run before NUMERIC_FIELDS validation, which would otherwise reject undefined.
+  autoSplitLegacyEfficiency(normalized);
+
   for (const field of NUMERIC_FIELDS) {
     normalized[field] = expectFiniteNumber(normalized[field], field) as never;
   }
@@ -142,6 +177,7 @@ export function normalizeSettings(settings: Settings): Settings {
   normalized.rebalanceHoldHours = Math.max(0, normalized.rebalanceHoldHours);
   normalized.chargeEfficiency_percent = normalizeSocPercent(normalized.chargeEfficiency_percent);
   normalized.dischargeEfficiency_percent = normalizeSocPercent(normalized.dischargeEfficiency_percent);
+  normalized.inverterEfficiency_percent = normalizeSocPercent(normalized.inverterEfficiency_percent);
   normalized.minSoc_percent = normalizeSocPercent(normalized.minSoc_percent);
   normalized.maxSoc_percent = normalizeSocPercent(normalized.maxSoc_percent);
 

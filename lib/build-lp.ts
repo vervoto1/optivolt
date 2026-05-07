@@ -1,9 +1,41 @@
 import type { SolverConfig, TerminalSocValuation } from './types.ts';
 
+/*
+ * LP unit conventions
+ * ───────────────────
+ * Each flow variable carries its physical power in its NATURAL unit:
+ *
+ *                ┌────────── DC bus ──────────┐
+ *                │                            │
+ *   pv_W ──────► pv_to_load    ──η_inv──►  AC load
+ *   (DC)         pv_to_grid    ──η_inv──►  AC grid (export)
+ *                pv_to_battery (no inv)──►  battery (charge)
+ *                pv_to_ev      ──η_inv──►  AC EV charger
+ *                pv_curtail    (discarded)
+ *
+ *   AC grid ───► grid_to_load                   (no conversion)
+ *   AC grid ──η_inv──► grid_to_battery        ──► battery (charge)
+ *   AC grid ───► grid_to_ev                     (no inverter; EV charger is AC-input)
+ *
+ *   battery ──► battery_to_load   ──η_inv──►  AC load
+ *   battery ──► battery_to_grid   ──η_inv──►  AC grid (export)
+ *   battery ──► battery_to_ev     ──η_inv──►  AC EV charger
+ *
+ * pv_to_X and battery_to_X are DC W; grid_to_X is AC W. AC↔DC crossings
+ * carry an explicit η_inv (= inverterEfficiency_percent / 100) factor.
+ *
+ * Battery charge efficiency η_bc applies on top of η_inv when charging from grid.
+ * Battery discharge efficiency η_bd applies once when draining storage; the
+ * inverter loss to AC is in η_inv on the consuming side.
+ *
+ * EV onboard charger is AC-input, so its η_ev applies after η_inv on
+ * pv_to_ev and battery_to_ev (both go DC→AC→DC), and alone on grid_to_ev.
+ */
+
 export function buildLP({
   // time series data of length T
-  load_W, // expected house load in W
-  pv_W, // expected PV production in W
+  load_W, // expected house load in W (AC)
+  pv_W, // expected PV production in W (DC, from MPPT)
   importPrice, // import price in c€/kWh
   exportPrice, // export price in c€/kWh
 
@@ -12,12 +44,13 @@ export function buildLP({
   batteryCapacity_Wh = 204800,
   minSoc_percent = 20,
   maxSoc_percent = 100,
-  maxChargePower_W = 3600,
-  maxDischargePower_W = 4000,
-  maxGridImport_W = 2500,
-  maxGridExport_W = 5000,
-  chargeEfficiency_percent = 95,
-  dischargeEfficiency_percent = 95,
+  maxChargePower_W = 3600,        // DC charging cap at battery
+  maxDischargePower_W = 4000,     // DC discharging cap at battery (post-η_bd, on DC bus)
+  maxGridImport_W = 2500,         // AC
+  maxGridExport_W = 5000,         // AC
+  chargeEfficiency_percent = 95,     // battery only (DC → stored)
+  dischargeEfficiency_percent = 95,  // battery only (stored → DC bus)
+  inverterEfficiency_percent = 95,   // applied at every AC↔DC crossing
   batteryCost_cent_per_kWh = 2,
   idleDrain_W = 40,
 
@@ -84,13 +117,25 @@ export function buildLP({
 
   // Unit helpers
   const stepHours = stepSize_m / 60; // hours per slot
-  const priceCoeff = stepHours / 1000; // converts c€/kWh * W  →  c€ over the slot: € * (W * h / 1000 kWh/W) = €
-  const chargeWhPerW = stepHours * (chargeEfficiency_percent / 100); // Wh gained in battery per W charged
-  const dischargeWhPerW = stepHours / (dischargeEfficiency_percent / 100); // Wh lost from battery per W discharged
+  const priceCoeff = stepHours / 1000; // converts c€/kWh * W  →  c€ over the slot
+  const eta_inv = inverterEfficiency_percent / 100;
+  const eta_bc = chargeEfficiency_percent / 100;
+  const eta_bd = dischargeEfficiency_percent / 100;
+  // Storage gained per W of charging flow over a slot.
+  // PV→battery is DC→DC: only battery charge loss applies.
+  // Grid→battery is AC→DC→battery: inverter loss + battery charge loss apply.
+  const chargeWhPerW_pv = stepHours * eta_bc;
+  const chargeWhPerW_grid = stepHours * eta_inv * eta_bc;
+  // Storage drained per W of discharging flow on the DC bus.
+  // battery_to_X variables are DC W on the bus (after battery's own discharge loss),
+  // so storage drains by 1/η_bd Wh per W per stepHours. Inverter loss to AC is
+  // accounted for in the load/export constraints via η_inv.
+  const dischargeWhPerW = stepHours / eta_bd;
   const batteryCost_cents = 0.5 * batteryCost_cent_per_kWh * priceCoeff; // c€ cost per W throughput (charge+discharge)
-  const idleDrain_Wh = idleDrain_W * stepHours; // Wh lost from battery per slot due to inverter idle consumption
+  const idleDrain_Wh = idleDrain_W * stepHours; // Wh drained from battery per slot due to inverter idle consumption
 
-  const terminalPrice_cents_per_Wh = selectTerminalPriceCentsPerKWh(terminalSocValuation, importPrice, terminalSocCustomPrice_cents_per_kWh) / 1000 * (dischargeEfficiency_percent / 100); // c€/Wh
+  // Terminal SoC valuation: 1 Wh stored, fully discharged to AC, yields η_bd * η_inv W·h of AC export.
+  const terminalPrice_cents_per_Wh = selectTerminalPriceCentsPerKWh(terminalSocValuation, importPrice, terminalSocCustomPrice_cents_per_kWh) / 1000 * (eta_bd * eta_inv);
 
   // Convert soc percentages to Wh
   const minSoc_Wh = (minSoc_percent / 100) * batteryCapacity_Wh;
@@ -145,7 +190,12 @@ export function buildLP({
   const evMinPow_W      = ev?.evMinChargePower_W ?? 0;
   const evMaxPow_W      = ev?.evMaxChargePower_W ?? 0;
   const evDepSlot       = ev?.evDepartureSlot ?? (T + 1);
-  const evChargeWhPerW  = stepHours * ((ev?.evChargeEfficiency_percent ?? 100) / 100);
+  const eta_ev          = (ev?.evChargeEfficiency_percent ?? 100) / 100;
+  // Storage gained in EV battery per W of AC delivered to the EV charger over a slot.
+  const evChargeWhPerW  = stepHours * eta_ev;
+  // pv_to_ev and battery_to_ev are DC; AC arriving at the EV charger = η_inv * variable.
+  // So storage gained per W of those flows = η_inv * evChargeWhPerW.
+  const evChargeWhPerW_dc = evChargeWhPerW * eta_inv;
 
   // Variable name helpers
   const gridToLoad = (t: number) => `grid_to_load_${t}`;
@@ -170,14 +220,16 @@ export function buildLP({
   lines.push("Minimize");
   const objTerms = [" obj:"];
   for (let t = 0; t < T; t++) {
-    const importCoeff_cents = importPrice[t] * priceCoeff; // c€
-    const exportCoeff_cents = exportPrice[t] * priceCoeff; // c€
+    const importCoeff_cents = importPrice[t] * priceCoeff; // c€ per W AC imported
+    const exportCoeff_cents = exportPrice[t] * priceCoeff; // c€ per W AC exported
+    // 1 W of pv_to_grid (DC) → η_inv W AC exported; revenue scales with η_inv.
+    const acExportCoeff_cents = eta_inv * exportCoeff_cents;
 
     // Aggregate coefficients for each variable
     const gridToLoadCoeff = importCoeff_cents + TIEBREAK.avoidGridRoundTrip; // import cost + tiny nudge to prefer battery→load when prices are equal
     const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + TIEBREAK.gridToBattery + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + prefer DC PV charging + slight preference for earlier charging
-    const pvToGridCoeff = -exportCoeff_cents + TIEBREAK.avoidExport; // export revenue + slight penalty to prefer using PV locally
-    const batteryToGridCoeff = -exportCoeff_cents + batteryCost_cents; // export revenue + battery cost
+    const pvToGridCoeff = -acExportCoeff_cents + TIEBREAK.avoidExport; // export revenue (post-inverter) + slight penalty to prefer using PV locally
+    const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents; // export revenue (post-inverter) + battery cost
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
     const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery; // battery cost + tiny routing tiebreak
     const socShortfallCoeff = softMinSocPenalty_cents_per_Wh; // penalty for being below minSoc
@@ -226,36 +278,42 @@ export function buildLP({
   // ===============
   lines.push("Subject To");
 
-  // Load must be met (house load + EV load)
+  // Load must be met (house load + EV load).
+  // pv_to_load and battery_to_load are DC W; AC delivered = η_inv * variable.
+  // grid_to_load is already AC.
   for (let t = 0; t < T; t++) {
-    lines.push(` c_load_${t}: ${gridToLoad(t)} + ${pvToLoad(t)} + ${batteryToLoad(t)} = ${effectiveLoad_W[t]}`
+    lines.push(` c_load_${t}: ${toNum(eta_inv)} ${pvToLoad(t)} + ${gridToLoad(t)} + ${toNum(eta_inv)} ${batteryToLoad(t)} = ${effectiveLoad_W[t]}`
     );
   }
 
-  // PV split
+  // PV split (DC W from PV bus). pv_to_load/grid/ev are DC W consumed; pv_curtail discards DC.
   for (let t = 0; t < T; t++) {
     const pvEvTerm = evActive ? ` + ${pvToEv(t)}` : '';
     lines.push(` c_pv_split_${t}: ${pvToLoad(t)} + ${pvToBattery(t)} + ${pvToGrid(t)} + ${pvCurtail(t)}${pvEvTerm} = ${pv_W[t]}`);
   }
 
-  // SOC evolution (includes idle drain: inverter consumes idleDrain_Wh per slot)
-  // soc_0 = initialSoc_Wh - idleDrain_Wh + (ηc * Δh) * (grid_to_battery_0 + pv_to_battery_0) - (Δh / ηd) * (battery_to_load_0 + battery_to_grid_0 + battery_to_ev_0)
+  // SOC evolution (includes idle drain: inverter consumes idleDrain_Wh per slot from DC battery).
+  // soc_t = soc_{t-1} - idleDrain_Wh
+  //        + chargeWhPerW_pv * pv_to_battery_t           (DC→DC, only η_bc)
+  //        + chargeWhPerW_grid * grid_to_battery_t       (AC→DC→bat: η_inv * η_bc)
+  //        - dischargeWhPerW * (battery_to_load + battery_to_grid + battery_to_ev)  (DC bus drain → 1/η_bd)
   const evBatTerm = (t: number) => evActive ? ` + ${toNum(dischargeWhPerW)} ${batteryToEv(t)}` : '';
-  lines.push(` c_soc_0: ${soc(0)} - ${toNum(chargeWhPerW)} ${gridToBattery(0)} - ${toNum(chargeWhPerW)} ${pvToBattery(0)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(0)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(0)}${evBatTerm(0)} = ${toNum(initialSoc_Wh - idleDrain_Wh)}`);
+  lines.push(` c_soc_0: ${soc(0)} - ${toNum(chargeWhPerW_grid)} ${gridToBattery(0)} - ${toNum(chargeWhPerW_pv)} ${pvToBattery(0)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(0)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(0)}${evBatTerm(0)} = ${toNum(initialSoc_Wh - idleDrain_Wh)}`);
   for (let t = 1; t < T; t++) {
-    lines.push(` c_soc_${t}: ${soc(t)} - ${soc(t - 1)} - ${toNum(chargeWhPerW)} ${gridToBattery(t)} - ${toNum(chargeWhPerW)} ${pvToBattery(t)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(t)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(t)}${evBatTerm(t)} = ${toNum(-idleDrain_Wh)}`);
+    lines.push(` c_soc_${t}: ${soc(t)} - ${soc(t - 1)} - ${toNum(chargeWhPerW_grid)} ${gridToBattery(t)} - ${toNum(chargeWhPerW_pv)} ${pvToBattery(t)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(t)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(t)}${evBatTerm(t)} = ${toNum(-idleDrain_Wh)}`);
   }
 
   // Limits per slot
   for (let t = 0; t < T; t++) {
-    // Charge constraint: with CV phase binaries, the effective limit decreases as SoC rises
+    // DC-side battery charge cap. pv_to_battery is DC; grid_to_battery (AC) becomes η_inv DC.
+    // With CV phase binaries, the effective limit decreases as SoC rises.
     if (cvK > 0) {
       const cvTerms = cvPowerSteps.map((step, k) => ` + ${toNum(step)} ${cvBin(k, t)}`).join('');
-      lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)}${cvTerms} <= ${maxChargePower_W}`);
+      lines.push(` c_charge_cap_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)}${cvTerms} <= ${maxChargePower_W}`);
     } else {
-      lines.push(` c_charge_cap_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} <= ${maxChargePower_W}`);
+      lines.push(` c_charge_cap_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)} <= ${maxChargePower_W}`);
     }
-    // Discharge constraint: with discharge phase binaries, the effective limit decreases as SoC drops
+    // DC-side battery discharge cap. battery_to_X variables are DC W on bus.
     const batEvTerm = evActive ? ` + ${batteryToEv(t)}` : '';
     if (dpK > 0) {
       const dpTerms = dpPowerSteps.map((step, k) => ` + ${toNum(step)} ${dpBin(k, t)}`).join('');
@@ -264,13 +322,15 @@ export function buildLP({
       lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} <= ${maxDischargePower_W}`);
     }
 
-    // Grid import/export limits
+    // Grid import cap (AC). Unchanged: every grid_to_X is already AC.
     const gridEvTerm = evActive ? ` + ${gridToEv(t)}` : '';
     lines.push(` c_grid_import_cap_${t}: ${gridToLoad(t)} + ${gridToBattery(t)}${gridEvTerm} <= ${maxGridImport_W}`);
-    lines.push(` c_grid_export_cap_${t}: ${pvToGrid(t)} + ${batteryToGrid(t)} <= ${maxGridExport_W}`);
+    // Grid export cap (AC). pv_to_grid and battery_to_grid are DC; AC = η_inv * variable.
+    lines.push(` c_grid_export_cap_${t}: ${toNum(eta_inv)} ${pvToGrid(t)} + ${toNum(eta_inv)} ${batteryToGrid(t)} <= ${maxGridExport_W}`);
 
     // Victron cannot charge and discharge the battery in the same DESS slot.
-    lines.push(` c_battery_charge_mode_${t}: ${gridToBattery(t)} + ${pvToBattery(t)} - ${toNum(maxChargePower_W)} ${batteryCharging(t)} <= 0`);
+    // Charge mode binary measures DC charging power at the battery; same form as the charge cap.
+    lines.push(` c_battery_charge_mode_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)} - ${toNum(maxChargePower_W)} ${batteryCharging(t)} <= 0`);
     lines.push(` c_battery_discharge_mode_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} + ${toNum(maxDischargePower_W)} ${batteryCharging(t)} <= ${toNum(maxDischargePower_W)}`);
 
     // Soft min SOC constraint
@@ -354,16 +414,22 @@ export function buildLP({
     }
   }
 
-  // EV charging constraints (MILP)
+  // EV charging constraints (MILP).
+  // EV charger is AC-input. AC arriving at the charger:
+  //   = grid_to_ev (AC) + η_inv * pv_to_ev (DC→AC) + η_inv * battery_to_ev (DC→AC)
+  // Min/max constraints bound that AC power.
   if (evActive) {
     for (let t = 0; t < T; t++) {
-      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${pvToEv(t)} + ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)} >= 0`);
-      lines.push(` c_ev_max_${t}: ${gridToEv(t)} + ${pvToEv(t)} + ${batteryToEv(t)} - ${toNum(evMaxPow_W)} ${evOn(t)} <= 0`);
+      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)} >= 0`);
+      lines.push(` c_ev_max_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMaxPow_W)} ${evOn(t)} <= 0`);
     }
 
-    lines.push(` c_ev_soc_0: ${evSocVar(0)} - ${toNum(evChargeWhPerW)} ${gridToEv(0)} - ${toNum(evChargeWhPerW)} ${pvToEv(0)} - ${toNum(evChargeWhPerW)} ${batteryToEv(0)} = ${toNum(evInitialWh)}`);
+    // EV SoC evolution: 1 W AC into charger → η_ev W·h stored per stepHours.
+    // grid_to_ev (AC) → evChargeWhPerW factor.
+    // pv_to_ev / battery_to_ev (DC) → η_inv * evChargeWhPerW factor.
+    lines.push(` c_ev_soc_0: ${evSocVar(0)} - ${toNum(evChargeWhPerW)} ${gridToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(0)} = ${toNum(evInitialWh)}`);
     for (let t = 1; t < T; t++) {
-      lines.push(` c_ev_soc_${t}: ${evSocVar(t)} - ${evSocVar(t - 1)} - ${toNum(evChargeWhPerW)} ${gridToEv(t)} - ${toNum(evChargeWhPerW)} ${pvToEv(t)} - ${toNum(evChargeWhPerW)} ${batteryToEv(t)} = 0`);
+      lines.push(` c_ev_soc_${t}: ${evSocVar(t)} - ${evSocVar(t - 1)} - ${toNum(evChargeWhPerW)} ${gridToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(t)} = 0`);
     }
 
     if (evDepSlot <= T && evDepSlot > 0) {
@@ -373,6 +439,8 @@ export function buildLP({
     // Cardinality lower bound: tightens the LP relaxation by telling the solver the minimum
     // number of on-slots needed to meet the target. Without this, each ev_on_t floats freely
     // in [0,1] during LP relaxation, giving weak bounds and causing excessive MIP branching.
+    // evChargeWhPerSlot at max power = evMaxPow_W (AC into charger) × η_ev × stepHours = evChargeWhPerW * evMaxPow_W.
+    // Unchanged: max-power-per-slot is bounded by AC charger limit, which doesn't depend on η_inv.
     const evDeficitWh = Math.max(0, evTargetWh - evInitialWh);
     const evChargeWhPerSlot = evChargeWhPerW * evMaxPow_W;
     if (evDeficitWh > 0 && evChargeWhPerSlot > 0) {
@@ -392,32 +460,40 @@ export function buildLP({
   // ===============
   // Bounds
   // ===============
+  // Variables that cross AC↔DC have their physical caps rescaled by 1/η_inv when bounded
+  // against the cap on the other side (e.g. an AC export cap bounding a DC source).
+  // Guard against eta_inv === 0; the schema clamps but be defensive.
+  const invScale = eta_inv > 0 ? 1 / eta_inv : Number.POSITIVE_INFINITY;
   lines.push("Bounds");
   for (let t = 0; t < T; t++) {
-    // Grid → load/battery (cannot exceed import limit; load cap for the load branch)
+    // Grid → load/battery (AC). Load branch capped by AC load; battery branch capped
+    // by AC import limit AND by what the inverter can push to DC (maxChargePower_W / η_inv).
     lines.push(` 0 <= ${gridToLoad(t)} <= ${toNum(Math.min(maxGridImport_W, effectiveLoad_W[t]))}`);
-    lines.push(` 0 <= ${gridToBattery(t)} <= ${toNum(Math.min(maxGridImport_W, maxChargePower_W))}`);
+    lines.push(` 0 <= ${gridToBattery(t)} <= ${toNum(Math.min(maxGridImport_W, maxChargePower_W * invScale))}`);
 
-    // PV splits (no curtailment overall; per-branch caps keep things sane)
-    lines.push(` 0 <= ${pvToLoad(t)} <= ${toNum(effectiveLoad_W[t])}`);
+    // PV splits (DC). pv_to_load is bounded by the DC PV needed to satisfy the AC load:
+    // η_inv * pv_to_load <= effectiveLoad → pv_to_load <= effectiveLoad / η_inv.
+    lines.push(` 0 <= ${pvToLoad(t)} <= ${toNum(Math.min(pv_W[t], effectiveLoad_W[t] * invScale))}`);
     lines.push(` 0 <= ${pvToBattery(t)} <= ${toNum(Math.min(pv_W[t], maxChargePower_W))}`);
-    lines.push(` 0 <= ${pvToGrid(t)} <= ${toNum(Math.min(pv_W[t], maxGridExport_W))}`);
+    lines.push(` 0 <= ${pvToGrid(t)} <= ${toNum(Math.min(pv_W[t], maxGridExport_W * invScale))}`);
     lines.push(` 0 <= ${pvCurtail(t)} <= ${toNum(pv_W[t])}`);
 
-    // Battery → load/grid (cannot exceed discharge or respective sinks)
-    // evDischargeBlocked: when uncontrollable EV is charging, block battery discharge
+    // Battery → load/grid (DC W on bus). Discharge cap is DC; load/export caps are AC.
+    // evDischargeBlocked: when uncontrollable EV is charging, block battery discharge.
     const evDischargeBlocked = disableDischargeWhileEvCharging && (evLoad_W?.[t] ?? 0) > 0;
-    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, effectiveLoad_W[t]))}`);
-    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, maxGridExport_W))}`);
+    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, effectiveLoad_W[t] * invScale))}`);
+    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, maxGridExport_W * invScale))}`);
 
     // SOC bounds
     // minSoc handled via soft constraint
     lines.push(` ${soc(t)} <= ${toNum(maxSoc_Wh)}`);
     lines.push(` ${socShortfall(t)} >= 0`);
     if (evActive) {
+      // grid_to_ev is AC into the charger. pv_to_ev / battery_to_ev are DC; AC into charger = η_inv * variable,
+      // so the per-variable bound on AC charger limit becomes evMaxPow_W / η_inv on the DC side.
       lines.push(` 0 <= ${gridToEv(t)} <= ${toNum(evMaxPow_W)}`);
-      lines.push(` 0 <= ${pvToEv(t)} <= ${toNum(Math.min(pv_W[t], evMaxPow_W))}`);
-      lines.push(` 0 <= ${batteryToEv(t)} <= ${toNum(Math.min(maxDischargePower_W, evMaxPow_W))}`);
+      lines.push(` 0 <= ${pvToEv(t)} <= ${toNum(Math.min(pv_W[t], evMaxPow_W * invScale))}`);
+      lines.push(` 0 <= ${batteryToEv(t)} <= ${toNum(Math.min(maxDischargePower_W, evMaxPow_W * invScale))}`);
       lines.push(` 0 <= ${evSocVar(t)} <= ${toNum(evCapacityWh)}`);
     }
   }

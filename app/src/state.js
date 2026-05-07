@@ -16,6 +16,7 @@ export function snapshotUI(els) {
     maxGridExport_W: num(els.gexp?.value),
     chargeEfficiency_percent: num(els.etaC?.value),
     dischargeEfficiency_percent: num(els.etaD?.value),
+    inverterEfficiency_percent: num(els.etaInv?.value),
     batteryCost_cent_per_kWh: num(els.bwear?.value),
     idleDrain_W: num(els.idleDrain?.value),
     blockFeedInOnNegativePrices: !!els.blockFeedInOnNegativePrices?.checked,
@@ -154,6 +155,7 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.gexp, obj.maxGridExport_W);
   setIfDef(els.etaC, obj.chargeEfficiency_percent);
   setIfDef(els.etaD, obj.dischargeEfficiency_percent);
+  setIfDef(els.etaInv, obj.inverterEfficiency_percent);
   setIfDef(els.bwear, obj.batteryCost_cent_per_kWh);
   setIfDef(els.idleDrain, obj.idleDrain_W);
   if (els.blockFeedInOnNegativePrices && obj.blockFeedInOnNegativePrices != null) {

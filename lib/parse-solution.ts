@@ -26,6 +26,11 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   const cap = Math.max(1e-9, cfg.batteryCapacity_Wh);
   // v8 ignore next — trivial Math.max always true branch in practice
   const evCap = Math.max(1e-9, cfg.ev?.evBatteryCapacity_Wh ?? 1);
+  // Inverter efficiency: variables that cross the DC→AC boundary in the LP are
+  // emitted as DC W; downstream consumers (plan-summary, plan-accuracy, DESS
+  // mapper, UI) expect AC-side numbers matching the AC meter VRM reports.
+  // Apply η_inv once here at the LP→PlanRow boundary for those flows.
+  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
 
   // --- 1. Reconstruct solver columns into per-slot arrays ---
   const g2l = Array(T).fill(0);
@@ -65,12 +70,24 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   }
 
   // --- 2. Build rows (flows, soc, etc.) ---
+  // Apply η_inv at AC↔DC boundaries so PlanRow values reflect the AC-meter view:
+  //   pv2l, pv2g, pv2ev, b2l, b2g, b2ev: LP variable is DC W; we report η_inv * v (AC W delivered).
+  //   pv2b: stays DC (DC→DC charging on the battery bus; no inverter involved).
+  //   pvCurtail: stays DC (raw lost-PV measure on the panel side).
+  //   g2*, soc: already AC / Wh; unchanged.
   const slotHours = opts.stepMin / 60;
   const rows: PlanRow[] = [];
   for (let t = 0; t < T; t++) {
+    const pv2l_AC = eta_inv * pv2l[t];
+    const pv2g_AC = eta_inv * pv2g[t];
+    const pv2ev_AC = eta_inv * pv2ev[t];
+    const b2l_AC = eta_inv * b2l[t];
+    const b2g_AC = eta_inv * b2g[t];
+    const b2ev_AC = eta_inv * b2ev[t];
+
     const imp = g2l[t] + g2b[t] + g2ev[t];
-    const exp = pv2g[t] + b2g[t];
-    const evW = g2ev[t] + pv2ev[t] + b2ev[t];
+    const exp = pv2g_AC + b2g_AC;
+    const evW = g2ev[t] + pv2ev_AC + b2ev_AC;
     const importCost = imp * slotHours / 1000 * cfg.importPrice[t];
     const exportCost = exp * slotHours / 1000 * cfg.exportPrice[t];
 
@@ -86,12 +103,12 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
 
       g2l: round(g2l[t]),
       g2b: round(g2b[t]),
-      pv2l: round(pv2l[t]),
+      pv2l: round(pv2l_AC),
       pv2b: round(pv2b[t]),
-      pv2g: round(pv2g[t]),
+      pv2g: round(pv2g_AC),
       pvCurtail: round(pvCurtail[t]),
-      b2l: round(b2l[t]),
-      b2g: round(b2g[t]),
+      b2l: round(b2l_AC),
+      b2g: round(b2g_AC),
 
       imp: round(imp),
       exp: round(exp),
@@ -100,11 +117,11 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
       soc: round(soc[t]),
       soc_percent: (soc[t] / cap) * 100,
       g2ev:          round(g2ev[t]),
-      pv2ev:         round(pv2ev[t]),
-      b2ev:          round(b2ev[t]),
+      pv2ev:         round(pv2ev_AC),
+      b2ev:          round(b2ev_AC),
       ev_charge:     round(evW),
       ev_charge_A:   round(evW / EV_CHARGE_VOLTAGE_V),
-      ev_charge_mode: evChargeMode(g2ev[t], pv2ev[t], b2ev[t], cfg.ev?.evMinChargePower_W ?? 0, pv2b[t]),
+      ev_charge_mode: evChargeMode(g2ev[t], pv2ev_AC, b2ev_AC, cfg.ev?.evMinChargePower_W ?? 0, pv2b[t]),
       ev_soc_percent: (evSoc[t] / evCap) * 100,
     });
   }

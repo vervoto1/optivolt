@@ -31,6 +31,7 @@ export function getElements() {
     gexp: $("#gexp"),
     etaC: $("#etaC"),
     etaD: $("#etaD"),
+    etaInv: $("#etaInv"),
     bwear: $("#bwear"),
     idleDrain: $("#idle-drain"),
     terminal: $("#terminal"),

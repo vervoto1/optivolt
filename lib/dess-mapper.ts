@@ -255,13 +255,16 @@ function findLowestGridExportRevenue(rows: PlanRow[], segment: Segment | null): 
  * (i.e. we were willing to export PV at this low price, so we'd definitely export at higher prices).
  */
 function findLowestPvExportPrice(rows: PlanRow[], segment: Segment | null, cfg: SolverConfig): number {
+  // Charge cap is DC at the battery. pv2b is already DC; g2b is AC, so DC charging
+  // contribution from grid = η_inv * g2b.
+  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
   return aggregateSegmentPrice(
     rows,
     segment,
     r => {
       if (r.pv2g <= FLOW_EPSILON_W || r.ec < 0) return false;
-      const chargePower = r.pv2b + r.g2b;
-      const isChargeConstrained = chargePower >= cfg.maxChargePower_W - FLOW_EPSILON_W;
+      const chargePower_DC = r.pv2b + eta_inv * r.g2b;
+      const isChargeConstrained = chargePower_DC >= cfg.maxChargePower_W - FLOW_EPSILON_W;
       const isSocConstrained = r.soc_percent >= cfg.maxSoc_percent - SOC_EPSILON_PERCENT;
       return !isChargeConstrained && !isSocConstrained;
     },
@@ -381,11 +384,15 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
     // Expected PV/load for PV surplus check
     const pvSurplus = row.pv > row.load + row.ev_charge + FLOW_EPSILON_W;
 
-    // Precompute flow totals for saturation checks
+    // Precompute flow totals for saturation checks. Caps:
+    //   maxGridImport_W / maxGridExport_W are AC (utility connection limits).
+    //   maxChargePower_W / maxDischargePower_W are DC (battery limits).
+    // PlanRow flows: g2* are AC; pv2b is DC; pv2g/pv2l/b2l/b2g/b2ev/pv2ev are AC after parseSolution conversion.
+    const eta_inv_v2 = (cfg.inverterEfficiency_percent ?? 100) / 100;
     const gridImport = row.g2l + row.g2b + (row.g2ev ?? 0);
     const gridExport = row.b2g + row.pv2g;
-    const chargePower = row.g2b + row.pv2b;
-    const dischargePower = row.b2g + row.b2l + (row.b2ev ?? 0);
+    const chargePower_DC = row.pv2b + eta_inv_v2 * row.g2b;
+    const dischargePower_DC = eta_inv_v2 > 0 ? (row.b2g + row.b2l + (row.b2ev ?? 0)) / eta_inv_v2 : 0;
 
     // O(1) tipping-point lookup for this slot's segment
     const seg = getSegmentForIndex(segments, t);
@@ -398,7 +405,7 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
       // Electricity is cheap enough to charge the battery from grid
       strategy = Strategy.proBattery;
       restrictions = Restrictions.batteryToGrid; // allow grid→battery
-      if (gridImport >= cfg.maxGridImport_W - FLOW_EPSILON_W || chargePower >= cfg.maxChargePower_W - FLOW_EPSILON_W) {
+      if (gridImport >= cfg.maxGridImport_W - FLOW_EPSILON_W || chargePower_DC >= cfg.maxChargePower_W - FLOW_EPSILON_W) {
         // Cap the +5% boost at the first CV phase threshold to prevent target
         // oscillation: without the cap, the target overshoots into the CV region
         // (e.g. 93%→98%), then next slot CV throttles charge power, the saturation
@@ -422,7 +429,7 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
       // Export price is high enough to dump battery to grid
       strategy = Strategy.proGrid;
       restrictions = Restrictions.gridToBattery; // allow battery→grid
-      if (gridExport >= cfg.maxGridExport_W - FLOW_EPSILON_W || dischargePower >= cfg.maxDischargePower_W - FLOW_EPSILON_W) {
+      if (gridExport >= cfg.maxGridExport_W - FLOW_EPSILON_W || dischargePower_DC >= cfg.maxDischargePower_W - FLOW_EPSILON_W) {
         socTarget_percent = Math.max(socTarget_percent - 5, cfg.minSoc_percent + 1);
       }
     } else if (feedinAllowed && pvSurplus && exportPrice >= pvExportTp) {

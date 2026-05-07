@@ -46,8 +46,12 @@ export interface SolverConfig {
   maxDischargePower_W: number;
   maxGridImport_W: number;
   maxGridExport_W: number;
+  /** Battery-only DC charge efficiency (e.g. 95 = 5% lost on the battery's own charge step). Inverter loss is modeled separately by inverterEfficiency_percent. */
   chargeEfficiency_percent: number;
+  /** Battery-only DC discharge efficiency. Paired with inverterEfficiency_percent for AC-side flows. */
   dischargeEfficiency_percent: number;
+  /** Inverter conversion efficiency, applied symmetrically on every AC↔DC crossing (PV→AC, battery→AC, AC→battery). 100 = lossless wire. */
+  inverterEfficiency_percent: number;
   batteryCost_cent_per_kWh: number;
   idleDrain_W: number;
 

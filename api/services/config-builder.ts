@@ -75,6 +75,7 @@ export function buildSolverConfigFromSettings(
     maxGridExport_W:                      settings.maxGridExport_W,
     chargeEfficiency_percent:             settings.chargeEfficiency_percent,
     dischargeEfficiency_percent:          settings.dischargeEfficiency_percent,
+    inverterEfficiency_percent:           settings.inverterEfficiency_percent,
     batteryCost_cent_per_kWh:             settings.batteryCost_cent_per_kWh,
     idleDrain_W:                          settings.idleDrain_W,
     terminalSocValuation:                 settings.terminalSocValuation,
