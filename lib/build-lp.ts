@@ -1,5 +1,14 @@
 import type { SolverConfig, TerminalSocValuation } from './types.ts';
 
+/**
+ * Default inverter efficiency used when SolverConfig.inverterEfficiency_percent
+ * is omitted by a caller. MUST be kept in sync between buildLP, parseSolution,
+ * and dess-mapper — otherwise the LP is solved at one efficiency while readout
+ * and DESS saturation checks operate at another, silently misclassifying
+ * capacity-limited slots.
+ */
+export const DEFAULT_INVERTER_EFFICIENCY_PERCENT = 95;
+
 /*
  * LP unit conventions
  * ───────────────────

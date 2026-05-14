@@ -952,4 +952,44 @@ describe('mapRowsToDessV2', () => {
       expect(perSlot[0].restrictions).toBe(Restrictions.none);
     });
   });
+
+  // v0.7.23 regression: dess-mapper's AC→DC saturation checks defaulted
+  // η_inv to 100% when cfg.inverterEfficiency_percent was omitted, while
+  // buildLP / parseSolution default to 95%. A slot at the DC discharge
+  // cap (4000 W DC = 3800 W AC at η=0.95) was therefore mis-classified as
+  // unconstrained — the -5% socTarget boost never fired, and the DESS
+  // tipping-point helpers over-counted high-price grid usage. The shared
+  // DEFAULT_INVERTER_EFFICIENCY_PERCENT constant in build-lp.ts pins all
+  // three modules to the same default; this test fails on `?? 100` and
+  // passes on `?? DEFAULT_INVERTER_EFFICIENCY_PERCENT`.
+  describe('inverter efficiency default (saturation check)', () => {
+    it('detects DC discharge saturation when inverterEfficiency_percent is omitted', () => {
+      // Row 0 establishes batteryExportTp = 20 via b2g flow.
+      // Row 1 exports at ec=25 (>= 20 → proGrid branch). b2g=3800 W AC,
+      // pv2g=0, so gridExport = 3800 < maxGridExport_W=5000 — the grid
+      // saturation gate is OPEN. The only path that can pull socTarget
+      // down is the DC discharge cap: with η=0.95, b2g/η = 4000 W DC ≥
+      // maxDischargePower_W (4000) - epsilon → saturated → socTarget
+      // drops to 45. With the legacy η=1.0 default the conversion stays
+      // at 3800 W < cap, no boost fires, socTarget stays at 50.
+      const rows = [
+        makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
+        makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 3800 }),
+      ];
+      // cfg deliberately omits inverterEfficiency_percent.
+      const { perSlot } = mapRowsToDessV2(rows, cfg);
+      expect(perSlot[1].strategy).toBe(Strategy.proGrid);
+      expect(perSlot[1].socTarget_percent).toBe(45);
+    });
+
+    it('matches the explicit η=95 path when the field is omitted', () => {
+      const rows = [
+        makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
+        makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 3800 }),
+      ];
+      const omitted = mapRowsToDessV2(rows, cfg).perSlot[1];
+      const explicit = mapRowsToDessV2(rows, { ...cfg, inverterEfficiency_percent: 95 }).perSlot[1];
+      expect(omitted.socTarget_percent).toBe(explicit.socTarget_percent);
+    });
+  });
 });

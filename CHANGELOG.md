@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.23 - 2026-05-14
+
+- **Fix:** Three sites in `dess-mapper.ts` still fell back to `inverterEfficiency_percent = 100%` when callers omitted the field, while `buildLP` and (post-0.7.21) `parseSolution` default to 95%. Same bug class as 0.7.21 — the AC↔DC saturation checks in `findHighestGridUsageCost`, `findLowestPvExportPrice`, and `mapRowsToDessV2` were left behind. A slot at the DC discharge cap (e.g. 4000 W DC = 3800 W AC at η=0.95) was therefore mis-classified as unconstrained: the proGrid `-5%` socTarget pull never fired and the high-price grid-usage tipping point counted slots that were actually saturated. Extracted `DEFAULT_INVERTER_EFFICIENCY_PERCENT = 95` as a shared constant in `lib/build-lp.ts` with a docstring forcing future devs to keep the three modules in sync, and wired all three dess-mapper sites + parseSolution to it. Added a regression test that fails on `?? 100` and passes on `?? DEFAULT_INVERTER_EFFICIENCY_PERCENT`.
+
 ## 0.7.22 - 2026-05-14
 
 - **Fix:** Edits to the PV Curtailment, DESS Price Refresh, Grid & Solar Power Optimizer, and HA Price Sensor cards were silently dropped on reload unless the user happened to hit Recompute afterwards. The auto-save wiring in `app/src/ui-binding.js` only attaches `input`/`change` listeners to elements tagged `data-settings-input`, and none of these 33 inputs carried the attribute — so `<input id="pv-curtail-enphase-switch">` and friends went straight to the DOM and never reached `POST /settings`. Added `data-settings-input data-no-autosolve` to all 33 inputs across the four cards (no-autosolve because none of them feed the LP — worker config and price-source pointers shouldn't trigger a recompute on every keystroke).

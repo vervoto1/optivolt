@@ -2,6 +2,7 @@
 // Assumes a complete, valid cfg is provided.
 
 import type { PlanRow, SolverConfig, DessDiagnostics, DessResult, DessSlot } from './types.ts';
+import { DEFAULT_INVERTER_EFFICIENCY_PERCENT } from './build-lp.ts';
 
 const FLOW_EPSILON_W = 1; // treat flows below this as zero
 const SOC_EPSILON_PERCENT = 0.5; // treat SoC within this of min/max as at boundary
@@ -231,7 +232,7 @@ function findHighestGridUsageCost(rows: PlanRow[], segment: Segment | null, cfg:
   // maxDischargePower_W is the DC cap at the battery; PlanRow b2l/b2ev are AC
   // (post-η_inv from parseSolution). Convert AC back to DC for the saturation check
   // so a slot at the DC discharge cap isn't mis-classified as unconstrained.
-  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
+  const eta_inv = (cfg.inverterEfficiency_percent ?? DEFAULT_INVERTER_EFFICIENCY_PERCENT) / 100;
   const maxDischarge = cfg.maxDischargePower_W - FLOW_EPSILON_W;
   return aggregateSegmentPrice(
     rows,
@@ -271,7 +272,7 @@ function findLowestGridExportRevenue(rows: PlanRow[], segment: Segment | null): 
 function findLowestPvExportPrice(rows: PlanRow[], segment: Segment | null, cfg: SolverConfig): number {
   // Charge cap is DC at the battery. pv2b is already DC; g2b is AC, so DC charging
   // contribution from grid = η_inv * g2b.
-  const eta_inv = (cfg.inverterEfficiency_percent ?? 100) / 100;
+  const eta_inv = (cfg.inverterEfficiency_percent ?? DEFAULT_INVERTER_EFFICIENCY_PERCENT) / 100;
   return aggregateSegmentPrice(
     rows,
     segment,
@@ -402,7 +403,7 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
     //   maxGridImport_W / maxGridExport_W are AC (utility connection limits).
     //   maxChargePower_W / maxDischargePower_W are DC (battery limits).
     // PlanRow flows: g2* are AC; pv2b is DC; pv2g/pv2l/b2l/b2g/b2ev/pv2ev are AC after parseSolution conversion.
-    const eta_inv_v2 = (cfg.inverterEfficiency_percent ?? 100) / 100;
+    const eta_inv_v2 = (cfg.inverterEfficiency_percent ?? DEFAULT_INVERTER_EFFICIENCY_PERCENT) / 100;
     const gridImport = row.g2l + row.g2b + (row.g2ev ?? 0);
     const gridExport = row.b2g + row.pv2g;
     const chargePower_DC = row.pv2b + eta_inv_v2 * row.g2b;
