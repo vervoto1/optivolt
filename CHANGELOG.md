@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.22 - 2026-05-14
+
+- **Fix:** Edits to the PV Curtailment, DESS Price Refresh, Grid & Solar Power Optimizer, and HA Price Sensor cards were silently dropped on reload unless the user happened to hit Recompute afterwards. The auto-save wiring in `app/src/ui-binding.js` only attaches `input`/`change` listeners to elements tagged `data-settings-input`, and none of these 33 inputs carried the attribute — so `<input id="pv-curtail-enphase-switch">` and friends went straight to the DOM and never reached `POST /settings`. Added `data-settings-input data-no-autosolve` to all 33 inputs across the four cards (no-autosolve because none of them feed the LP — worker config and price-source pointers shouldn't trigger a recompute on every keystroke).
+- **Chore:** Bump `vitest` and `@vitest/coverage-v8` 4.1.5 → 4.1.6 (patch).
+
 ## 0.7.21 - 2026-05-07
 
 - **Fix:** Auto-split migration silently skipped for pre-v0.7.20 settings files. `loadSettings()` spreads `default-settings.json` (which now includes `inverterEfficiency_percent: 95`) before merging the user's stored settings, so the migration's "already migrated" check fired for every legacy file and the auto-split never ran. Result was effective grid→battery efficiency of 0.9025 (η_inv·η_bc) for users with legacy 95/95 instead of the intended ~0.95. Now `loadSettings` detects whether the user's raw `settings.json` had the field before the merge and strips it from defaults if not, forcing the migration to back-derive sensible values.

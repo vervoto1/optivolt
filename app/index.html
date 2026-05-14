@@ -1607,31 +1607,31 @@
           </div>
           <div class="space-y-3">
             <label class="toggle">
-              <input id="pv-curtail-enabled" type="checkbox">
+              <input id="pv-curtail-enabled" type="checkbox" data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
             </label>
             <label class="toggle">
-              <input id="pv-curtail-dry-run" type="checkbox" checked>
+              <input id="pv-curtail-dry-run" type="checkbox" checked data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Dry run</span>
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tick interval (ms)</span>
-                <input id="pv-curtail-tick-ms" type="number" min="1000" step="1000" value="30000" class="form-input" />
+                <input id="pv-curtail-tick-ms" type="number" min="1000" step="1000" value="30000" class="form-input" data-settings-input data-no-autosolve />
               </label>
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price threshold</span>
-                <input id="pv-curtail-price-threshold" type="number" step="0.01" value="0" class="form-input" />
+                <input id="pv-curtail-price-threshold" type="number" step="0.01" value="0" class="form-input" data-settings-input data-no-autosolve />
               </label>
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min PV power (W)</span>
-                <input id="pv-curtail-min-pv-power-w" type="number" min="0" step="10" value="100" class="form-input" />
+                <input id="pv-curtail-min-pv-power-w" type="number" min="0" step="10" value="100" class="form-input" data-settings-input data-no-autosolve />
               </label>
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min grid headroom (W)</span>
-                <input id="pv-curtail-min-grid-headroom-w" type="number" min="0" step="10" value="100" class="form-input" />
+                <input id="pv-curtail-min-grid-headroom-w" type="number" min="0" step="10" value="100" class="form-input" data-settings-input data-no-autosolve />
               </label>
             </div>
             <div class="rounded-lg border border-slate-200 p-3 dark:border-white/10 space-y-3">
@@ -1639,16 +1639,16 @@
               <div class="grid grid-cols-2 gap-3">
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Victron Pv/Disable — Portal ID</span>
-                  <input id="pv-curtail-portal-id" type="text" value="c0619ab6bd28" class="form-input" />
+                  <input id="pv-curtail-portal-id" type="text" value="c0619ab6bd28" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Victron AC system instance</span>
-                  <input id="pv-curtail-acsystem-instance" type="number" min="0" step="1" value="0" class="form-input" />
+                  <input id="pv-curtail-acsystem-instance" type="number" min="0" step="1" value="0" class="form-input" data-settings-input data-no-autosolve />
                 </label>
               </div>
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Enphase production switch (Home Assistant entity)</span>
-                <input id="pv-curtail-enphase-switch" type="text" placeholder="switch.envoy_xxxxxxxxxxxx_production" class="form-input" />
+                <input id="pv-curtail-enphase-switch" type="text" placeholder="switch.envoy_xxxxxxxxxxxx_production" class="form-input" data-settings-input data-no-autosolve />
                 <span class="mt-1 block text-xs text-slate-400 dark:text-slate-500">Leave empty to skip Enphase. Turned off while curtailing, back on when curtailment ends.</span>
               </label>
             </div>
@@ -1663,17 +1663,17 @@
           </div>
           <div class="space-y-3">
             <label class="toggle">
-              <input id="dess-refresh-enabled" type="checkbox">
+              <input id="dess-refresh-enabled" type="checkbox" data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Switch time (local)</span>
-              <input id="dess-refresh-time" type="time" value="23:00" class="form-input" />
+              <input id="dess-refresh-time" type="time" value="23:00" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Duration (minutes)</span>
-              <input id="dess-refresh-duration" type="number" min="5" max="60" step="1" value="15" class="form-input" />
+              <input id="dess-refresh-duration" type="number" min="5" max="60" step="1" value="15" class="form-input" data-settings-input data-no-autosolve />
             </label>
           </div>
         </section>
@@ -1688,33 +1688,33 @@
           </div>
           <div class="space-y-3">
             <label class="toggle">
-              <input id="shore-opt-enabled" type="checkbox">
+              <input id="shore-opt-enabled" type="checkbox" data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Enabled</span>
             </label>
             <label class="toggle">
-              <input id="shore-opt-dry-run" type="checkbox" checked>
+              <input id="shore-opt-dry-run" type="checkbox" checked data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Dry run</span>
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tick interval (ms)</span>
-              <input id="shore-opt-tick-ms" type="number" min="1000" step="100" value="3000" class="form-input" />
+              <input id="shore-opt-tick-ms" type="number" min="1000" step="100" value="3000" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Step (A)</span>
-              <input id="shore-opt-step-a" type="number" min="0.1" max="25" step="0.1" value="0.5" class="form-input" />
+              <input id="shore-opt-step-a" type="number" min="0.1" max="25" step="0.1" value="0.5" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Max grid current (A)</span>
-              <input id="shore-opt-max-shore-a" type="number" min="0" max="25" step="0.1" value="25" class="form-input" />
+              <input id="shore-opt-max-shore-a" type="number" min="0" max="25" step="0.1" value="25" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min charging power (W)</span>
-              <input id="shore-opt-min-charging-power-w" type="number" min="0" step="10" value="200" class="form-input" />
+              <input id="shore-opt-min-charging-power-w" type="number" min="0" step="10" value="200" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="toggle">
-              <input id="shore-opt-gate-on-dess" type="checkbox" checked>
+              <input id="shore-opt-gate-on-dess" type="checkbox" checked data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Gate on DESS grid-charge slot</span>
             </label>
@@ -1723,27 +1723,27 @@
               <div class="mt-3 grid grid-cols-2 gap-3">
                 <label class="block text-sm col-span-2">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Portal ID</span>
-                  <input id="shore-opt-portal-id" type="text" value="c0619ab6bd28" class="form-input" />
+                  <input id="shore-opt-portal-id" type="text" value="c0619ab6bd28" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Multi instance</span>
-                  <input id="shore-opt-multi-instance" type="number" min="0" step="1" value="6" class="form-input" />
+                  <input id="shore-opt-multi-instance" type="number" min="0" step="1" value="6" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">AC input</span>
-                  <input id="shore-opt-ac-input-index" type="number" min="0" step="1" value="1" class="form-input" />
+                  <input id="shore-opt-ac-input-index" type="number" min="0" step="1" value="1" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">MPPT instance</span>
-                  <input id="shore-opt-mppt-instance" type="number" min="0" step="1" value="0" class="form-input" />
+                  <input id="shore-opt-mppt-instance" type="number" min="0" step="1" value="0" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Battery instance</span>
-                  <input id="shore-opt-battery-instance" type="number" min="0" step="1" value="512" class="form-input" />
+                  <input id="shore-opt-battery-instance" type="number" min="0" step="1" value="512" class="form-input" data-settings-input data-no-autosolve />
                 </label>
                 <label class="block text-sm">
                   <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min shore current (A)</span>
-                  <input id="shore-opt-min-shore-a" type="number" min="0" max="25" step="0.1" value="0" class="form-input" />
+                  <input id="shore-opt-min-shore-a" type="number" min="0" max="25" step="0.1" value="0" class="form-input" data-settings-input data-no-autosolve />
                 </label>
               </div>
             </details>
@@ -1819,37 +1819,37 @@
           <div class="space-y-3">
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price sensor entity</span>
-              <input id="ha-price-sensor" type="text" placeholder="sensor.gespot_hourly_average_price_nl" class="form-input" />
+              <input id="ha-price-sensor" type="text" placeholder="sensor.gespot_hourly_average_price_nl" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price interval</span>
-              <select id="ha-price-interval" class="form-select">
+              <select id="ha-price-interval" class="form-select" data-settings-input data-no-autosolve>
                 <option value="60">Hourly (60 min)</option>
                 <option value="15">Every 15 min</option>
               </select>
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Today prices attribute</span>
-              <input id="ha-price-today-attr" type="text" value="today_hourly_prices" class="form-input" />
+              <input id="ha-price-today-attr" type="text" value="today_hourly_prices" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tomorrow prices attribute</span>
-              <input id="ha-price-tomorrow-attr" type="text" value="tomorrow_hourly_prices" class="form-input" />
+              <input id="ha-price-tomorrow-attr" type="text" value="tomorrow_hourly_prices" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Timestamp field</span>
-              <input id="ha-price-time-key" type="text" value="time" class="form-input" />
+              <input id="ha-price-time-key" type="text" value="time" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price field</span>
-              <input id="ha-price-value-key" type="text" value="value" class="form-input" />
+              <input id="ha-price-value-key" type="text" value="value" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Price multiplier (to cents)</span>
-              <input id="ha-price-multiplier" type="number" step="1" value="100" class="form-input" />
+              <input id="ha-price-multiplier" type="number" step="1" value="100" class="form-input" data-settings-input data-no-autosolve />
             </label>
             <label class="toggle">
-              <input id="ha-price-import-equals-export" type="checkbox" checked>
+              <input id="ha-price-import-equals-export" type="checkbox" checked data-settings-input data-no-autosolve>
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Import = Export price</span>
             </label>
