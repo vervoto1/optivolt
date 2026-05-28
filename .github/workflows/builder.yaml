@@ -22,6 +22,10 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v6.0.2
+        with:
+          # Need full history so the PR diff base (origin/<base_ref>) resolves;
+          # the default shallow clone has no origin/main ref and the diff below dies.
+          fetch-depth: 0
 
       - name: Get changed files
         id: changed_files
