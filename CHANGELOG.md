@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.24 - 2026-05-28
+
+- **Chore:** Dependency refresh, no runtime logic changes.
+  - **Security:** Patched three moderate-severity advisories surfaced by `npm audit` (all transitive): `qs` 6.15.1 → 6.15.2 (`stringify` DoS on null/undefined entries in comma-format arrays — the same bump upstream's Dependabot proposed in `qs-6.15.2`), `brace-expansion` (large-numeric-range DoS defeating the documented `max` guard), and `ws` (uninitialized memory disclosure). `npm audit` now reports 0 vulnerabilities.
+  - **Tooling:** `eslint` 10.3.0 → 10.4.0, `@eslint/css` 1.2.0 → 1.3.0, `@eslint/markdown` 8.0.1 → 8.0.2, `vitest` + `@vitest/coverage-v8` 4.1.6 → 4.1.7 (range bumped to `^4.1.7` because the meta-package held the pair in lockstep).
+  - **Solver dep:** `highs` 1.8.0 → 1.14.2 in `package.json`. **No effect on solver behavior** — the runtime and all tests import the vendored WASM build at `vendor/highs-build/highs.js`, never the npm package, so this is dead-dependency hygiene only. Taking the actual HiGHS 1.8 → 1.14 solver improvements would require re-vendoring `vendor/highs-build/`, which this release does **not** do.
+  - All 1434 tests pass; typecheck and lint clean.
+
 ## 0.7.23 - 2026-05-14
 
 - **Fix:** Three sites in `dess-mapper.ts` still fell back to `inverterEfficiency_percent = 100%` when callers omitted the field, while `buildLP` and (post-0.7.21) `parseSolution` default to 95%. Same bug class as 0.7.21 — the AC↔DC saturation checks in `findHighestGridUsageCost`, `findLowestPvExportPrice`, and `mapRowsToDessV2` were left behind. A slot at the DC discharge cap (e.g. 4000 W DC = 3800 W AC at η=0.95) was therefore mis-classified as unconstrained: the proGrid `-5%` socTarget pull never fired and the high-price grid-usage tipping point counted slots that were actually saturated. Extracted `DEFAULT_INVERTER_EFFICIENCY_PERCENT = 95` as a shared constant in `lib/build-lp.ts` with a docstring forcing future devs to keep the three modules in sync, and wired all three dess-mapper sites + parseSolution to it. Added a regression test that fails on `?? 100` and passes on `?? DEFAULT_INVERTER_EFFICIENCY_PERCENT`.
