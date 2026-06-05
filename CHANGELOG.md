@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.26 - 2026-06-05
+
+- **Fix:** Drop implausible energy-counter spikes from Home Assistant statistics before they reach the load/PV predictor. A meter reset on 2026-05-30 (coinciding with a Venus MQTT update) recorded one period as ~4296 kWh; under `mean` aggregation this averaged into a ~538 kWh forecast load for a single slot, which exceeded the grid import cap and made the LP **infeasible** — producing an empty schedule. `postprocess()` now discards any per-period reading whose magnitude exceeds `MAX_PLAUSIBLE_SLOT_ENERGY_WH` (25 kWh, overridable via the new `{ maxSlotEnergyWh }` option) and logs a `[ha-postprocess]` warning naming the sensor, timestamp, and value. The dropped sample becomes a gap, which the historical predictor already skips, so it no longer poisons the mean/median or the auto-tuner's validation metrics.
+
 ## 0.7.25 - 2026-06-05
 
 - **Fix:** Victron MQTT portal-id auto-detection now derives the id from the `N/<portal-id>/system/0/Serial` topic instead of trusting the JSON payload. On the target broker, live MQTT returned SoC on `N/c0619ab6bd28/battery/512/Soc` and `N/c0619ab6bd28/system/0/Dc/Battery/Soc`, while the failed calculate path had been waiting on `N/2/...`; using the topic id prevents calculate-time SoC refreshes from addressing the wrong MQTT namespace.
