@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.25 - 2026-06-05
+
+- **Fix:** Victron MQTT portal-id auto-detection now derives the id from the `N/<portal-id>/system/0/Serial` topic instead of trusting the JSON payload. On the target broker, live MQTT returned SoC on `N/c0619ab6bd28/battery/512/Soc` and `N/c0619ab6bd28/system/0/Dc/Battery/Soc`, while the failed calculate path had been waiting on `N/2/...`; using the topic id prevents calculate-time SoC refreshes from addressing the wrong MQTT namespace.
+
 ## 0.7.24 - 2026-05-28
 
 - **Chore:** Dependency refresh, no runtime logic changes.

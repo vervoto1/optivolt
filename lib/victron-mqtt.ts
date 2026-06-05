@@ -55,6 +55,11 @@ function normalizeSocPayload(payload: { value?: unknown } | null): number | null
   return Math.max(0, Math.min(100, n));
 }
 
+function portalIdFromSerialTopic(topic: string): string | undefined {
+  const match = /^N\/([^/]+)\/system\/0\/Serial$/.exec(topic);
+  return match?.[1];
+}
+
 
 export class VictronMqttClient {
   host: string;
@@ -179,7 +184,7 @@ export class VictronMqttClient {
   /**
    * Public API: get the Victron serial (portal id).
    * - If already known, returns cached value.
-   * - Otherwise subscribes once to N/+/system/0/Serial and resolves from payload.value.
+   * - Otherwise subscribes once to N/+/system/0/Serial and resolves from the topic portal id.
    */
   async getSerial({ timeoutMs = 5000 }: { timeoutMs?: number } = {}): Promise<string> {
     if (this.serial) return this.serial;
@@ -205,11 +210,7 @@ export class VictronMqttClient {
 
     const wait = this._waitForFirstMessage(
       client,
-      (topic, payload) => {
-        // Payload is {"value":"xxxxxxxxx"}
-        const obj = JSON.parse(payload.toString()) as { value?: string };
-        return obj?.value;
-      },
+      (topic) => portalIdFromSerialTopic(topic),
       { timeoutMs, label: wildcard },
     );
 

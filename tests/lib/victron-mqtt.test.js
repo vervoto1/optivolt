@@ -121,8 +121,16 @@ describe('VictronMqttClient — getSerial', () => {
     scheduleMessage('N/myserial/system/0/Serial', { value: 'detected-serial' });
 
     const result = await client.getSerial({ timeoutMs: 500 });
-    expect(result).toBe('detected-serial');
-    expect(client.serial).toBe('detected-serial');
+    expect(result).toBe('myserial');
+    expect(client.serial).toBe('myserial');
+  });
+
+  it('uses the MQTT topic portal id even when the Serial payload is a device id', async () => {
+    const client = new VictronMqttClient();
+    scheduleMessage('N/c0619ab6bd28/system/0/Serial', { value: '2' });
+
+    const result = await client.getSerial({ timeoutMs: 500 });
+    expect(result).toBe('c0619ab6bd28');
   });
 
   it('caches detected serial for subsequent calls', async () => {
@@ -132,7 +140,7 @@ describe('VictronMqttClient — getSerial', () => {
     await client.getSerial({ timeoutMs: 500 });
     // Second call — no message scheduled, should use cache
     const result2 = await client.getSerial({ timeoutMs: 100 });
-    expect(result2).toBe('serial-xyz');
+    expect(result2).toBe('myserial');
   });
 
   it('rejects when no serial message arrives within timeout', async () => {
@@ -236,7 +244,7 @@ describe('VictronMqttClient — requestSetting', () => {
     await client.requestSetting('multi/6/Pv/0/MppOperationMode');
 
     expect(mockMqttClient.publishAsync).toHaveBeenCalledWith(
-      'R/detected-auto/multi/6/Pv/0/MppOperationMode',
+      'R/myserial/multi/6/Pv/0/MppOperationMode',
       '',
       { qos: 0, retain: false },
     );
@@ -700,8 +708,8 @@ describe('VictronMqttClient — getSerial concurrent calls (line 120,163)', () =
       client.getSerial({ timeoutMs: 500 }),
       client.getSerial({ timeoutMs: 500 }),
     ]);
-    expect(r1).toBe('concurrent-serial');
-    expect(r2).toBe('concurrent-serial');
+    expect(r1).toBe('myserial');
+    expect(r2).toBe('myserial');
   });
 
   it('clears _serialPromise after timeout so a later call can retry (line 163)', async () => {
