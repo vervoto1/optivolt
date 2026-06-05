@@ -62,6 +62,48 @@ describe('postprocess', () => {
     const data = postprocess({}, sensors, derived);
     expect(data).toEqual([]);
   });
+
+  it('drops implausible spikes (counter resets) above the cap', () => {
+    const spikeRaw = {
+      'sensor.solar': [
+        { start: t1, change: 500 },
+        { start: t2, change: 4_296_000 }, // 4296 kWh counter-reset artifact
+      ],
+    };
+    const data = postprocess(spikeRaw, sensors, []);
+    const solar = data.filter(d => d.sensor === 'Solar');
+    expect(solar).toHaveLength(1);
+    expect(solar[0].value).toBe(500);
+  });
+
+  it('drops negative spikes below the cap', () => {
+    const spikeRaw = {
+      'sensor.solar': [{ start: t1, change: -4_296_000 }],
+    };
+    const data = postprocess(spikeRaw, sensors, []);
+    expect(data.filter(d => d.sensor === 'Solar')).toHaveLength(0);
+  });
+
+  it('keeps values at the cap and drops values above it', () => {
+    const raw = {
+      'sensor.solar': [
+        { start: t1, change: 25_000 }, // exactly at cap → kept
+        { start: t2, change: 25_001 }, // just over → dropped
+      ],
+    };
+    const data = postprocess(raw, sensors, []);
+    const solar = data.filter(d => d.sensor === 'Solar');
+    expect(solar).toHaveLength(1);
+    expect(solar[0].value).toBe(25_000);
+  });
+
+  it('honours a custom maxSlotEnergyWh override', () => {
+    const raw = {
+      'sensor.solar': [{ start: t1, change: 5_000 }],
+    };
+    const data = postprocess(raw, sensors, [], { maxSlotEnergyWh: 1_000 });
+    expect(data.filter(d => d.sensor === 'Solar')).toHaveLength(0);
+  });
 });
 
 describe('aggregateTo15Min', () => {

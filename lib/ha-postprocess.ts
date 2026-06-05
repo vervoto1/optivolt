@@ -31,6 +31,18 @@ export interface HaReading {
 }
 
 /**
+ * Default ceiling for a single statistics period's energy (Wh).
+ *
+ * Any per-period value above this is treated as a sensor artifact (an
+ * energy-counter reset or jump, e.g. after a firmware/MQTT update) rather than
+ * real consumption, and dropped. The cap is well above any plausible slot on a
+ * domestic system but far below a counter-reset spike (which can be megawatt-
+ * hours). A single such spike would otherwise poison the historical mean and
+ * can make the LP infeasible by demanding more load than the grid can supply.
+ */
+export const MAX_PLAUSIBLE_SLOT_ENERGY_WH = 25_000;
+
+/**
  * Get all unique sensor names present in processed data.
  */
 export function getSensorNames(data: StatRecord[]): string[] {
@@ -77,6 +89,7 @@ export function postprocess(
   rawData: Record<string, HaReading[]>,
   sensors: HaSensor[],
   derived: HaDerivedSensor[],
+  { maxSlotEnergyWh = MAX_PLAUSIBLE_SLOT_ENERGY_WH }: { maxSlotEnergyWh?: number } = {},
 ): StatRecord[] {
   const nameOf = Object.fromEntries(sensors.map(s => [s.id, s.name]));
   const unitOf = Object.fromEntries(sensors.map(s => [s.id, s.unit]));
@@ -84,11 +97,19 @@ export function postprocess(
   const flat = Object.entries(rawData).flatMap(([id, readings]) => {
     const name = nameOf[id] ?? id;
     const multiplier = unitOf[id] === 'kWh' ? 1000 : 1;
-    return readings.map(d => ({
-      time: d.start,
-      sensor: name,
-      value: (d.change ?? 0) * multiplier,
-    }));
+    return readings.flatMap(d => {
+      const value = (d.change ?? 0) * multiplier;
+      // Drop implausible spikes (counter resets/jumps) before they reach the
+      // merge, derived series, predictor, and validation metrics.
+      if (Math.abs(value) > maxSlotEnergyWh) {
+        console.warn(
+          `[ha-postprocess] dropping implausible ${name} sample at ${new Date(d.start).toISOString()}: ` +
+          `${(value / 1000).toFixed(1)} kWh exceeds ${(maxSlotEnergyWh / 1000).toFixed(0)} kWh cap`,
+        );
+        return [];
+      }
+      return [{ time: d.start, sensor: name, value }];
+    });
   });
 
   // Merge sensors with the same name (e.g. DSMR tariff 1+2)
