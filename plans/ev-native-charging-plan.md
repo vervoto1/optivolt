@@ -220,53 +220,125 @@ Translate the new settings into `SolverConfig`: resolve `evStartTime` /
 SoC, opportunistic levels, and continuity through. Effective opportunistic cap =
 `max(targetSoc, opportunisticLevel, type2Level if enabled)` clamped to 100%.
 
+> **CRITICAL — reconcile with the existing target clamp.** Today
+> `config-builder.ts:131` does
+> `achievableTargetWh = Math.min(requestedTargetWh, initialWh + maxChargeable_Wh, capacityWh)`
+> and passes the *clamped* value as `evTargetSoc_percent`. That clamp exists only
+> to keep today's **hard** `c_ev_target` equality feasible. Once the target
+> becomes **soft** (below), this clamp becomes harmful: it silently lowers the
+> target before the LP sees it, so `ev_target_shortfall` reads ~0 and
+> `ev_target_met` reports "met" while the car is below the user's *requested*
+> SoC. **Change the clamp to a capacity-only cap**
+> (`Math.min(requestedTargetWh, capacityWh)`) and let the soft constraint carry
+> feasibility. Pick exactly one feasibility mechanism — clamp **or** soft target,
+> not both.
+>
+> **Guard the window.** After resolving slots, require `evStartSlot < depSlot`.
+> If the window is empty (start ≥ departure, or departure already elapsed →
+> `departureTimeToSlot` returns 0), disable EV planning for this solve rather
+> than emitting masks that zero every slot (which, combined with the cardinality
+> bound below, would make the model infeasible). Log the reason.
+
 ### `lib/build-lp.ts`
 
 1. **Earliest-start + ready window mask.** Force `ev_charge_t = 0` for
-   `t < evStartSlot` and `t > departureSlot` (the upper bound likely exists; add
-   the lower bound).
+   `t < evStartSlot` and `t ≥ depSlot`. The upper-bound side already exists
+   implicitly (the SoC target lives at `depSlot - 1`); add the lower bound by
+   pinning the flow bounds to 0 (`gridToEv`/`pvToEv`/`batteryToEv` upper bound 0)
+   and forcing `ev_on_t = 0` for masked slots, so the cardinality bound (#3a)
+   counts only reachable slots.
 2. **Price-limit mask.** When `evApplyPriceLimit`, force `ev_charge_t = 0` for
-   every slot whose import price exceeds `evMaxPrice_cents_per_kWh`. (Mask total
-   EV charge, not just `grid_to_ev`, to mirror the integration, which suppresses
-   charging entirely in over-limit slots.)
-3. **Soft target SoC.** Replace the hard "EV SoC ≥ target at departure" equality
-   with a soft constraint: introduce a non-negative shortfall variable
-   `ev_target_shortfall` with `ev_soc_departure + ev_target_shortfall ≥ target`
-   and add `BIG_PENALTY × ev_target_shortfall` to the objective. With a price
-   mask in place this keeps the model **feasible** when cheap slots are
-   insufficient, and the optimizer still hits the target whenever it can. Keep
-   the penalty well above any realistic energy price so target is honored unless
-   physically/price-mask blocked.
-4. **Minimum-SoC floor (hard).** Add `ev_soc_t ≥ evMinSoc_percent` for all slots
-   at/after the first slot in which the floor is physically reachable from the
-   starting SoC at max power. Min SoC is a safety floor and is **not** subject to
-   the price mask — exempt min-SoC-driven charging slots from the mask (e.g. a
-   dedicated `ev_floor_charge_t` term, or relax the mask until the floor is met).
-5. **Opportunistic value band.** For SoC above target up to the opportunistic
-   cap, add a small **negative cost** (reward) on stored EV energy valued at the
-   opportunistic price threshold, so the optimizer fills that band only when it
-   is cheap. Implement as a marginal value on the EV SoC band above target, not
-   as a constraint. Type 2 is a second band with its own (higher) cap; value it
-   at most the same or a configurable threshold.
-6. **Continuity penalty (MILP, optional / phase 2).** OptiVolt already uses MILP
-   binaries (CV phase). Reuse the EV on/off binary `ev_on_t` and add transition
-   variables capturing `ev_on_t XOR ev_on_{t-1}`; penalize the count of
-   transitions with a small objective weight when `evContinuous`. This biases the
-   solver toward one contiguous block without hard-forcing it.
+   every slot whose import price exceeds `evMaxPrice_cents_per_kWh` — pin the
+   three EV flow bounds to 0 and `ev_on_t = 0` (same mechanism as #1). Mask
+   *total* EV charge, not just `grid_to_ev`, to mirror the integration.
+   **Exception:** slots needed by the min-SoC floor (#4) are never masked.
+3. **Soft target SoC.** Replace the hard `c_ev_target` (`build-lp.ts:445`,
+   `ev_soc_{depSlot-1} ≥ evTargetWh`) with a soft constraint: add a non-negative
+   `ev_target_shortfall` and the constraint
+   `ev_soc_{depSlot-1} + ev_target_shortfall ≥ evTargetWh`, plus
+   `BIG_PENALTY × ev_target_shortfall` in the objective. `BIG_PENALTY` must sit
+   **above** the largest per-Wh import cost in the horizon but **below** the
+   `softMinSocPenalty`/`TIEBREAK` scales so it doesn't distort battery economics —
+   reuse the existing magnitude discipline (the TIEBREAK ladder is `5e-7…4e-6`;
+   the shortfall penalty is a *large* coefficient, e.g. `100` c€/Wh, far above any
+   realistic price). Surface `ev_target_shortfall` in the solution so
+   `parse-solution` can derive `ev_target_met`.
+
+   3a. **Remove/recompute the cardinality lower bound.** `c_ev_min_on`
+   (`build-lp.ts:462`, `Σ ev_on_t ≥ kMin`) was derived from the *hard* deficit and
+   assumes every slot is available. With a soft target and/or any mask it can
+   force more on-slots than exist among reachable slots → **infeasible LP** (the
+   exact failure the soft target is meant to prevent). Fix: when a mask or the
+   soft target is active, either (a) drop `c_ev_min_on` entirely, or (b) recompute
+   `kMin = min(kMin, count(reachable, non-masked slots in [evStartSlot, depSlot)))`.
+   Prefer (b) only if you still want the relaxation-tightening; (a) is simpler and
+   safe. This is the single highest-risk LP interaction — cover it with the
+   regression test in Testing.
+4. **Minimum-SoC floor (hard, MILP-gated, mask-exempt).** A *static* mask cannot
+   express "exempt the floor slots" because the floor slots aren't known at build
+   time. Use a MILP indicator instead:
+   - Add `ev_soc_t ≥ evMinFloorWh` for all `t` at/after the first slot the floor
+     is physically reachable from `evInitialWh` at max power (a hard floor, like
+     today's soc bounds — independent of price).
+   - Introduce a binary `ev_floor_active_t` and a separate flow term
+     `ev_floor_charge_t` (AC into the charger) that is **excluded from the price
+     mask**. Bound `ev_floor_charge_t = 0` whenever the floor is already satisfied
+     (`ev_soc_{t-1} ≥ evMinFloorWh` ⇒ via the indicator), and route it into
+     `c_ev_soc_t` exactly like `grid_to_ev` (AC, `evChargeWhPerW` factor).
+   - The floor charge competes with nothing on price (it's a safety obligation),
+     so it carries only the normal import cost in the objective, no mask, no
+     opportunistic reward.
+
+   ```
+   PRICE-MASK vs MIN-SOC-FLOOR (decision)
+     slot t price > limit?
+        │ no ──► normal masked planning (ev_charge_t free, c_ev_target soft)
+        └ yes ─► ev_charge_t = 0  (masked)
+                    │
+                    └─ but ev_soc_{t-1} < evMinFloorWh ?
+                          │ no ──► stays masked (0)
+                          └ yes ─► ev_floor_charge_t > 0 allowed (mask-exempt,
+                                    pays import cost, bounded by evMaxPow_W)
+   ```
+5. **Opportunistic value band (bounded reward).** For SoC above target up to the
+   opportunistic cap, add a small **negative cost** on stored EV energy in that
+   band. The reward magnitude must be **strictly less** than the marginal import
+   cost of the cheapest slot that could fill the band, in every slot — otherwise
+   the solver fills to the cap regardless of price ("opportunistic" degenerates to
+   "always fill"). Concretely: value the band at the *opportunistic price
+   threshold minus an epsilon*, and verify the sign/magnitude ordering holds
+   against `BIG_PENALTY` (shortfall), `batteryCost_cents`, and the TIEBREAK ladder.
+   Type 2 is a second, higher band with its own cap valued at most the same.
+   Implement as a marginal value on the EV SoC band above target (segmented SoC
+   variable), not a constraint.
+6. **Continuity penalty (MILP, optional / phase 7).** Reuse `ev_on_t` and add
+   transition variables capturing `ev_on_t XOR ev_on_{t-1}`; penalize the
+   transition count with a small objective weight when `evContinuous`. Biases
+   toward one contiguous block without hard-forcing it.
 
 ### `lib/parse-solution.ts`
 
-Surface the new outputs: `ev_soc_percent` already exists; add `ev_target_met`
-(boolean from shortfall ≈ 0) and ensure `ev_charge_mode` reflects planned vs
-opportunistic vs floor (`planned` / `opportunistic` / `min_soc`). The
-override-driven modes (`low_price`, `low_soc`, `keep_on`) are assigned in the
-runtime layer, not here.
+> **CRITICAL — do NOT overload `ev_charge_mode`.** `ev_charge_mode` already
+> exists as the **hardware-actuation hint** enum `EvChargeMode`
+> (`off | fixed | solar_only | solar_grid | max`, `lib/types.ts:136`, computed in
+> `parse-solution.ts:127`/`evChargeMode()`), and it is **consumed by
+> `lib/dess-mapper.ts`** to pick charger amps/strategy. Writing planning labels
+> (`planned`/`opportunistic`/`min_soc`/…) into it would silently break DESS
+> mapping.
+
+Add a **separate** field `ev_plan_mode: 'planned' | 'opportunistic' | 'min_soc'`
+(planning semantics), leave `ev_charge_mode` untouched, and add `ev_target_met`
+(boolean from `ev_target_shortfall ≈ 0`). The override-driven plan modes
+(`low_price`, `low_soc`, `keep_on`) are assigned in the runtime layer and live on
+the decision object, not on the plan row.
 
 ### `lib/dess-mapper.ts`
 
 No structural change required — it already consumes EV flows and applies EV
-discharge constraints. Verify the soft-target change does not alter the mapping
-contract (the mapper reads realized `ev_charge`, not the target).
+discharge constraints. **Verify two things:** (1) the soft-target change does not
+alter the mapping contract (the mapper reads realized `ev_charge`, not the
+target), and (2) `ev_charge_mode` semantics are unchanged (per the
+`ev_plan_mode` split above) so DESS amp/strategy selection is unaffected.
 
 ---
 
@@ -381,6 +453,17 @@ Per `AGENTS.md`: `npm run typecheck`, `npm run lint`, `npm run test:run`.
   when cheap slots are insufficient and still hits target when they are
   sufficient; min-SoC floor reached at the earliest feasible slot and exempt
   from the price mask; opportunistic band only fills below its price threshold.
+  - **CRITICAL regression — feasibility under mask + cardinality bound.** Build
+    a case where the price mask zeros enough slots that fewer than the old `kMin`
+    remain, and assert the LP is **feasible** (proves the `c_ev_min_on` fix in
+    LP-change #3a). Without this test the soft-target work can ship a solver that
+    returns "infeasible" in production.
+  - **`ev_plan_mode` vs `ev_charge_mode`.** Assert `ev_charge_mode` retains its
+    hardware-hint values and `ev_plan_mode` carries planning labels — guards the
+    enum-collision split.
+  - **No false "target met".** With the requested target above what's reachable,
+    assert `ev_target_met === false` and `ev_target_shortfall > 0` (proves the
+    `achievableTargetWh` clamp no longer masks the shortfall).
 - **`ev-decision-service`** (`tests/api/`): priority ordering
   (low-SoC > low-price > min-SoC floor > planned); plug-status gating; mode +
   power returned; tolerant of missing HA (falls back to planned).
@@ -391,6 +474,15 @@ Per `AGENTS.md`: `npm run typecheck`, `npm run lint`, `npm run test:run`.
   HA error / missing plan / restart); plug-gating; `evFailSafeMode: 'stop'`
   issues a single `turn_off` on sustained error; `evActuationPaused` suspends
   control; mock `callHaService`.
+  - **Boot seeding (regression).** First tick after start reads observed charger
+    state, seeds `lastCommand`, and issues **no** write (no blip); tick 2 applies
+    a plan change. Asserts the "clean startup" semantics.
+  - **No plan source.** With `getLastPlan()` null / auto-calculate disabled, the
+    actuator makes no write and reports `status: 'no_plan_source'`.
+  - **Stale plug status.** `evPlugSensor` returning `unavailable` produces a
+    no-write (uncertain), NOT a `turn_off`.
+  - **Contention detection.** Observed state diverging from commanded for N ticks
+    flags contention (and auto-pauses if configured).
 - **Browser** (`tests/app/`): new settings inputs hydrate and snapshot; mode
   badge renders per `/ev/current`; `haSchedule` source hides native controls.
 
@@ -436,10 +528,11 @@ callHaService({ haUrl, haToken, domain, service, target, data }):
 ```
 
 Reuse `resolveHaHttpConfig` for credentials: in add-on mode it posts through the
-supervisor proxy (`http://supervisor/core` + `SUPERVISOR_TOKEN`); the add-on
-manifest `optivolt/config.yaml` must declare `homeassistant_api: true` so the
-supervisor allows service calls. Keep the function generic — the EV actuator is
-just its first caller.
+supervisor proxy (`http://supervisor/core` + `SUPERVISOR_TOKEN`). The add-on
+manifest **already declares `homeassistant_api: true`** (`optivolt/config.yaml:19`),
+so the supervisor already allows service calls — no manifest change is needed.
+Keep the function generic — the EV actuator is just its first caller (the ESS
+plan's writable max-charge-current, ESS phase 8, is the second; build this once).
 
 ### Actuator service (`api/services/ev-actuator-service.ts`)
 
@@ -448,37 +541,78 @@ server start the same way `api/services/auto-calculate.ts` is wired:
 
 1. Every `evControlIntervalSeconds` (default 60), compute the effective decision
    with `computeEvDecision(settings, getLastPlan())` from the override layer.
-2. Gate first: if `!evActuationEnabled` or `evActuationPaused`, do nothing. If
-   the EV is not plug-connected, ensure the charger is off (subject to fail-safe)
-   and return.
+
+   > **Dependency — actuation needs a current plan, which needs auto-calculate.**
+   > `getLastPlan()` is populated only by `auto-calculate.ts`, which is opt-in
+   > (`if (!config?.enabled) return;`). If a user enables `evActuationEnabled`
+   > but not `autoCalculate`, `getLastPlan()` is `null` forever and (per
+   > fail-safe) the charger is never driven — a **silent** dead feature. Surface
+   > this: on actuator start, if auto-calculate is disabled, log a warning and
+   > report it in `GET /ev/actuation` (`status: 'no_plan_source'`). Optionally
+   > trigger a solve from the actuator. Add a startup-validation test.
+2. Gate first: if `!evActuationEnabled` or `evActuationPaused`, do nothing.
+   Plug-status gating with **staleness awareness**: read `evPlugSensor`; if the
+   value is `unavailable`/`unknown` (a transient HA hiccup), treat it as
+   **uncertain → no write** (per fail-safe), NOT as "unplugged → turn off".
+   Only a *fresh, definite* not-connected state ensures the charger is off
+   (subject to fail-safe).
 3. Drive the charger **idempotently** — only issue a service call when the desired
    state differs from the last command OptiVolt sent (track last command in
    memory):
    - on/off via `callHaService('switch', is_charging ? 'turn_on' : 'turn_off', { entity_id: evChargerSwitchEntity })`
    - charge current, if `evChargerCurrentEntity` is set, via
      `callHaService('number', 'set_value', { entity_id: evChargerCurrentEntity }, { value: ev_charge_A })`
-4. Record the last actuation (mode, command, value, timestamp, ok/error) in
-   memory for `GET /ev/actuation` and the EV-tab badge.
+4. **Single-owner contention detection.** Each tick, compare the *observed*
+   charger state against the state OptiVolt last commanded. If they diverge for
+   N consecutive ticks despite OptiVolt not writing (something else is toggling
+   the charger), log it and (optionally) auto-pause — this is the only signal
+   OptiVolt has that a second controller is fighting it.
+5. Record the last actuation (mode, command, value, observed-vs-commanded,
+   timestamp, ok/error) in memory for `GET /ev/actuation` and the EV-tab badge.
 
 Add a small `GET /ev/actuation` route returning that last-actuation record for
 observability.
 
+> **Cadence note.** The actuator ticks every ~60 s on *live* SoC/price but the
+> planned fallback (`getLastPlan()`) is refreshed only every ~15 min and is
+> replaced wholesale with no locking. That's acceptable (the override layer
+> reacts live; the plan is a slow baseline), but document that a tick may read a
+> plan up to one interval stale, and ensure reads of `getLastPlan()` tolerate it
+> being swapped mid-tick (snapshot the reference once per tick).
+
 ### Fail-safe and ownership rules
 
-- **Single owner.** When `evActuationEnabled`, OptiVolt is the **only** writer to
-  the charger entities. The EV Smart Charging integration must be
-  disabled/removed so the two never fight (the cutover steps enforce this).
+- **Single owner (procedural, with a detection backstop).** When
+  `evActuationEnabled`, OptiVolt is the *intended* only writer to the charger
+  entities. Nothing in OptiVolt can technically *prevent* a second controller
+  (the EV Smart Charging integration, or a stray HA automation) from also
+  toggling the switch — idempotency only stops OptiVolt from spamming, it cannot
+  stop the other writer. The cutover steps are the primary guard; the
+  contention-detection in the actuator loop (step 4) is the backstop that surfaces
+  a missed cutover instead of letting the charger flap silently.
+- **Don't fight the battery-protection automation.** The Tesla draws through the
+  Victron inverter, and an independent JK BMS / Victron *max-charge-current*
+  automation may throttle charge current for battery protection (see
+  `CLAUDE.md` and the ESS dashboard plan). When that automation caps current,
+  OptiVolt will command the charger on at planned amps and see SoC not rising;
+  the low-SoC override must **not** escalate into a fight (e.g. cap commanded
+  current to the BMS-allowed value if `evChargerCurrentEntity` is driven, and
+  treat "on but not charging" as the BMS's call, not a fault).
 - **Fail-safe = no write on uncertainty.** On any error (HA unreachable, missing
-  live SoC/price, no current plan) or right after an OptiVolt restart, the
-  actuator makes **no** charger write — the charger holds its last physical
-  state. Never leave the charger forced-on as a side effect of a failure.
-  `evFailSafeMode: 'stop'` is an opt-in stricter mode that issues a single
-  `turn_off` on sustained error.
+  live SoC/price, no current plan, stale plug status) the actuator makes **no**
+  charger write — the charger holds its last physical state. Never leave the
+  charger forced-on as a side effect of a failure. `evFailSafeMode: 'stop'` is an
+  opt-in stricter mode that issues a single `turn_off` on sustained error.
 - **Respect manual control.** A user toggling the charger by hand should not be
   instantly reverted; `evActuationPaused` suspends OptiVolt control, and the
   idempotent design avoids spamming writes.
-- **Clean startup.** On boot, read the charger's current state before the first
-  command so the first tick is idempotent and does not blip the charger.
+- **Clean startup (precise semantics).** "No write on restart" and "idempotent"
+  must not contradict each other. On boot: **tick 1** reads the charger's current
+  observed state and *seeds* `lastCommand = observed` and writes **nothing**
+  (no blip). From **tick 2** onward, normal idempotent writes apply (write only
+  when desired ≠ `lastCommand`). This means a plan change that occurred during the
+  downtime *is* applied on tick 2 — "no write on restart" scopes to the first
+  tick only, it is not "never write until the user changes something".
 
 ### Cutover — retire the integration
 

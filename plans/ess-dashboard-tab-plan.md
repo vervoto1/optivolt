@@ -17,6 +17,26 @@ The system has **two batteries** plus a Victron system view, so the tab must
 support **multiple batteries** generically (not hardcoded to two), driven by
 configuration with sensible defaults seeded for the current hardware.
 
+### Build-vs-link tradeoff (decided: build native)
+
+HA already renders this view in the `ess_system` Lovelace dashboard. Rebuilding
+it natively in OptiVolt is a deliberate choice, with a real cost worth stating so
+it's a decision and not an accident:
+
+- **Why native (the call):** unified OptiVolt look/feel, light/dark theme, and a
+  single pane that sits next to the optimizer — no context switch to HA, no
+  embedded iframes/cards that don't match the rest of the UI.
+- **What it costs:** this duplicates a working dashboard, couples it to OptiVolt's
+  release cycle, and exposes it to **entity-id drift** (the seeded defaults hold
+  hardcoded ids — Victron device id `c0619ab6bd28`, JK BMS prefixes). A BMS
+  firmware update or entity rename silently breaks the seeded mapping.
+- **Mitigation (required):** on load, **validate** that each configured entity id
+  resolves; render missing entities as an explicit "sensor not found" placeholder
+  per tile/series rather than a blank chart, and never let one missing id blank
+  the tab (this aligns with the per-entity failure tolerance in the backend).
+  If link/iframe is ever preferred, that remains a fallback — but the native
+  build is the chosen path.
+
 ### Source dashboard being reproduced
 
 The Home Assistant dashboard (`.storage/lovelace.ess_system` in the
@@ -94,9 +114,25 @@ Read these before starting; the feature plugs into existing plumbing.
   helpers (`toRGBA`, `dim`, `getBuyPriceColor`) live in `app/src/charts/colors.js`.
 - **Tabs.** Tab buttons live in the `<nav role="tablist">` in `app/index.html`;
   panels are `<div role="tabpanel" id="panel-...">`. `setupTabSwitcher()` in
-  `app/main.js` builds a `tabs` array and crossfades panels. The Predictions tab
-  is initialized lazily in `boot()` via `initPredictionsTab()` — mirror that for
-  ESS so the tab does no HA I/O until first shown.
+  `app/main.js` builds a `tabs` array and crossfades panels.
+  - **Correction (do not "mirror Predictions" for laziness).** Predictions is
+    NOT lazy — `app/main.js:117` calls `await initPredictionsTab()` *eagerly* in
+    `boot()`. There is **no** existing per-tab lazy-init hook. To keep startup
+    free of ESS HA traffic (an acceptance criterion), you must **add** a per-tab
+    "activated once" hook in `activateTab()` (or a one-shot guard on the `tab-ess`
+    click handler) and call `initEssTab()` from there — do not init ESS in
+    `boot()`.
+  - **Tab vs panel ordering.** Visual order is set by the **nav button** DOM
+    order (`tab-optimizer`, `tab-ev`, `tab-predictions`, `tab-settings` today),
+    so insert the `tab-ess` button between `tab-ev` and `tab-predictions`. The
+    **panel** elements are show/hidden by id and their DOM position is irrelevant
+    (today `panel-ev` is actually the *last* panel in `index.html`). Place
+    `panel-ess` anywhere sensible; do not try to slot it "between the EV and
+    Predictions panels" — that ordering doesn't exist in the panel DOM. Also note
+    the `tabs` array in `setupTabSwitcher()` is in a different order than the DOM
+    (Optimizer, Predictions, EV, Settings); it pairs each tab with its own panel,
+    so array position doesn't affect routing — just add the ESS `{tab, panel}`
+    entry.
 
 ### UI style tokens to reuse (from `app/index.html`)
 
@@ -191,10 +227,20 @@ Two functions, both pure orchestration over `ha-client.ts`:
      configured (mirror `api/routes/ha.ts`).
   2. Expand each battery's cell-voltage entity list (prefix+count or explicit).
   3. Collect **all** scalar + cell + temperature entity ids across batteries and
-     system into one set, fetch their live states **concurrently** with
-     `Promise.allSettled` over `fetchHaEntityState`. Tolerate per-entity
-     failures (return `null` value for that entity) so one missing sensor never
-     blanks the whole tab.
+     system into one set, then fetch their live states.
+
+     > **Use the bulk states endpoint, not N per-entity GETs.** A naive
+     > `Promise.allSettled` over `fetchHaEntityState` issues one HTTP GET *per
+     > entity* — ~16 cells + 5 temps + ~12 scalars per battery × 2 batteries ≈
+     > 60+ requests to the supervisor proxy on **every** refresh (default every
+     > 30 s while the tab is open). HA exposes `GET /api/states` (all entity
+     > states in **one** request — a Layer-1 built-in). Add a
+     > `fetchHaEntityStates()` to `ha-client.ts` (one bulk call via
+     > `resolveHaHttpConfig`), fetch once, and filter/index the result by the
+     > entity ids you need. Keep per-entity tolerance: an id absent from the bulk
+     > result yields a `null` value for that tile/series, so one missing sensor
+     > never blanks the tab (and a renamed/dropped entity surfaces as "not found",
+     > supporting the entity-drift mitigation in the Goal section).
   4. Shape into a structured response:
 
      ```ts
@@ -219,15 +265,43 @@ Two functions, both pure orchestration over `ha-client.ts`:
   4. Return the raw per-entity reading arrays keyed by entity id, plus the
      `hours`/`period` echoed back. (The client maps these into Chart.js series.)
 
+  > **CRITICAL — statistics vs raw history (trend charts can come up empty).**
+  > `fetchHaStats` calls `recorder/statistics_during_period`, which only returns
+  > data for entities that have **long-term statistics** (a `state_class` of
+  > `measurement`/`total` *and* the recorder configured to keep statistics for
+  > them). Per-cell JK BMS voltages and cell-temperature sensors frequently have
+  > **no `state_class`** or are excluded from the recorder, in which case
+  > `statistics_during_period` returns an **empty array — not an error** — and the
+  > trend charts silently render blank for exactly the data this tab is built
+  > around. (The source Lovelace dashboard mixes `statistics-graph` cards with
+  > `history-graph` cards; the latter read raw history, a different API.) Do this:
+  >
+  > 1. **Verify first.** Add a one-time/diagnostic check (a `GET /ess/history`
+  >    self-test or a startup log) that reports, per configured entity, whether
+  >    statistics exist. Surface "no statistics" entities in the response so the
+  >    UI can label them instead of drawing an empty chart.
+  > 2. **Add a raw-history fallback.** Add `fetchHaHistory()` to `ha-client.ts`
+  >    using `history/history_during_period` (REST `GET /api/history/period/...`,
+  >    or the WS `history/history_during_period` command) for entities that lack
+  >    statistics. `getEssHistory` chooses per entity: statistics where available
+  >    (cheap, pre-aggregated), raw history otherwise. Raw history is higher
+  >    volume — clamp the window and/or downsample client-side.
+  >
+  > This is the headline risk for the tab: without it, the cell-voltage trends —
+  > the main reason the dashboard exists — may ship blank.
+
 ### New route: `api/routes/ess.ts`
 
 - `GET /ess/state` → `getEssState(loadSettings())`.
 - `GET /ess/history?hours=24&period=5minute` → `getEssHistory(...)` with query
   parsing + clamping (`hours` 1..168, `period` whitelist).
-- Optional, **phase 2**: `POST /ess/max-charge-current` to write the Victron ESS
-  max charge current. This requires an HA service call (`number/set_value`),
-  which OptiVolt does not currently issue. Leave the field **read-only in
-  phase 1**; document the service-call approach in a code comment and defer.
+- Optional, **phase 8** (deferred): `POST /ess/max-charge-current` to write the
+  Victron ESS max charge current. This requires an HA service call
+  (`number/set_value`). **Cross-plan dependency:** that write path is exactly the
+  generic `callHaService()` the EV native-charging plan adds to `ha-client.ts`
+  (its phase 8). Build `callHaService` once in the EV work and have this reuse it —
+  do not duplicate. Sequence: EV phase 8 before ESS phase 8. Leave the field
+  **read-only** until then.
 
 Mount in `api/app.ts` next to the other routers: `app.use('/ess', essRouter)`.
 
@@ -348,17 +422,25 @@ Follow `AGENTS.md` PR/testing notes. Run `npm run typecheck`, `npm run lint`
 (it lints `.md`/`.css` too), and `npm run test:run`.
 
 - **Service tests** (`tests/api/ess-service.test.js`): mock `ha-client.ts`
-  (`fetchHaEntityState`, `fetchHaStats`) and assert: cell-prefix expansion;
-  concurrent fetch; per-entity failure tolerance (one rejected entity → `null`
-  value, others still populated); correct entity-id set passed to
-  `fetchHaStats`; `startTime` derived from `hours`.
+  (`fetchHaEntityStates` bulk reader, `fetchHaStats`, `fetchHaHistory`) and
+  assert: cell-prefix expansion; **one** bulk states call (not N per-entity
+  GETs); per-entity tolerance (an id absent from the bulk result → `null` value,
+  others still populated); correct entity-id set passed to `fetchHaStats`;
+  `startTime` derived from `hours`.
+  - **Statistics-empty → history fallback.** When `fetchHaStats` returns an empty
+    array for a cell entity (no `state_class`), `getEssHistory` falls back to
+    `fetchHaHistory` for that entity and the series is populated. Guards the
+    headline "blank trend charts" risk.
 - **Route tests** (`tests/api/ess-routes.test.js`, supertest): 200 shape for
   `/ess/state` and `/ess/history`; 422 when HA unconfigured; query clamping on
-  `hours`/`period`.
+  `hours`/`period`; `/ess/history` reports which entities lack statistics.
 - **Browser tests** (`tests/app/ess-tab.test.js`, jsdom): given a mocked state
   response, `initEssTab()` builds N battery cards; given a 422 it shows the
-  empty state without throwing; tab registers in the switcher and is positioned
-  between EV and Predictions in the nav DOM order.
+  empty state without throwing; a missing/renamed entity renders a "not found"
+  placeholder (not a blank chart); tab registers in the switcher; the `tab-ess`
+  **button** sits between `tab-ev` and `tab-predictions` in the nav DOM;
+  `initEssTab()` is **not** called during `boot()` (no ESS HA traffic until the
+  tab is first activated).
 
 No version bump is required unless `optivolt/` add-on files change (they do not
 for this feature) — see the versioning rules in `CLAUDE.md`. If a release is
