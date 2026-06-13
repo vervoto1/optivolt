@@ -232,17 +232,19 @@ function renderHistory(state, history) {
     const view = views[i];
     if (!view) return;
 
-    // Cell voltage trends — one thin line per cell, legend hidden.
+    // Cell voltage trends — one thin line per cell, legend hidden. Pin the axis
+    // to the LiFePO4 operating window (~2.8–3.8 V) so normal cell variation is
+    // visible instead of being flattened against a 0–4 V auto-range.
     const cells = battery.cells ?? [];
     const cellEntries = cells.map((cell, idx) => ({
       label: `Cell ${idx + 1}`,
       color: cellColor(idx, cells.length),
       points: pointsFor(history, cell.entity),
     }));
-    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, { yTitle: "V", showLegend: false });
+    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, { yTitle: "V", yMin: 2.8, yMax: 3.8, showLegend: false });
     if (!cellsDrawn) setChartMessage(view.trendCanvas, "No trend data");
 
-    // Temperature trends — legend shown, y pinned 0–60 °C like the source.
+    // Temperature trends — legend shown, y pinned to the 20–80 °C operating band.
     const temps = battery.temperatures ?? [];
     const tempEntries = temps.map((temp, idx) => ({
       label: temp.name,
@@ -250,7 +252,7 @@ function renderHistory(state, history) {
       points: pointsFor(history, temp.entity),
     }));
     const tempsDrawn = renderLineChart(view.tempCanvas, tempEntries, {
-      yTitle: "°C", yMin: 0, yMax: 60, showLegend: true,
+      yTitle: "°C", yMin: 20, yMax: 80, showLegend: true,
     });
     if (!tempsDrawn) setChartMessage(view.tempCanvas, "No trend data");
   });

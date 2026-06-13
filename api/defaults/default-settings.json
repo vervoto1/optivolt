@@ -99,7 +99,7 @@
     "enabled": true,
     "historyWindowHours": 24,
     "historyPeriod": "5minute",
-    "refreshIntervalSeconds": 30,
+    "refreshIntervalSeconds": 5,
     "batteries": [
       {
         "name": "Basen Green",
@@ -122,11 +122,7 @@
         "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_min_cell_voltage",
         "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_max_cell_voltage",
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms0_balancing",
-        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current",
-        "extraEntities": [
-          { "entity": "number.jk_bms_jk_bms_bms0_current_calibration", "name": "Current calibration" },
-          { "entity": "number.jk_bms_jk_bms_bms0_voltage_calibration", "name": "Voltage calibration" }
-        ]
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current"
       },
       {
         "name": "Gobel Power",
@@ -149,11 +145,7 @@
         "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_min_cell_voltage",
         "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_max_cell_voltage",
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms1_balancing",
-        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current",
-        "extraEntities": [
-          { "entity": "number.jk_bms_jk_bms_bms1_current_calibration", "name": "Current calibration" },
-          { "entity": "number.jk_bms_jk_bms_bms1_voltage_calibration", "name": "Voltage calibration" }
-        ]
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current"
       }
     ],
     "system": {

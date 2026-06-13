@@ -17,7 +17,7 @@ vi.mock('../../app/src/api/api.js', () => ({
 
 import { initEssTab, deactivateEssTab } from '../../app/src/ess-tab.js';
 import { getEssState, getEssHistory } from '../../app/src/api/api.js';
-import { renderCellSnapshot } from '../../app/src/ess-charts.js';
+import { renderCellSnapshot, renderLineChart } from '../../app/src/ess-charts.js';
 
 function setupDom() {
   document.body.innerHTML = `
@@ -74,6 +74,38 @@ describe('initEssTab — rendering', () => {
     expect(document.querySelector('#ess-batteries').textContent).toContain('Basen Green');
     expect(document.querySelector('#ess-batteries').textContent).toContain('SoC');
     expect(document.getElementById('ess-empty').classList.contains('hidden')).toBe(true);
+  });
+
+  it('pins the cell-voltage trend axis to the LiFePO4 range (2.8–3.8 V)', async () => {
+    getEssState.mockResolvedValue({
+      batteries: [battery('B0')],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+
+    const cellTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === 'V');
+    expect(cellTrendCall).toBeDefined();
+    expect(cellTrendCall[2]).toMatchObject({ yMin: 2.8, yMax: 3.8, showLegend: false });
+  });
+
+  it('pins the temperature trend axis to the 20–80 °C band', async () => {
+    getEssState.mockResolvedValue({
+      batteries: [battery('B0', { temperatures: [{ entity: 'B0.t1', name: 'Temp 1', value: 25 }] })],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+
+    const tempTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === '°C');
+    expect(tempTrendCall).toBeDefined();
+    expect(tempTrendCall[2]).toMatchObject({ yMin: 20, yMax: 80, showLegend: true });
   });
 
   it('renders the system card when present', async () => {

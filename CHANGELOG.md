@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.29 - 2026-06-13
+
+- **ESS dashboard polish:**
+  - Cell-voltage **trend** chart y-axis is now pinned to the LiFePO4 operating window (2.8–3.8 V) instead of auto-scaling from 0 V, so normal per-cell variation is visible rather than flattened.
+  - Temperature **trend** chart y-axis changed from 0–60 °C to **20–80 °C** to match the real operating band.
+  - Removed the seeded **current/voltage calibration** tiles. Those are write-only `number` setpoints (not sensors), so they read back as `unknown`; calibration isn't done through this dashboard. The `essConfig.batteries[].extraEntities` field remains available for genuine read-only extras.
+  - Default live-state **refresh interval** lowered from 30 s to **5 s** (`essConfig.refreshIntervalSeconds`). Trend charts still refetch only on tab (re)activation.
+
 ## 0.7.28 - 2026-06-13
 
 - **Feature:** ESS system dashboard tab. A new **ESS** tab (between EV and Predictions) visualises the home battery system natively in OptiVolt — Chart.js with the existing `card`/`sidebar-label` styling and light/dark theme, no Home Assistant iframe. It is multi-battery and fully config-driven via a new `essConfig` block, seeded out of the box for the current hardware (the two JK BMS units "Basen Green" + "Gobel Power" and the Victron system). Per battery it shows an overview (SoC, capacity, voltage, current, charge/discharge power, min/max cell, balancing), a 16-cell voltage snapshot, cell-voltage and temperature trends, plus a combined SoC-development chart and a Victron system card. New `GET /ess/state` (one bulk `/api/states` read, per-entity tolerant — a renamed/dropped sensor renders a placeholder instead of blanking the tab) and `GET /ess/history` (long-term statistics with a raw-history fallback for sensors that have no statistics, e.g. per-cell BMS voltages, plus server-side downsampling). The tab is lazy-initialised on first activation (no HA traffic at startup) and stops polling on deactivation. `essConfig` is deep-merged on save so editing one field never drops the battery list. When HA is unconfigured the tab degrades to a friendly empty state.
