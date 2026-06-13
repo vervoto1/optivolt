@@ -90,6 +90,46 @@ export async function fetchHaEntityStates({ haUrl, haToken }: FetchHaCredentials
   return res.json() as Promise<HaEntityState[]>;
 }
 
+interface CallHaServiceOptions extends FetchHaCredentials {
+  domain: string;                       // e.g. 'switch', 'number'
+  service: string;                      // e.g. 'turn_on', 'set_value'
+  target?: Record<string, unknown>;     // e.g. { entity_id: 'switch.charger' }
+  data?: Record<string, unknown>;       // e.g. { value: 16 }
+}
+
+/**
+ * Call a Home Assistant service via the REST `POST /api/services/{domain}/{service}`
+ * endpoint — the generic WRITE path (ha-client is otherwise read-only).
+ *
+ * In add-on mode this posts through the supervisor proxy
+ * (`http://supervisor/core` + `SUPERVISOR_TOKEN`); the add-on manifest already
+ * declares `homeassistant_api: true`, so no manifest change is needed. The HA
+ * REST API accepts the target (`entity_id`) and service data merged into one
+ * top-level JSON body.
+ */
+export async function callHaService({
+  haUrl,
+  haToken,
+  domain,
+  service,
+  target,
+  data,
+}: CallHaServiceOptions): Promise<void> {
+  const cfg = resolveHaHttpConfig(haUrl, haToken);
+  if (!cfg) {
+    throw new Error('Home Assistant connection is not configured');
+  }
+  const body = { ...(target ?? {}), ...(data ?? {}) };
+  const res = await fetch(`${cfg.baseUrl}/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`HA service ${domain}.${service} returned ${res.status}`);
+  }
+}
+
 export interface HaHistoryEntry {
   entity_id?: string;
   state: string;

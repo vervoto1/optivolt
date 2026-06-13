@@ -3,6 +3,7 @@ import { startAutoCalculate, stopAutoCalculate } from './services/auto-calculate
 import { startDessPriceRefresh, stopDessPriceRefresh } from './services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from './services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from './services/shore-optimizer.ts';
+import { startEvActuator, stopEvActuator } from './services/ev-actuator-service.ts';
 import { loadSettings } from './services/settings-store.ts';
 
 const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
@@ -14,6 +15,7 @@ async function shutdown() {
   stopDessPriceRefresh();
   await stopPvCurtailment();
   stopShoreOptimizer();
+  stopEvActuator();
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);
@@ -30,6 +32,7 @@ app.listen(port, host, () => {
       startDessPriceRefresh(settings);
       startPvCurtailment(settings);
       startShoreOptimizer(settings);
+      startEvActuator(settings);
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });

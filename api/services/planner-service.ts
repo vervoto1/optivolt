@@ -15,6 +15,7 @@ import { applyPredictionAdjustmentsToData } from './prediction-adjustments.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
+import { resolveEvMode } from './ev-mode.ts';
 import { getRebalanceNudge, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
 import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
@@ -83,6 +84,8 @@ export interface ComputePlanResult {
   summary: PlanSummary;
   rebalanceWindow?: RebalanceWindow;
   rebalanceNudge: RebalanceNudge;
+  /** Wall-clock time the plan was computed — the actuator's plan-freshness check. */
+  computedAtMs: number;
 }
 
 /**
@@ -207,8 +210,10 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     cfg = buildSolverConfigFromSettings(settings, data, timing.startMs);
   }
 
-  // Always refresh EV load from HA when evConfig is enabled (schedule changes frequently)
-  if (settings.evConfig?.enabled) {
+  // Refresh EV load from HA only in the legacy haSchedule mode (schedule changes
+  // frequently). Native mode plans EV charge in the LP and must NOT also inject
+  // evLoad, or EV draw would be double-counted.
+  if (resolveEvMode(settings) === 'haSchedule') {
     try {
       const evLoad = await fetchEvLoadFromHA(settings);
       if (evLoad) {
@@ -304,7 +309,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const rebalanceNudge = getRebalanceNudge(data);
 
-  lastPlan = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow, rebalanceNudge };
+  lastPlan = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow, rebalanceNudge, computedAtMs: Date.now() };
   updatePvCurtailmentPlan({ cfg, rows: rowsWithDess });
 
   // Persist plan snapshot for adaptive learning (fire-and-forget)
@@ -379,14 +384,29 @@ export async function writePlanToVictron(rows: PlanRowWithDess[], { force = fals
   lastDessFingerprint = fp;
 }
 
+// Serialization chain: all plan computation + Victron writes run one-at-a-time.
+// Callers (auto-calculate, POST /calculate, DESS price refresh, the EV actuator
+// reconcile) share the module-global lastPlan / lastDessFingerprint and the MQTT
+// connection; without this two solves could interleave around their awaits,
+// corrupt the fingerprint (skipping a needed rewrite), or issue concurrent
+// schedule writes.
+let planWriteChain: Promise<unknown> = Promise.resolve();
+
 export async function planAndMaybeWrite({
   updateData = false,
   writeToVictron = false,
   forceWrite = false,
 } = {}): Promise<ComputePlanResult> {
-  const result = await computePlan({ updateData });
-  if (writeToVictron) {
-    await writePlanToVictron(result.rows, { force: forceWrite });
-  }
-  return result;
+  const run = async (): Promise<ComputePlanResult> => {
+    const result = await computePlan({ updateData });
+    if (writeToVictron) {
+      await writePlanToVictron(result.rows, { force: forceWrite });
+    }
+    return result;
+  };
+  // Chain after whatever is in flight (run regardless of its outcome), and keep
+  // the chain alive past rejections so one failed solve doesn't wedge the queue.
+  const next = planWriteChain.then(run, run);
+  planWriteChain = next.catch(() => {});
+  return next;
 }

@@ -1507,11 +1507,10 @@
             <h2 class="sidebar-label">EV Charging</h2>
           </div>
           <div class="space-y-3">
-            <label class="toggle">
-              <input id="ev-enabled" type="checkbox">
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">EV charging enabled</span>
-            </label>
+            <p class="text-xs text-slate-400 dark:text-slate-500">
+              These settings apply only when the EV source is <strong>HA schedule</strong>
+              (set in the EV tab). In <strong>Native</strong> mode OptiVolt plans EV charging itself.
+            </p>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charger power (W)</span>
               <input id="ev-charger-power" type="number" step="100" value="11000" class="form-input" />
@@ -1947,6 +1946,13 @@
             <span class="text-sm text-slate-600 dark:text-slate-400">Enable EV charging</span>
           </label>
           <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">EV source</span>
+            <select id="ev-source" class="form-input" data-settings-input data-no-autosolve>
+              <option value="native">Native (OptiVolt plans)</option>
+              <option value="haSchedule">HA schedule (legacy reader)</option>
+            </select>
+          </label>
+          <label class="block text-sm">
             <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Ready by</span>
             <div class="flex mt-1">
               <input id="ev-departure-time" type="datetime-local" class="form-input flex-1 min-w-0 !mt-0 !rounded-r-none !border-r-0" step="900" data-settings-input />
@@ -1975,6 +1981,16 @@
 
         <!-- Plan summary -->
         <div class="mt-4 summary-panel">
+          <div id="ev-tab-mode-row" class="hidden flex items-center justify-between px-3 py-2.5 border-b border-slate-100 dark:border-white/5">
+            <div>
+              <div class="stat-label mb-0.5">Current mode</div>
+              <span id="ev-tab-mode-badge" class="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">—</span>
+            </div>
+            <div class="text-right">
+              <div class="stat-label mb-0.5">Target</div>
+              <span id="ev-tab-target-met" class="text-xs font-medium text-slate-400 dark:text-slate-500">—</span>
+            </div>
+          </div>
           <div id="ev-tab-current-soc-row" class="hidden grid grid-cols-2 border-b border-slate-100 dark:border-white/5">
             <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
               <div class="stat-label mb-0.5">Current SoC</div>
@@ -2030,6 +2046,124 @@
               <div class="stat-label mb-2">Charge mode slots</div>
               <div id="ev-tab-mode-rows"></div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- EV Smart Charging (feature parity) -->
+      <section class="card">
+        <h2 class="sidebar-label mb-4">Smart Charging</h2>
+        <div class="space-y-3">
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Earliest start (optional)</span>
+            <input id="ev-start-time" type="datetime-local" class="form-input" step="900" data-settings-input data-no-autosolve />
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Minimum SoC (%)</span>
+            <input id="ev-min-soc" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+          </label>
+          <p id="ev-charging-speed-hint" class="text-xs text-slate-400 dark:text-slate-500"></p>
+
+          <!-- Price -->
+          <label class="toggle">
+            <input id="ev-apply-price-limit" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Apply price limit</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Max price (c€/kWh)</span>
+            <input id="ev-max-price" type="number" step="0.1" class="form-input" data-settings-input />
+          </label>
+
+          <!-- Opportunistic -->
+          <label class="toggle">
+            <input id="ev-opportunistic-enabled" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Opportunistic top-up</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Opportunistic level (%)</span>
+            <input id="ev-opportunistic-level" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+          </label>
+          <label class="toggle">
+            <input id="ev-opportunistic-type2-enabled" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Opportunistic band 2</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Opportunistic level 2 (%)</span>
+            <input id="ev-opportunistic-type2-level" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+          </label>
+
+          <!-- Reactive overrides -->
+          <label class="toggle">
+            <input id="ev-low-price-enabled" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Low-price charging</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Low-price level (c€/kWh)</span>
+            <input id="ev-low-price-level" type="number" step="0.1" class="form-input" data-settings-input data-no-autosolve />
+          </label>
+          <label class="toggle">
+            <input id="ev-low-soc-enabled" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Low-SoC charging</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Low-SoC level (%)</span>
+            <input id="ev-low-soc-level" type="number" min="0" max="100" step="1" class="form-input" data-settings-input data-no-autosolve />
+          </label>
+          <label class="toggle">
+            <input id="ev-keep-on" type="checkbox" data-settings-input data-no-autosolve>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Keep charger on</span>
+          </label>
+          <label class="toggle">
+            <input id="ev-continuous" type="checkbox" data-settings-input>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Prefer continuous block</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- EV Actuation (OptiVolt drives the charger) -->
+      <section class="card">
+        <h2 class="sidebar-label mb-4">Actuation</h2>
+        <div class="space-y-3">
+          <p class="text-xs text-slate-400 dark:text-slate-500">
+            When enabled, OptiVolt drives the physical charger via Home Assistant
+            service calls (idempotent, fail-safe). Lets the EV Smart Charging
+            integration be uninstalled.
+          </p>
+          <label class="toggle">
+            <input id="ev-actuation-enabled" type="checkbox" data-settings-input data-no-autosolve>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">OptiVolt controls the charger</span>
+          </label>
+          <label class="toggle">
+            <input id="ev-actuation-paused" type="checkbox" data-settings-input data-no-autosolve>
+            <span class="toggle-knob"></span>
+            <span class="text-sm text-slate-600 dark:text-slate-400">Pause control (kill-switch)</span>
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charger switch entity</span>
+            <input id="ev-charger-switch-entity" type="text" placeholder="switch.tesla_charging" class="form-input font-mono text-xs" data-settings-input data-no-autosolve />
+          </label>
+          <label class="block text-sm">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charge-current entity (optional)</span>
+            <input id="ev-charger-current-entity" type="text" placeholder="number.tesla_charging_amps" class="form-input font-mono text-xs" data-settings-input data-no-autosolve />
+          </label>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block text-sm">Control interval (s)
+              <input id="ev-control-interval" type="number" min="5" step="5" class="form-input" data-settings-input data-no-autosolve />
+            </label>
+            <label class="block text-sm">Fail-safe
+              <select id="ev-fail-safe-mode" class="form-input" data-settings-input data-no-autosolve>
+                <option value="hold">Hold (no write)</option>
+                <option value="stop">Stop (turn off)</option>
+              </select>
+            </label>
           </div>
         </div>
       </section>

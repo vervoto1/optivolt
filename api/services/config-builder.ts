@@ -6,7 +6,8 @@ import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } f
 import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
-import { AC_PHASE_VOLTAGE_V } from '../../lib/build-lp.ts';
+import { resolveEvMode } from './ev-mode.ts';
+import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult } from '../types.ts';
 
@@ -22,6 +23,23 @@ function departureTimeToSlot(
   const slotsAvailable = Math.floor((departureMs - startMs) / (stepSize_m * 60_000));
   if (slotsAvailable <= 0) return 0;
   return Math.min(slotsAvailable, T + 1);
+}
+
+/**
+ * Resolve an earliest-start time to the first slot index at/after which charging
+ * is allowed. Empty/invalid/elapsed start time → 0 (no earliest-start
+ * restriction). Slots strictly before the returned index are masked.
+ */
+function startTimeToSlot(
+  startTime: string | undefined,
+  startMs: number,
+  stepSize_m: number,
+): number {
+  if (!startTime) return 0;
+  const ms = new Date(startTime).getTime();
+  if (!Number.isFinite(ms)) return 0;
+  const slot = Math.ceil((ms - startMs) / (stepSize_m * 60_000));
+  return slot > 0 ? slot : 0;
 }
 
 /**
@@ -84,8 +102,13 @@ export function buildSolverConfigFromSettings(
     initialSoc_percent:                   data.soc.value,
   };
 
-  // EV load: window if present, otherwise default to zeros matching load_W length
-  base.evLoad_W = data.evLoad
+  // EV load (uncontrollable) injection. CRITICAL: in native mode the LP owns EV
+  // charging via the controllable grid/pv/battery_to_ev variables, so the
+  // uncontrollable data.evLoad must NOT also be folded into the house load — that
+  // would double-count the EV (the same draw as both fixed load AND planned
+  // charge). Suppress it in native mode; keep it for off / haSchedule modes
+  // (where it is the manual/API or legacy-reader EV load).
+  base.evLoad_W = (resolveEvMode(settings) !== 'native' && data.evLoad)
     ? extractWindow(data.evLoad, nowMs, endMs)
     : new Array(base.load_W.length).fill(0);
 
@@ -115,37 +138,74 @@ export function buildSolverConfigFromSettings(
     base.rebalanceTargetSoc_percent = settings.maxSoc_percent;
   }
 
-  if (settings.evEnabled && evState?.pluggedIn) {
+  if (resolveEvMode(settings) === 'native' && evState?.pluggedIn) {
     const T = base.load_W.length;
     // Three-phase chargers deliver 3x the power per amp. Single source for the
     // A->W conversion; parse-solution does the inverse with the same phase count.
     const phases = settings.evChargePhases === 3 ? 3 : 1;
-    const wattsPerAmp = AC_PHASE_VOLTAGE_V * phases;
+    const wattsPerAmp = evChargeWattsPerAmp(settings.evChargePhases);
     const minPow_W = settings.evMinChargeCurrent_A * wattsPerAmp;
     const maxPow_W = settings.evMaxChargeCurrent_A * wattsPerAmp;
     const capacityWh = settings.evBatteryCapacity_kWh * 1000;
-    const stepHours = settings.stepSize_m / 60;
 
     const D = departureTimeToSlot(settings.evDepartureTime, nowMs, settings.stepSize_m, T);
-    if (D > 0) {
-      const initialWh = (evState.soc_percent / 100) * capacityWh;
-      const requestedTargetWh = (settings.evTargetSoc_percent / 100) * capacityWh;
-      const chargingSlots = Math.min(D, T);
-      const efficiency = settings.evChargeEfficiency_percent / 100;
-      const maxChargeable_Wh = maxPow_W * stepHours * chargingSlots * efficiency;
-      const achievableTargetWh = Math.min(requestedTargetWh, initialWh + maxChargeable_Wh, capacityWh);
+    // Earliest-start window: slot index at/after which charging is allowed.
+    const startSlot = startTimeToSlot(settings.evStartTime, nowMs, settings.stepSize_m);
+
+    // Guard the window: require startSlot < depSlot. An empty window (start at or
+    // past departure, or departure already elapsed → D===0) would otherwise emit
+    // masks that zero every slot and, combined with the cardinality bound, make
+    // the model infeasible. Disable EV planning for this solve instead.
+    if (D > 0 && startSlot < D) {
+      // Capacity-only clamp. The OLD achievable-charge clamp lowered the target
+      // before the LP saw it, so the (now soft) target read as "met" while the
+      // car sat below the user's requested SoC. Soft target carries feasibility.
+      const requestedTargetWh = Math.min((settings.evTargetSoc_percent / 100) * capacityWh, capacityWh);
 
       const ev: EvConfig = {
         evMinChargePower_W: Math.min(minPow_W, maxPow_W),
         evMaxChargePower_W: maxPow_W,
         evBatteryCapacity_Wh: capacityWh,
         evInitialSoc_percent: evState.soc_percent,
-        evTargetSoc_percent: (achievableTargetWh / capacityWh) * 100,
+        evTargetSoc_percent: (requestedTargetWh / capacityWh) * 100,
         evDepartureSlot: D,
         evChargeEfficiency_percent: settings.evChargeEfficiency_percent,
         evChargePhases: phases,
       };
+
+      if (startSlot > 0) ev.evStartSlot = startSlot;
+
+      // Price limit (hard mask; min-SoC floor stays exempt inside build-lp).
+      if (settings.evApplyPriceLimit && Number.isFinite(settings.evMaxPrice_cents_per_kWh)) {
+        ev.evApplyPriceLimit = true;
+        ev.evMaxPrice_cents_per_kWh = settings.evMaxPrice_cents_per_kWh;
+      }
+
+      // Minimum-SoC safety floor (soft, mask-exempt, sourced). Only meaningful
+      // above the initial SoC — otherwise it is already satisfied.
+      if (Number.isFinite(settings.evMinSoc_percent) && (settings.evMinSoc_percent ?? 0) > 0) {
+        ev.evMinSocFloor_percent = Math.min(settings.evMinSoc_percent!, settings.evTargetSoc_percent);
+      }
+
+      // Opportunistic top-up bands (caps above target, clamped to 100%).
+      if (settings.evOpportunisticEnabled && Number.isFinite(settings.evOpportunisticLevel_percent)) {
+        const cap = Math.min(100, Math.max(settings.evTargetSoc_percent, settings.evOpportunisticLevel_percent!));
+        if (cap > settings.evTargetSoc_percent) ev.evOpportunisticCap_percent = cap;
+      }
+      if (settings.evOpportunisticType2Enabled && Number.isFinite(settings.evOpportunisticType2Level_percent)) {
+        const base1 = ev.evOpportunisticCap_percent ?? settings.evTargetSoc_percent;
+        const cap2 = Math.min(100, Math.max(base1, settings.evOpportunisticType2Level_percent!));
+        if (cap2 > base1) ev.evOpportunisticType2Cap_percent = cap2;
+      }
+
+      if (settings.evContinuous) ev.evContinuous = true;
+
       base.ev = ev;
+    } else {
+      console.log(
+        `[config-builder] EV planning disabled: empty charge window ` +
+        `(startSlot=${startSlot}, departureSlot=${D}).`,
+      );
     }
   }
 
@@ -221,7 +281,7 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
   if (shouldSaveData) await saveData(data);
 
   let evState: { pluggedIn: boolean; soc_percent: number } | undefined;
-  if (settings.evEnabled && settings.evSocSensor && settings.evPlugSensor) {
+  if (resolveEvMode(settings) === 'native' && settings.evSocSensor && settings.evPlugSensor) {
     try {
       const [socEntity, plugEntity] = await Promise.all([
         fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evSocSensor }),

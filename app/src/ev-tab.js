@@ -1,7 +1,51 @@
 import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./charts.js";
 import { formatKWh, updateStackedBarContainer } from "./state.js";
+import { fetchEvStatus } from "./api/api.js";
+
+// Live decision badge styling per effective mode (overrides + plan).
+const DECISION_BADGE = {
+  low_soc:       { label: 'Low SoC',       cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' },
+  low_price:     { label: 'Low price',     cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-400' },
+  min_soc:       { label: 'Min SoC',       cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400' },
+  opportunistic: { label: 'Opportunistic', cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-400' },
+  planned:       { label: 'Planned',       cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  keep_on:       { label: 'Keep on',       cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400' },
+  idle:          { label: 'Idle',          cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' },
+};
+
+// Fetch the effective live decision and update the EV-tab mode badge +
+// target-met indicator. Tolerant of missing plan / HA (hides the row).
+export async function updateEvModeBadge(els) {
+  if (!els || !els.evTabModeBadge) return;
+  try {
+    // Compact, purpose-built status endpoint (mode + targetMet) rather than the
+    // heavier /ev/current (which also computes the full plan-derived flow split).
+    const cur = await fetchEvStatus();
+    const cfg = DECISION_BADGE[cur.mode] ?? DECISION_BADGE.idle;
+    els.evTabModeBadge.textContent = cfg.label;
+    els.evTabModeBadge.className = `inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${cfg.cls}`;
+    if (els.evTabModeRow) els.evTabModeRow.classList.remove('hidden');
+    if (els.evTabTargetMet) {
+      if (cur.targetMet === true) {
+        els.evTabTargetMet.textContent = '✓ met';
+        els.evTabTargetMet.className = 'text-xs font-medium text-emerald-600 dark:text-emerald-400';
+      } else if (cur.targetMet === false) {
+        els.evTabTargetMet.textContent = 'below target';
+        els.evTabTargetMet.className = 'text-xs font-medium text-amber-600 dark:text-amber-400';
+      } else {
+        els.evTabTargetMet.textContent = '—';
+        els.evTabTargetMet.className = 'text-xs font-medium text-slate-400 dark:text-slate-500';
+      }
+    }
+  } catch {
+    if (els.evTabModeRow) els.evTabModeRow.classList.add('hidden');
+  }
+}
 
 export function updateEvPanel(els, rows, summary, stepSize_m = 15) {
+  // Live effective decision badge (fire-and-forget; tolerant of no plan / no HA).
+  void updateEvModeBadge(els);
+
   const evTotal = summary?.evChargeTotal_kWh ?? 0;
   const hasEv = evTotal > 0;
 

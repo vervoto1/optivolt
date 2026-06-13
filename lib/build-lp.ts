@@ -17,6 +17,17 @@ export const DEFAULT_INVERTER_EFFICIENCY_PERCENT = 95;
 // (parse-solution).
 export const AC_PHASE_VOLTAGE_V = 230;
 
+/**
+ * Single source for the EV charge amps<->watts conversion:
+ * `watts = amps * AC_PHASE_VOLTAGE_V * phases`. Three-phase delivers 3x the
+ * power per amp; anything other than 3 is treated as single-phase. Used by
+ * config-builder (A->W), parse-solution (W->A), and the decision service so all
+ * sites agree on one factor.
+ */
+export function evChargeWattsPerAmp(phases: number | undefined): number {
+  return AC_PHASE_VOLTAGE_V * (phases === 3 ? 3 : 1);
+}
+
 /*
  * LP unit conventions
  * ───────────────────
@@ -198,6 +209,15 @@ export function buildLP({
   const batteryToEv = (t: number) => `battery_to_ev_${t}`;
   const evOn        = (t: number) => `ev_on_${t}`;
   const evSocVar    = (t: number) => `ev_soc_${t}`;
+  // Mask-exempt minimum-SoC floor flows (fully sourced; never free energy).
+  const gridToEvFloor    = (t: number) => `grid_to_ev_floor_${t}`;
+  const pvToEvFloor      = (t: number) => `pv_to_ev_floor_${t}`;
+  const batteryToEvFloor = (t: number) => `battery_to_ev_floor_${t}`;
+  const evFloorShortfall = (t: number) => `ev_floor_shortfall_${t}`;
+  const evTargetShortfall = 'ev_target_shortfall';
+  const evOppBand        = 'ev_opp_band';
+  const evOppBand2       = 'ev_opp_band2';
+  const evTrans          = (t: number) => `ev_trans_${t}`;
 
   // EV derived constants (only used when ev is defined)
   const evActive        = ev != null;
@@ -213,6 +233,64 @@ export function buildLP({
   // pv_to_ev and battery_to_ev are DC; AC arriving at the EV charger = η_inv * variable.
   // So storage gained per W of those flows = η_inv * evChargeWhPerW.
   const evChargeWhPerW_dc = evChargeWhPerW * eta_inv;
+
+  // ---- Feature-parity planning controls ----
+  const evStartSlot       = Math.max(0, Math.trunc(ev?.evStartSlot ?? 0));
+  const evApplyPriceLimit = !!ev?.evApplyPriceLimit;
+  const evMaxPrice        = ev?.evMaxPrice_cents_per_kWh ?? Number.POSITIVE_INFINITY;
+  const evMinFloorWh      = (ev?.evMinSocFloor_percent ?? 0) / 100 * evCapacityWh;
+  // Floor only matters when it sits above the initial SoC.
+  const evFloorActive     = evActive && evMinFloorWh > evInitialWh + 1e-6;
+  const evOppCapWh        = ev?.evOpportunisticCap_percent != null
+    ? (ev.evOpportunisticCap_percent / 100) * evCapacityWh : 0;
+  const evOppCap2Wh       = ev?.evOpportunisticType2Cap_percent != null
+    ? (ev.evOpportunisticType2Cap_percent / 100) * evCapacityWh : 0;
+  // Opportunistic bands are only meaningful when there is a hard departure slot
+  // (the band SoC is measured at depSlot-1) and a cap above target.
+  const evHasDepConstraint = evActive && evDepSlot <= T && evDepSlot > 0;
+  const evOppActive  = evHasDepConstraint && evOppCapWh  > evTargetWh + 1e-6;
+  const evOppActive2 = evOppActive && evOppCap2Wh > evOppCapWh + 1e-6;
+  const evContinuous = !!ev?.evContinuous && evActive;
+
+  // A slot is masked (normal EV charge forced to 0) when it is before the
+  // earliest-start window, at/after the departure slot, or — under a price
+  // limit — priced above the ceiling. The min-SoC floor flow is exempt.
+  const evMaskedSlot = (t: number): boolean => evActive && (
+    t < evStartSlot ||
+    t >= evDepSlot ||
+    (evApplyPriceLimit && importPrice[t] > evMaxPrice)
+  );
+
+  // Soft-constraint penalty magnitudes (c€ per Wh of shortfall / reward).
+  // BIG_PENALTY must strictly exceed the largest achievable per-Wh saving from
+  // NOT charging (= most expensive per-Wh charge cost over the horizon) so the
+  // solver always meets the target when physically/price-mask feasible.
+  // FLOOR_PENALTY outranks BIG_PENALTY so the safety floor wins over the target.
+  let maxAbsPriceCoeff = 0;
+  let minChargeCostPerWh = Number.POSITIVE_INFINITY;
+  if (evActive) {
+    for (let t = 0; t < T; t++) {
+      const a = Math.max(Math.abs(importPrice[t]), Math.abs(exportPrice[t])) * priceCoeff;
+      if (a > maxAbsPriceCoeff) maxAbsPriceCoeff = a;
+      // Cheapest per-Wh charge cost among slots that can actually charge.
+      if (!evMaskedSlot(t) && evChargeWhPerW > 0) {
+        const c = (importPrice[t] * priceCoeff) / evChargeWhPerW;
+        if (c < minChargeCostPerWh) minChargeCostPerWh = c;
+      }
+    }
+  }
+  const maxChargeCostPerWh = evChargeWhPerW > 0 ? maxAbsPriceCoeff / evChargeWhPerW : 0;
+  const BIG_PENALTY = Math.max(maxChargeCostPerWh * 10, softMinSocPenalty_cents_per_Wh * 10, 1);
+  const FLOOR_PENALTY = BIG_PENALTY * 10;
+  // Opportunistic reward (per Wh stored above target at departure). Strictly
+  // below the cheapest per-Wh charge cost so grid never fills the band — only
+  // surplus PV that is worth more stored than exported. Band 2 rewards slightly
+  // less so band 1 fills first.
+  const evOppReward1 = (evOppActive && Number.isFinite(minChargeCostPerWh))
+    ? Math.max(0, minChargeCostPerWh * 0.99) : 0;
+  const evOppReward2 = evOppReward1 * 0.98;
+  // Small contiguity weight: penalize on/off transitions to bias one block.
+  const evContWeight = TIEBREAK.evOnPerSlot * 0.5;
 
   // Variable name helpers
   const gridToLoad = (t: number) => `grid_to_load_${t}`;
@@ -274,8 +352,34 @@ export function buildLP({
       if (batteryCost_cents !== 0) objTerms.push(` + ${toNum(batteryCost_cents)} ${batteryToEv(t)}`);
       // Symmetry-breaking: escalating penalty prefers earlier charging when slots are cost-equivalent.
       objTerms.push(` + ${toNum(TIEBREAK.evOnPerSlot * (t + 1))} ${evOn(t)}`);
+      if (evFloorActive) {
+        // Floor flows are priced exactly like their normal counterparts so the
+        // mask-exempt floor energy is never free — it is paid at market.
+        objTerms.push(` + ${toNum(gridToEvCoeff)} ${gridToEvFloor(t)}`);
+        objTerms.push(` + ${toNum(TIEBREAK.preferPvForEv + TIEBREAK.pvLoadOverEv)} ${pvToEvFloor(t)}`);
+        if (batteryCost_cents !== 0) objTerms.push(` + ${toNum(batteryCost_cents)} ${batteryToEvFloor(t)}`);
+        // Soft floor penalty (per slot below the floor) — drives charging to the
+        // floor ASAP; outranks the target penalty.
+        objTerms.push(` + ${toNum(FLOOR_PENALTY)} ${evFloorShortfall(t)}`);
+      }
     }
     objTerms.push(` + ${toNum(socShortfallCoeff)} ${socShortfall(t)}`);
+  }
+  // EV soft target + opportunistic reward + contiguity (objective, outside the
+  // per-slot loop).
+  if (evHasDepConstraint) {
+    objTerms.push(` + ${toNum(BIG_PENALTY)} ${evTargetShortfall}`);
+  }
+  if (evOppActive && evOppReward1 > 0) {
+    objTerms.push(` - ${toNum(evOppReward1)} ${evOppBand}`);
+    if (evOppActive2 && evOppReward2 > 0) {
+      objTerms.push(` - ${toNum(evOppReward2)} ${evOppBand2}`);
+    }
+  }
+  if (evContinuous) {
+    for (let t = 1; t < T; t++) {
+      objTerms.push(` + ${toNum(evContWeight)} ${evTrans(t)}`);
+    }
   }
   // Terminal SOC valuation
   if (terminalPrice_cents_per_Wh > 0) {
@@ -305,7 +409,9 @@ export function buildLP({
 
   // PV split (DC W from PV bus). pv_to_load/grid/ev are DC W consumed; pv_curtail discards DC.
   for (let t = 0; t < T; t++) {
-    const pvEvTerm = evActive ? ` + ${pvToEv(t)}` : '';
+    const pvEvTerm = evActive
+      ? ` + ${pvToEv(t)}${evFloorActive ? ` + ${pvToEvFloor(t)}` : ''}`
+      : '';
     lines.push(` c_pv_split_${t}: ${pvToLoad(t)} + ${pvToBattery(t)} + ${pvToGrid(t)} + ${pvCurtail(t)}${pvEvTerm} = ${pv_W[t]}`);
   }
 
@@ -314,7 +420,13 @@ export function buildLP({
   //        + chargeWhPerW_pv * pv_to_battery_t           (DC→DC, only η_bc)
   //        + chargeWhPerW_grid * grid_to_battery_t       (AC→DC→bat: η_inv * η_bc)
   //        - dischargeWhPerW * (battery_to_load + battery_to_grid + battery_to_ev)  (DC bus drain → 1/η_bd)
-  const evBatTerm = (t: number) => evActive ? ` + ${toNum(dischargeWhPerW)} ${batteryToEv(t)}` : '';
+  const evBatTerm = (t: number) => {
+    if (!evActive) return '';
+    let s = ` + ${toNum(dischargeWhPerW)} ${batteryToEv(t)}`;
+    // Floor flow also drains the home battery — count it in the SoC evolution.
+    if (evFloorActive) s += ` + ${toNum(dischargeWhPerW)} ${batteryToEvFloor(t)}`;
+    return s;
+  };
   lines.push(` c_soc_0: ${soc(0)} - ${toNum(chargeWhPerW_grid)} ${gridToBattery(0)} - ${toNum(chargeWhPerW_pv)} ${pvToBattery(0)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(0)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(0)}${evBatTerm(0)} = ${toNum(initialSoc_Wh - idleDrain_Wh)}`);
   for (let t = 1; t < T; t++) {
     lines.push(` c_soc_${t}: ${soc(t)} - ${soc(t - 1)} - ${toNum(chargeWhPerW_grid)} ${gridToBattery(t)} - ${toNum(chargeWhPerW_pv)} ${pvToBattery(t)} + ${toNum(dischargeWhPerW)} ${batteryToLoad(t)} + ${toNum(dischargeWhPerW)} ${batteryToGrid(t)}${evBatTerm(t)} = ${toNum(-idleDrain_Wh)}`);
@@ -331,7 +443,9 @@ export function buildLP({
       lines.push(` c_charge_cap_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)} <= ${maxChargePower_W}`);
     }
     // DC-side battery discharge cap. battery_to_X variables are DC W on bus.
-    const batEvTerm = evActive ? ` + ${batteryToEv(t)}` : '';
+    const batEvTerm = evActive
+      ? ` + ${batteryToEv(t)}${evFloorActive ? ` + ${batteryToEvFloor(t)}` : ''}`
+      : '';
     if (dpK > 0) {
       const dpTerms = dpPowerSteps.map((step, k) => ` + ${toNum(step)} ${dpBin(k, t)}`).join('');
       lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm}${dpTerms} <= ${maxDischargePower_W}`);
@@ -340,7 +454,10 @@ export function buildLP({
     }
 
     // Grid import cap (AC). Unchanged: every grid_to_X is already AC.
-    const gridEvTerm = evActive ? ` + ${gridToEv(t)}` : '';
+    // The floor flow's grid leg is counted here too (no free import headroom).
+    const gridEvTerm = evActive
+      ? ` + ${gridToEv(t)}${evFloorActive ? ` + ${gridToEvFloor(t)}` : ''}`
+      : '';
     lines.push(` c_grid_import_cap_${t}: ${gridToLoad(t)} + ${gridToBattery(t)}${gridEvTerm} <= ${maxGridImport_W}`);
     // Grid export cap (AC). pv_to_grid and battery_to_grid are DC; AC = η_inv * variable.
     lines.push(` c_grid_export_cap_${t}: ${toNum(eta_inv)} ${pvToGrid(t)} + ${toNum(eta_inv)} ${batteryToGrid(t)} <= ${maxGridExport_W}`);
@@ -434,40 +551,85 @@ export function buildLP({
   // EV charging constraints (MILP).
   // EV charger is AC-input. AC arriving at the charger:
   //   = grid_to_ev (AC) + η_inv * pv_to_ev (DC→AC) + η_inv * battery_to_ev (DC→AC)
-  // Min/max constraints bound that AC power.
+  // Min/max constraints bound that NORMAL charger AC power. The mask-exempt floor
+  // flow adds a parallel AC path; the two together never exceed the charger max.
   if (evActive) {
+    // Floor charge terms that feed EV SoC (mask-exempt; same source factors).
+    const evSocFloorTerms = (t: number): string => evFloorActive
+      ? ` - ${toNum(evChargeWhPerW)} ${gridToEvFloor(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEvFloor(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEvFloor(t)}`
+      : '';
+
     for (let t = 0; t < T; t++) {
       lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)} >= 0`);
       lines.push(` c_ev_max_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMaxPow_W)} ${evOn(t)} <= 0`);
+      if (evFloorActive) {
+        // Total charger AC power (normal + floor) is bounded by the charger max.
+        // NOTE: floor flows have no minimum-power constraint (no ev_on binary), so
+        // the final partial floor slot may plan a sub-minimum rate. That is a
+        // fractional-slot artifact; the actuator clamps the commanded current to
+        // evMinChargeCurrent_A (= evMinChargePower_W), so the real charger never
+        // runs below its minimum — it just slightly overshoots the floor.
+        lines.push(` c_ev_charger_total_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} + ${gridToEvFloor(t)} + ${toNum(eta_inv)} ${pvToEvFloor(t)} + ${toNum(eta_inv)} ${batteryToEvFloor(t)} <= ${toNum(evMaxPow_W)}`);
+      }
     }
 
     // EV SoC evolution: 1 W AC into charger → η_ev W·h stored per stepHours.
     // grid_to_ev (AC) → evChargeWhPerW factor.
     // pv_to_ev / battery_to_ev (DC) → η_inv * evChargeWhPerW factor.
-    lines.push(` c_ev_soc_0: ${evSocVar(0)} - ${toNum(evChargeWhPerW)} ${gridToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(0)} = ${toNum(evInitialWh)}`);
+    // Floor flows add to the same accumulation (mask-exempt sourced charging).
+    lines.push(` c_ev_soc_0: ${evSocVar(0)} - ${toNum(evChargeWhPerW)} ${gridToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(0)}${evSocFloorTerms(0)} = ${toNum(evInitialWh)}`);
     for (let t = 1; t < T; t++) {
-      lines.push(` c_ev_soc_${t}: ${evSocVar(t)} - ${evSocVar(t - 1)} - ${toNum(evChargeWhPerW)} ${gridToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(t)} = 0`);
+      lines.push(` c_ev_soc_${t}: ${evSocVar(t)} - ${evSocVar(t - 1)} - ${toNum(evChargeWhPerW)} ${gridToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(t)}${evSocFloorTerms(t)} = 0`);
     }
 
-    if (evDepSlot <= T && evDepSlot > 0) {
-      lines.push(` c_ev_target: ${evSocVar(evDepSlot - 1)} >= ${toNum(evTargetWh)}`);
+    // Soft target SoC at the departure slot: ev_soc + shortfall >= target.
+    // BIG_PENALTY on the shortfall (objective) drives the target to be met
+    // whenever the window + price mask physically allow, without making the LP
+    // infeasible when they do not (the old hard c_ev_target could).
+    if (evHasDepConstraint) {
+      lines.push(` c_ev_target: ${evSocVar(evDepSlot - 1)} + ${evTargetShortfall} >= ${toNum(evTargetWh)}`);
     }
 
-    // Cardinality lower bound: tightens the LP relaxation by telling the solver the minimum
-    // number of on-slots needed to meet the target. Without this, each ev_on_t floats freely
-    // in [0,1] during LP relaxation, giving weak bounds and causing excessive MIP branching.
-    // evChargeWhPerSlot at max power = evMaxPow_W (AC into charger) × η_ev × stepHours = evChargeWhPerW * evMaxPow_W.
-    // Unchanged: max-power-per-slot is bounded by AC charger limit, which doesn't depend on η_inv.
-    const evDeficitWh = Math.max(0, evTargetWh - evInitialWh);
-    const evChargeWhPerSlot = evChargeWhPerW * evMaxPow_W;
-    if (evDeficitWh > 0 && evChargeWhPerSlot > 0) {
-      const kMin = Math.ceil(evDeficitWh / evChargeWhPerSlot);
-      const depLimit = Math.min(evDepSlot, T);
-      if (kMin >= 1 && kMin < depLimit) {
-        const termParts: string[] = [];
-        for (let t = 0; t < depLimit; t++) termParts.push(` ${evOn(t)}`);
-        const terms = termParts.join(' +');
-        lines.push(` c_ev_min_on:${terms} >= ${kMin}`);
+    // Minimum-SoC floor (soft, mask-exempt). Applied each slot up to departure;
+    // FLOOR_PENALTY on the per-slot shortfall (objective) drives the floor to be
+    // reached ASAP. Soft ⇒ never infeasible even when house-load balance / grid
+    // cap make the floor physically unreachable.
+    if (evFloorActive) {
+      const floorLimit = Math.min(evDepSlot, T);
+      for (let t = 0; t < floorLimit; t++) {
+        lines.push(` c_ev_floor_${t}: ${evSocVar(t)} + ${evFloorShortfall(t)} >= ${toNum(evMinFloorWh)}`);
+      }
+      // Cap total mask-exempt floor energy at the floor DEFICIT so the floor flow
+      // can only reach the floor, never charge beyond it. Without this, the
+      // mask-exempt floor would also satisfy the (soft) target, defeating the
+      // price limit for normal target charging. (When floor == target the whole
+      // target deficit is price-exempt — by design: a min-SoC that high is the
+      // user asking for that SoC regardless of price.)
+      const floorBudgetWh = evMinFloorWh - evInitialWh;
+      const budgetTerms: string[] = [];
+      for (let t = 0; t < floorLimit; t++) {
+        budgetTerms.push(`${toNum(evChargeWhPerW)} ${gridToEvFloor(t)} + ${toNum(evChargeWhPerW_dc)} ${pvToEvFloor(t)} + ${toNum(evChargeWhPerW_dc)} ${batteryToEvFloor(t)}`);
+      }
+      // Guard against an empty LHS (floorLimit === 0, e.g. evDepartureSlot <= 0),
+      // which would emit a malformed `c_ev_floor_budget:  <= x` constraint.
+      if (budgetTerms.length > 0) {
+        lines.push(` c_ev_floor_budget: ${budgetTerms.join(' + ')} <= ${toNum(floorBudgetWh)}`);
+      }
+    }
+
+    // Opportunistic band: SoC above target at departure, bounded by the caps and
+    // backed by actual SoC. ev_opp_band(2) earn a bounded reward (objective).
+    if (evOppActive) {
+      const bandTerms = ` - ${evOppBand}` + (evOppActive2 ? ` - ${evOppBand2}` : '');
+      lines.push(` c_ev_opp_band: ${evSocVar(evDepSlot - 1)}${bandTerms} >= ${toNum(evTargetWh)}`);
+    }
+
+    // Continuity bias: ev_trans_t >= |ev_on_t - ev_on_{t-1}| (penalized) ⇒ fewer
+    // on/off transitions ⇒ a single contiguous block is preferred.
+    if (evContinuous) {
+      for (let t = 1; t < T; t++) {
+        lines.push(` c_ev_trans_a_${t}: ${evTrans(t)} - ${evOn(t)} + ${evOn(t - 1)} >= 0`);
+        lines.push(` c_ev_trans_b_${t}: ${evTrans(t)} + ${evOn(t)} - ${evOn(t - 1)} >= 0`);
       }
     }
   }
@@ -506,13 +668,34 @@ export function buildLP({
     lines.push(` ${soc(t)} <= ${toNum(maxSoc_Wh)}`);
     lines.push(` ${socShortfall(t)} >= 0`);
     if (evActive) {
+      // Masked slots (before earliest-start, after departure, or above the price
+      // ceiling) pin the NORMAL EV flows to 0 — which forces ev_on=0 via c_ev_min.
       // grid_to_ev is AC into the charger. pv_to_ev / battery_to_ev are DC; AC into charger = η_inv * variable,
       // so the per-variable bound on AC charger limit becomes evMaxPow_W / η_inv on the DC side.
-      lines.push(` 0 <= ${gridToEv(t)} <= ${toNum(evMaxPow_W)}`);
-      lines.push(` 0 <= ${pvToEv(t)} <= ${toNum(Math.min(pv_W[t], evMaxPow_W * invScale))}`);
-      lines.push(` 0 <= ${batteryToEv(t)} <= ${toNum(Math.min(maxDischargePower_W, evMaxPow_W * invScale))}`);
+      const masked = evMaskedSlot(t);
+      lines.push(` 0 <= ${gridToEv(t)} <= ${toNum(masked ? 0 : evMaxPow_W)}`);
+      lines.push(` 0 <= ${pvToEv(t)} <= ${toNum(masked ? 0 : Math.min(pv_W[t], evMaxPow_W * invScale))}`);
+      lines.push(` 0 <= ${batteryToEv(t)} <= ${toNum(masked ? 0 : Math.min(maxDischargePower_W, evMaxPow_W * invScale))}`);
       lines.push(` 0 <= ${evSocVar(t)} <= ${toNum(evCapacityWh)}`);
+      if (evFloorActive) {
+        // Floor flows are mask-EXEMPT (the safety floor must be reachable even
+        // when every slot is over the price limit), but only before departure.
+        const floorOff = t >= evDepSlot;
+        lines.push(` 0 <= ${gridToEvFloor(t)} <= ${toNum(floorOff ? 0 : evMaxPow_W)}`);
+        lines.push(` 0 <= ${pvToEvFloor(t)} <= ${toNum(floorOff ? 0 : Math.min(pv_W[t], evMaxPow_W * invScale))}`);
+        lines.push(` 0 <= ${batteryToEvFloor(t)} <= ${toNum(floorOff ? 0 : Math.min(maxDischargePower_W, evMaxPow_W * invScale))}`);
+        lines.push(` ${evFloorShortfall(t)} >= 0`);
+      }
     }
+  }
+  // EV scalar bounds (target shortfall, opportunistic bands, contiguity vars).
+  if (evHasDepConstraint) lines.push(` ${evTargetShortfall} >= 0`);
+  if (evOppActive) {
+    lines.push(` 0 <= ${evOppBand} <= ${toNum(evOppCapWh - evTargetWh)}`);
+    if (evOppActive2) lines.push(` 0 <= ${evOppBand2} <= ${toNum(evOppCap2Wh - evOppCapWh)}`);
+  }
+  if (evContinuous) {
+    for (let t = 1; t < T; t++) lines.push(` 0 <= ${evTrans(t)} <= 1`);
   }
   lines.push("");
 

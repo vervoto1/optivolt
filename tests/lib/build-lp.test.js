@@ -896,11 +896,10 @@ describe('buildLP — EV charging (MILP)', () => {
     expect(lp).toMatch(/c_ev_soc_0:.*0\.25 grid_to_ev_0/);
   });
 
-  it('includes c_ev_min_on cardinality constraint when deficit is achievable', () => {
-    // departureSlot=8 → 8 slots, maxPow=3680, eff=0.9
-    // evChargeWhPerSlot = 3680 * 0.25 * 0.9 = 828
-    // deficit = 33000 - 30000 = 3000 → kMin = ceil(3000/828) = 4
-    // depLimit = min(8, 96) = 8, kMin (4) < 8 → constraint added with 8 terms
+  it('uses a soft target (shortfall) and NO cardinality bound', () => {
+    // The hard c_ev_min_on cardinality bound was removed: with a soft target and
+    // optional price/window masks it could force more on-slots than physically
+    // reachable → infeasible. The soft target shortfall carries feasibility.
     const T = 96;
     const largeBase = {
       load_W: Array(T).fill(500),
@@ -912,8 +911,9 @@ describe('buildLP — EV charging (MILP)', () => {
       ...largeBase,
       ev: { ...evCfg, evTargetSoc_percent: 55, evDepartureSlot: 8 },
     });
-    expect(lp).toContain('c_ev_min_on:');
-    expect(lp).toMatch(/c_ev_min_on:.*ev_on_0.*ev_on_7/);
+    expect(lp).not.toContain('c_ev_min_on:');
+    expect(lp).toContain('ev_target_shortfall');
+    expect(lp).toMatch(/c_ev_target: ev_soc_7 \+ ev_target_shortfall >=/);
   });
 
   it('omits c_ev_min_on when deficit is zero', () => {

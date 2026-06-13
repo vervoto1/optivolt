@@ -6,6 +6,7 @@ import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculat
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from '../services/shore-optimizer.ts';
+import { startEvActuator, stopEvActuator } from '../services/ev-actuator-service.ts';
 import { mergeSettings, normalizeSettings, sanitizeSettingsResponse } from '../services/settings-schema.ts';
 import type { SettingsPatch } from '../services/settings-schema.ts';
 
@@ -43,6 +44,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     startPvCurtailment(mergedSettings);
     stopShoreOptimizer();
     startShoreOptimizer(mergedSettings);
+    stopEvActuator();
+    startEvActuator(mergedSettings);
 
     res.json({ message: 'Settings saved successfully.', settings: sanitizeSettingsResponse(mergedSettings) });
   } catch (error) {
