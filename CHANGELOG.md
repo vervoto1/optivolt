@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.30 - 2026-06-13
+
+- **Fix:** ESS dashboard config (`essConfig`) is now sourced authoritatively from `default-settings.json`; a persisted `essConfig` in `settings.json` is ignored. `saveSettings` persists the whole settings object, so the seeded `essConfig` got written to `settings.json` the first time any setting was saved on 0.7.28 — and that stale copy then overrode later default changes (e.g. the 0.7.29 removal of the write-only current/voltage **calibration** tiles and the 30 s → 5 s refresh interval kept showing the old values). Since there is no UI to edit `essConfig` yet, defaults are the single source of truth; this will become a real merge again when an `essConfig` editor is added.
+
 ## 0.7.29 - 2026-06-13
 
 - **ESS dashboard polish:**

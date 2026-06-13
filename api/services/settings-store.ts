@@ -36,16 +36,14 @@ export async function loadSettings(): Promise<Settings> {
           ...(settings.pvCurtailment ?? {}),
         } as Settings['pvCurtailment']
       : undefined;
-    // Deep-merge essConfig so newly-added default scalar fields survive on top
-    // of a persisted block, while persisted batteries/system/entities win.
-    // Without this, the shallow {...defaults, ...settings} below would replace
-    // the whole block and a persisted essConfig would never pick up new defaults.
-    const mergedEssConfig = (defaults.essConfig || settings.essConfig)
-      ? {
-          ...(defaults.essConfig ?? {}),
-          ...(settings.essConfig ?? {}),
-        } as Settings['essConfig']
-      : undefined;
+    // essConfig is server-owned and has no settings UI yet, so
+    // default-settings.json is authoritative — ignore any persisted essConfig.
+    // A persisted copy gets written whenever the user saves unrelated settings
+    // (saveSettings persists the whole object), and would otherwise pin stale
+    // entities/cadence and silently override updates to the seeded config — e.g.
+    // removed calibration tiles or a changed refresh interval would never apply.
+    // (When a Phase 7 essConfig editor lands, this can become a real merge.)
+    const mergedEssConfig = defaults.essConfig;
     const merged = {
       ...defaults,
       ...settings,
