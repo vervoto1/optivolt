@@ -96,7 +96,6 @@ function setupDOM() {
     <div id="cal-discharge-rate"></div>
     <div id="cal-confidence"></div>
     <div id="cal-slots"></div>
-    <canvas id="efficiency-curve-chart"></canvas>
   `;
 }
 
@@ -310,79 +309,6 @@ describe('predictions.js', () => {
     expect(document.getElementById('adaptive-charge-rate').textContent).toContain('92');
   });
 
-  it('renders efficiency curve chart callbacks when calibration has curves', async () => {
-    fetchPredictionConfig.mockResolvedValue({});
-    savePredictionConfig.mockResolvedValue({});
-    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
-    fetchStoredSettings.mockResolvedValue({});
-    fetchPlanAccuracy.mockResolvedValue({
-      report: {
-        slotsCompared: 5,
-        deviations: [
-          { timestampMs: Date.now() - 3600000, deviation_percent: 2, actualSoc_percent: 50, predictedSoc_percent: 52 },
-        ],
-      },
-    });
-    fetchCalibration.mockResolvedValue({
-      calibration: {
-        effectiveChargeRate: 0.92,
-        effectiveDischargeRate: 0.88,
-        confidence: 0.85,
-        sampleCount: 100,
-        chargeCurve: Array(100).fill(0.92),
-        dischargeCurve: Array(100).fill(0.88),
-        chargeSamples: Array(100).fill(5),
-        dischargeSamples: Array(100).fill(5),
-      },
-    });
-
-    chartInstances.length = 0;
-    vi.resetModules();
-    const { initPredictionsTab } = await import('../../app/src/predictions.js');
-    const promise = initPredictionsTab();
-    await vi.runAllTimersAsync();
-    await promise;
-
-    // Find the efficiency curve chart (last chart created with 200 labels)
-    const effChart = chartInstances.find(c =>
-      c.config?.options?.scales?.x?.title?.text?.includes?.('Charge 0→100%')
-    );
-    if (effChart) {
-      const opts = effChart.config.options;
-
-      // Exercise legend generateLabels callback (line 672-677)
-      const labels = opts.plugins.legend.labels.generateLabels();
-      expect(labels).toHaveLength(4);
-      expect(labels[0].text).toBe('Charge');
-
-      // Exercise tooltip title callback (line 682-686)
-      const title = opts.plugins.tooltip.callbacks.title([{ dataIndex: 50 }]);
-      expect(title).toContain('Charging');
-      const title2 = opts.plugins.tooltip.callbacks.title([{ dataIndex: 150 }]);
-      expect(title2).toContain('Discharging');
-
-      // Exercise tooltip afterLabel callback (line 688-691)
-      const after0 = opts.plugins.tooltip.callbacks.afterLabel({ datasetIndex: 0, dataIndex: 50 });
-      expect(after0).toContain('sample');
-      const after1 = opts.plugins.tooltip.callbacks.afterLabel({ datasetIndex: 1, dataIndex: 50 });
-      expect(after1).toBe('');
-      // Test singular sample
-      const after2 = opts.plugins.tooltip.callbacks.afterLabel({ datasetIndex: 0, dataIndex: 0 });
-      expect(after2).toContain('sample');
-
-      // Exercise x-axis tick callback (line 701-707)
-      const tickCb = opts.scales.x.ticks.callback;
-      expect(tickCb(null, 0)).toBe('0%');
-      expect(tickCb(null, 99)).toBe('100%');
-      expect(tickCb(null, 100)).toBe('100%');
-      expect(tickCb(null, 199)).toBe('0%');
-      expect(tickCb(null, 20)).toBe('20%');
-      // i=179: (199-179)%20 = 0, so 200-1-179 = 20 → "20%"
-      expect(tickCb(null, 179)).toBe('20%');
-      expect(tickCb(null, 50)).toBe('');
-    }
-  });
-
   it('setComparisonStatus sets text and class', async () => {
     fetchPredictionConfig.mockResolvedValue({});
     savePredictionConfig.mockResolvedValue({});
@@ -594,60 +520,6 @@ describe('predictions.js', () => {
     expect(canvas._chart).toBeDefined();
   });
 
-  it('exercises borderColor callback on efficiency curve dataset', async () => {
-    fetchPredictionConfig.mockResolvedValue({});
-    savePredictionConfig.mockResolvedValue({});
-    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
-    fetchStoredSettings.mockResolvedValue({});
-    fetchPlanAccuracy.mockResolvedValue({
-      report: {
-        slotsCompared: 5,
-        deviations: [
-          { timestampMs: Date.now() - 3600000, deviation_percent: 2, actualSoc_percent: 50, predictedSoc_percent: 52 },
-        ],
-      },
-    });
-    fetchCalibration.mockResolvedValue({
-      calibration: {
-        effectiveChargeRate: 0.92,
-        effectiveDischargeRate: 0.88,
-        confidence: 0.85,
-        sampleCount: 100,
-        chargeCurve: Array(100).fill(0.92),
-        dischargeCurve: Array(100).fill(0.88),
-        chargeSamples: Array(100).fill(5),
-        dischargeSamples: Array(100).fill(5),
-      },
-    });
-
-    chartInstances.length = 0;
-    vi.resetModules();
-    const { initPredictionsTab } = await import('../../app/src/predictions.js');
-    const promise = initPredictionsTab();
-    await vi.runAllTimersAsync();
-    await promise;
-
-    // Find the efficiency curve chart
-    const effChart = chartInstances.find(c =>
-      c.config?.options?.scales?.x?.title?.text?.includes?.('Charge 0→100%')
-    );
-    expect(effChart).toBeTruthy();
-
-    // Exercise the main borderColor callback (line 622-625)
-    const borderColorFn = effChart.config.data.datasets[0].borderColor;
-    if (typeof borderColorFn === 'function') {
-      // Charge half (i < 100) — via p0.parsed.x
-      expect(borderColorFn({ p0: { parsed: { x: 50 } } })).toBe('rgb(34, 197, 94)');
-      // Discharge half (i >= 100) — via p0.parsed.x
-      expect(borderColorFn({ p0: { parsed: { x: 150 } } })).toBe('rgb(249, 115, 22)');
-      // Fallback to dataIndex when p0 is missing
-      expect(borderColorFn({ dataIndex: 10 })).toBe('rgb(34, 197, 94)');
-      expect(borderColorFn({ dataIndex: 110 })).toBe('rgb(249, 115, 22)');
-      // Fallback to 0 when both are missing
-      expect(borderColorFn({})).toBe('rgb(34, 197, 94)');
-    }
-  });
-
   it('setComparisonStatus sets text and applies correct CSS class', async () => {
     fetchPredictionConfig.mockResolvedValue({});
     savePredictionConfig.mockResolvedValue({});
@@ -676,75 +548,6 @@ describe('predictions.js', () => {
     setComparisonStatus('Error occurred', true);
     expect(el.textContent).toBe('Error occurred');
     expect(el.className).toContain('text-red-600');
-  });
-
-  it('renders efficiency curve chart with some bands below minSamples (gaps in chart)', async () => {
-    fetchPredictionConfig.mockResolvedValue({});
-    savePredictionConfig.mockResolvedValue({});
-    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
-    fetchStoredSettings.mockResolvedValue({});
-    fetchPlanAccuracy.mockResolvedValue({
-      report: {
-        slotsCompared: 5,
-        deviations: [
-          { timestampMs: Date.now(), deviation_percent: 1, actualSoc_percent: 50, predictedSoc_percent: 51 },
-        ],
-      },
-    });
-
-    // Provide calibration where first 10 charge and discharge bands have 0 samples (< minSamples=2)
-    const chargeSamples = Array(100).fill(5);
-    const dischargeSamples = Array(100).fill(5);
-    // Set some bands to 0 samples to trigger the else branch (lines 590-592, 606-608)
-    for (let i = 0; i < 10; i++) { chargeSamples[i] = 0; dischargeSamples[i] = 0; }
-
-    fetchCalibration.mockResolvedValue({
-      calibration: {
-        effectiveChargeRate: 0.9,
-        effectiveDischargeRate: 0.85,
-        confidence: 0.8,
-        sampleCount: 80,
-        chargeCurve: Array(100).fill(0.9),
-        dischargeCurve: Array(100).fill(0.85),
-        chargeSamples,
-        dischargeSamples,
-      },
-    });
-
-    chartInstances.length = 0;
-    vi.resetModules();
-    const { initPredictionsTab } = await import('../../app/src/predictions.js');
-    const promise = initPredictionsTab();
-    await vi.runAllTimersAsync();
-    await promise;
-
-    // Find the efficiency curve chart
-    const effChart = chartInstances.find(c =>
-      c.config?.options?.scales?.x?.title?.text?.includes?.('Charge 0→100%')
-    );
-    expect(effChart).toBeDefined();
-
-    // Verify gaps: first 10 charge points should be null
-    const dataset = effChart.data.datasets[0];
-    expect(dataset.data[0]).toBeNull();
-    expect(dataset.data[9]).toBeNull();
-    expect(dataset.data[10]).not.toBeNull();
-
-    // Exercise segment borderColor callback (line 628)
-    if (dataset.segment?.borderColor) {
-      const green = dataset.segment.borderColor({ p0DataIndex: 50 });
-      expect(green).toBe('rgb(34, 197, 94)');
-      const orange = dataset.segment.borderColor({ p0DataIndex: 150 });
-      expect(orange).toBe('rgb(249, 115, 22)');
-    }
-
-    // Exercise main borderColor callback (line 624-625)
-    if (typeof dataset.borderColor === 'function') {
-      const green = dataset.borderColor({ p0: { parsed: { x: 50 } }, dataIndex: 50 });
-      expect(green).toBe('rgb(34, 197, 94)');
-      const orange = dataset.borderColor({ p0: { parsed: { x: 150 } }, dataIndex: 150 });
-      expect(orange).toBe('rgb(249, 115, 22)');
-    }
   });
 
   it('saveFormToServer is triggered by form input events', async () => {
