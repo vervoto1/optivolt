@@ -133,6 +133,37 @@ describe('parseSolution', () => {
 
 });
 
+describe('parseSolution — ev_charge_A phase conversion', () => {
+  const baseEv = {
+    evMinChargePower_W: 0,
+    evMaxChargePower_W: 11040,
+    evBatteryCapacity_Wh: 60000,
+    evInitialSoc_percent: 50,
+    evTargetSoc_percent: 80,
+    evDepartureSlot: 4,
+  };
+  const opts = { startMs: 1700000000000, stepMin: 15 };
+  // grid_to_ev is AC into the charger, so ev_charge ≈ g2ev (no inverter factor).
+  const result = {
+    Columns: {
+      'grid_to_ev_0': { Primal: 3450 }, // 15 A single-phase, or 5 A three-phase
+      'ev_soc_0':     { Primal: 30000 },
+    },
+  };
+
+  it('single-phase: 3450 W → 15 A (default when phases unset)', () => {
+    const cfg = { load_W: [500], pv_W: [0], importPrice: [10], exportPrice: [5], batteryCapacity_Wh: 1000, ev: baseEv };
+    const [row] = parseSolution(result, cfg, opts);
+    expect(row.ev_charge_A).toBeCloseTo(15, 3);
+  });
+
+  it('three-phase: 3450 W → 5 A (÷ 230 × 3)', () => {
+    const cfg = { load_W: [500], pv_W: [0], importPrice: [10], exportPrice: [5], batteryCapacity_Wh: 1000, ev: { ...baseEv, evChargePhases: 3 } };
+    const [row] = parseSolution(result, cfg, opts);
+    expect(row.ev_charge_A).toBeCloseTo(5, 3);
+  });
+});
+
 describe('parseSolution — ev_charge_mode derivation', () => {
   const evCfg = {
     load_W: [500],

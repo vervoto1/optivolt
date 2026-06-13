@@ -1891,6 +1891,14 @@
               </label>
             </div>
             <div class="grid grid-cols-2 gap-3">
+              <label class="block text-sm">Charger phases
+                <select id="ev-charge-phases" class="form-input" data-settings-input>
+                  <option value="1">1-phase (×230 V)</option>
+                  <option value="3">3-phase (×3 × 230 V)</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
               <label class="block text-sm">EV battery capacity (kWh)
                 <input id="ev-battery-capacity" type="number" min="1" step="0.1"
                   class="form-input" data-settings-input />

@@ -642,6 +642,7 @@ describe('updateSummaryUI', () => {
     // Ensure flat EV fields exist in els
     els.evMinChargeCurrent = { value: '' };
     els.evMaxChargeCurrent = { value: '' };
+    els.evChargePhases = { value: '' };
     els.evBatteryCapacity = { value: '' };
     els.evChargeEfficiency = { value: '' };
     els.evDepartureTime = { value: '' };
@@ -652,6 +653,7 @@ describe('updateSummaryUI', () => {
       evEnabled: true,
       evMinChargeCurrent_A: 10,
       evMaxChargeCurrent_A: 32,
+      evChargePhases: 3,
       evBatteryCapacity_kWh: 60,
       evChargeEfficiency_percent: 90,
       evDepartureTime: '2024-01-15T08:00:00Z',
@@ -661,6 +663,7 @@ describe('updateSummaryUI', () => {
     });
     expect(els.evMinChargeCurrent.value).toBe('10');
     expect(els.evMaxChargeCurrent.value).toBe('32');
+    expect(els.evChargePhases.value).toBe('3');
     expect(els.evBatteryCapacity.value).toBe('60');
     expect(els.evChargeEfficiency.value).toBe('90');
     expect(els.evDepartureTime.value).toBe('2024-01-15T08:00:00Z');

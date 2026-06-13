@@ -98,6 +98,7 @@
   "evEnabled": false,
   "evMinChargeCurrent_A": 6,
   "evMaxChargeCurrent_A": 16,
+  "evChargePhases": 3,
   "evBatteryCapacity_kWh": 60,
   "evSocSensor": "",
   "evPlugSensor": "",

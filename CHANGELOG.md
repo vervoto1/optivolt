@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.27 - 2026-06-13
+
+- **Fix:** Model three-phase EV charge power. The amps↔watts conversion was hardcoded single-phase (`current_A × 230`) in `config-builder.ts` and `parse-solution.ts`, so a three-phase charger (e.g. an 11 kW Tesla Wall Connector at 16 A) was planned and read back at ~3.7 kW — about a third of real power — causing the LP to under-schedule EV charging and report a wrong `ev_charge_A`. Added an `evChargePhases` setting (1 or 3) threaded through `EvConfig`, with a single source of truth `AC_PHASE_VOLTAGE_V` (230 V) so the amps→watts (config-builder) and watts→amps (parse-solution) sites always agree: `watts = amps × 230 × phases`. Exposed as a "Charger phases" selector in the EV Charging settings card. **Default is three-phase** (the target hardware); single-phase deployments must set `evChargePhases = 1`, and callers that omit the field fall back to single-phase.
+- **Chore:** Bump `vitest` and `@vitest/coverage-v8` to 4.1.8 (test tooling only).
+
 ## 0.7.26 - 2026-06-05
 
 - **Fix:** Drop implausible energy-counter spikes from Home Assistant statistics before they reach the load/PV predictor. A meter reset on 2026-05-30 (coinciding with a Venus MQTT update) recorded one period as ~4296 kWh; under `mean` aggregation this averaged into a ~538 kWh forecast load for a single slot, which exceeded the grid import cap and made the LP **infeasible** — producing an empty schedule. `postprocess()` now discards any per-period reading whose magnitude exceeds `MAX_PLAUSIBLE_SLOT_ENERGY_WH` (25 kWh, overridable via the new `{ maxSlotEnergyWh }` option) and logs a `[ha-postprocess]` warning naming the sensor, timestamp, and value. The dropped sample becomes a gap, which the historical predictor already skips, so it no longer poisons the mean/median or the auto-tuner's validation metrics.

@@ -9,6 +9,14 @@ import type { SolverConfig, TerminalSocValuation } from './types.ts';
  */
 export const DEFAULT_INVERTER_EFFICIENCY_PERCENT = 95;
 
+// AC line voltage per phase, used to convert EV charge current (A) <-> power (W).
+// A single-phase charger delivers `A * AC_PHASE_VOLTAGE_V` watts; a three-phase
+// charger delivers `A * AC_PHASE_VOLTAGE_V * 3`. The phase count is per-config
+// (EvConfig.evChargePhases), so this constant is the single source for both the
+// amps->watts conversion (config-builder) and the watts->amps conversion
+// (parse-solution).
+export const AC_PHASE_VOLTAGE_V = 230;
+
 /*
  * LP unit conventions
  * ───────────────────

@@ -24,6 +24,12 @@ export interface EvConfig {
   evDepartureSlot: number;
   /** AC-to-DC efficiency of the EV's onboard charger, as a percentage (e.g. 90 = 90%). */
   evChargeEfficiency_percent: number;
+  /**
+   * Number of AC phases the charger uses (1 or 3). Sets the A<->W conversion:
+   * watts = amps * AC_PHASE_VOLTAGE_V * evChargePhases. Defaults to 1 (single-phase)
+   * when omitted so existing callers keep their prior behavior.
+   */
+  evChargePhases?: number;
 }
 
 /**
@@ -132,7 +138,7 @@ export interface PlanRow {
   pv2ev: number;        // PV → EV W
   b2ev: number;         // battery → EV W
   ev_charge: number;    // total EV charge power W
-  ev_charge_A: number;  // charge current A (ev_charge / 230 / phases)
+  ev_charge_A: number;  // charge current A (ev_charge / (AC_PHASE_VOLTAGE_V * evChargePhases))
   ev_charge_mode: EvChargeMode;
   ev_soc_percent: number;  // EV SoC %
 }

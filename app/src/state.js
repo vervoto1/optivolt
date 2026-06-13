@@ -123,6 +123,7 @@ export function snapshotUI(els) {
     evEnabled: !!els.evEnabled?.checked,
     evMinChargeCurrent_A: num(els.evMinChargeCurrent?.value),
     evMaxChargeCurrent_A: num(els.evMaxChargeCurrent?.value),
+    evChargePhases: num(els.evChargePhases?.value),
     evBatteryCapacity_kWh: num(els.evBatteryCapacity?.value),
     evChargeEfficiency_percent: num(els.evChargeEfficiency?.value),
     evDepartureTime: els.evDepartureTime?.value ?? '',
@@ -211,6 +212,7 @@ export function hydrateUI(els, obj = {}) {
   }
   setIfDef(els.evMinChargeCurrent, obj.evMinChargeCurrent_A);
   setIfDef(els.evMaxChargeCurrent, obj.evMaxChargeCurrent_A);
+  setIfDef(els.evChargePhases, obj.evChargePhases);
   setIfDef(els.evBatteryCapacity, obj.evBatteryCapacity_kWh);
   setIfDef(els.evChargeEfficiency, obj.evChargeEfficiency_percent);
   setIfDef(els.evDepartureTime, obj.evDepartureTime);
