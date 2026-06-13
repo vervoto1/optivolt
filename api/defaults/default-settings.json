@@ -95,6 +95,76 @@
     "mode": "suggest",
     "minDataDays": 3
   },
+  "essConfig": {
+    "enabled": true,
+    "historyWindowHours": 24,
+    "historyPeriod": "5minute",
+    "refreshIntervalSeconds": 30,
+    "batteries": [
+      {
+        "name": "Basen Green",
+        "cellVoltagePrefix": "sensor.jk_bms_jk_bms_bms0_cell_voltage_",
+        "cellCount": 16,
+        "temperatureEntities": [
+          { "entity": "sensor.jk_bms_jk_bms_bms0_temperature_sensor_1", "name": "Temp 1" },
+          { "entity": "sensor.jk_bms_jk_bms_bms0_temperature_sensor_2", "name": "Temp 2" },
+          { "entity": "sensor.jk_bms_jk_bms_bms0_temperature_sensor_3", "name": "Temp 3" },
+          { "entity": "sensor.jk_bms_jk_bms_bms0_temperature_sensor_4", "name": "Temp 4" },
+          { "entity": "sensor.jk_bms_jk_bms_bms0_temperature_sensor_5", "name": "MOS Temperature" }
+        ],
+        "socEntity": "sensor.jk_bms_jk_bms_bms0_state_of_charge",
+        "currentEntity": "sensor.jk_bms_jk_bms_bms0_current",
+        "totalVoltageEntity": "sensor.jk_bms_jk_bms_bms0_total_voltage",
+        "chargingPowerEntity": "sensor.jk_bms_jk_bms_bms0_charging_power",
+        "dischargingPowerEntity": "sensor.jk_bms_jk_bms_bms0_discharging_power",
+        "capacitySettingEntity": "sensor.jk_bms_jk_bms_bms0_total_battery_capacity_setting",
+        "capacityRemainingEntity": "sensor.jk_bms_jk_bms_bms0_capacity_remaining",
+        "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_min_cell_voltage",
+        "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_max_cell_voltage",
+        "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms0_balancing",
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current",
+        "extraEntities": [
+          { "entity": "number.jk_bms_jk_bms_bms0_current_calibration", "name": "Current calibration" },
+          { "entity": "number.jk_bms_jk_bms_bms0_voltage_calibration", "name": "Voltage calibration" }
+        ]
+      },
+      {
+        "name": "Gobel Power",
+        "cellVoltagePrefix": "sensor.jk_bms_jk_bms_bms1_cell_voltage_",
+        "cellCount": 16,
+        "temperatureEntities": [
+          { "entity": "sensor.jk_bms_jk_bms_bms1_temperature_sensor_1", "name": "Temp 1" },
+          { "entity": "sensor.jk_bms_jk_bms_bms1_temperature_sensor_2", "name": "Temp 2" },
+          { "entity": "sensor.jk_bms_jk_bms_bms1_temperature_sensor_3", "name": "Temp 3" },
+          { "entity": "sensor.jk_bms_jk_bms_bms1_temperature_sensor_4", "name": "Temp 4" },
+          { "entity": "sensor.jk_bms_jk_bms_bms1_temperature_sensor_5", "name": "MOS Temperature" }
+        ],
+        "socEntity": "sensor.jk_bms_jk_bms_bms1_state_of_charge",
+        "currentEntity": "sensor.jk_bms_jk_bms_bms1_current",
+        "totalVoltageEntity": "sensor.jk_bms_jk_bms_bms1_total_voltage",
+        "chargingPowerEntity": "sensor.jk_bms_jk_bms_bms1_charging_power",
+        "dischargingPowerEntity": "sensor.jk_bms_jk_bms_bms1_discharging_power",
+        "capacitySettingEntity": "sensor.jk_bms_jk_bms_bms1_total_battery_capacity_setting",
+        "capacityRemainingEntity": "sensor.jk_bms_jk_bms_bms1_capacity_remaining",
+        "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_min_cell_voltage",
+        "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_max_cell_voltage",
+        "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms1_balancing",
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current",
+        "extraEntities": [
+          { "entity": "number.jk_bms_jk_bms_bms1_current_calibration", "name": "Current calibration" },
+          { "entity": "number.jk_bms_jk_bms_bms1_voltage_calibration", "name": "Voltage calibration" }
+        ]
+      }
+    ],
+    "system": {
+      "name": "Victron system",
+      "maxChargeCurrentEntity": "number.victron_mqtt_c0619ab6bd28_system_0_system_ess_max_charge_current",
+      "batteryPowerEntity": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_power",
+      "batteryCurrentEntity": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_current",
+      "batteryVoltageEntity": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_voltage",
+      "socEntity": "sensor.victron_mqtt_c0619ab6bd28_battery_512_battery_soc"
+    }
+  },
   "evEnabled": false,
   "evMinChargeCurrent_A": 6,
   "evMaxChargeCurrent_A": 16,

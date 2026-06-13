@@ -27,7 +27,16 @@ export interface StatRecord {
 
 export interface HaReading {
   start: number;
+  end?: number;
+  /** Energy delta over the period — used by the load/PV predictors (total/measurement-as-total sensors). */
   change?: number;
+  /** Period mean — present for `measurement` sensors (e.g. cell voltage, temperature). */
+  mean?: number;
+  min?: number;
+  max?: number;
+  /** Last reported state in the period — fallback when `mean` is absent. */
+  state?: number;
+  sum?: number;
 }
 
 /**

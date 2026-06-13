@@ -39,6 +39,16 @@ export function fetchHaEntityState(entityId) {
 export const fetchEvSchedule = () => getJson('/ev/schedule');
 export const fetchEvCurrent = () => getJson('/ev/current');
 
+// --- ESS dashboard ---
+export const getEssState = () => getJson('/ess/state');
+export function getEssHistory({ hours, period } = {}) {
+  const params = new URLSearchParams();
+  if (hours != null) params.set('hours', String(hours));
+  if (period) params.set('period', period);
+  const qs = params.toString();
+  return getJson(`/ess/history${qs ? `?${qs}` : ''}`);
+}
+
 // --- Shore Current Optimizer ---
 export const fetchShoreOptimizerStatus = () => getJson('/shore-optimizer/status');
 

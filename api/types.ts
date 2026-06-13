@@ -54,6 +54,7 @@ export interface Settings {
   pvCurtailment?: PvCurtailmentConfig;
   cvPhase?: CvPhaseConfig;
   adaptiveLearning?: AdaptiveLearningConfig;
+  essConfig?: EssConfig;
   evEnabled: boolean;
   evMinChargeCurrent_A: number;
   evMaxChargeCurrent_A: number;
@@ -80,6 +81,66 @@ export interface EvConfig {
 export interface CvPhaseConfig {
   enabled: boolean;
   thresholds: { soc_percent: number; maxChargePower_W: number }[];
+}
+
+// ----------------------------- ESS dashboard ----------------------------
+
+/**
+ * One battery in the ESS dashboard. Entity ids are user-specific and may drift
+ * (BMS firmware updates, renames), so every scalar/series entity is optional —
+ * a missing or unresolved id renders as a "not found" placeholder rather than
+ * blanking the tab.
+ */
+export interface EssBatteryConfig {
+  /** Display name, e.g. "Basen Green". */
+  name: string;
+  /**
+   * Cell voltages: either a `prefix` + `cellCount` that expands to
+   * `${cellVoltagePrefix}${n}` for n in 1..cellCount, or an explicit list
+   * (`cellVoltageEntities`) which wins over the prefix form.
+   */
+  cellVoltagePrefix?: string;
+  cellCount?: number;
+  cellVoltageEntities?: string[];
+  /** Temperature sensors with display names (e.g. "MOS Temperature"). */
+  temperatureEntities?: { entity: string; name: string }[];
+  socEntity?: string;
+  currentEntity?: string;
+  totalVoltageEntity?: string;
+  chargingPowerEntity?: string;
+  dischargingPowerEntity?: string;
+  capacitySettingEntity?: string;
+  capacityRemainingEntity?: string;
+  minCellVoltageEntity?: string;
+  maxCellVoltageEntity?: string;
+  balancingBinaryEntity?: string;
+  balancingCurrentEntity?: string;
+  /** Free-form extra entities, e.g. calibration numbers. */
+  extraEntities?: { entity: string; name?: string }[];
+}
+
+export interface EssSystemConfig {
+  name?: string;
+  maxChargeCurrentEntity?: string;
+  batteryPowerEntity?: string;
+  batteryCurrentEntity?: string;
+  batteryVoltageEntity?: string;
+  socEntity?: string;
+  extraEntities?: { entity: string; name?: string }[];
+}
+
+export type EssHistoryPeriod = '5minute' | 'hour';
+
+export interface EssConfig {
+  enabled: boolean;
+  batteries: EssBatteryConfig[];
+  system?: EssSystemConfig;
+  /** Trend-chart lookback window, in hours. Default 24. */
+  historyWindowHours: number;
+  /** Statistics aggregation granularity for trends. Default '5minute'. */
+  historyPeriod: EssHistoryPeriod;
+  /** Live-state poll cadence while the tab is open, in seconds. Default 30. */
+  refreshIntervalSeconds: number;
 }
 
 export interface AutoCalculateConfig {

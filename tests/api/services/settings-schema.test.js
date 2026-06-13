@@ -345,6 +345,70 @@ describe('settings-schema', () => {
     });
   });
 
+  describe('essConfig', () => {
+    function withEss(essConfig) {
+      const s = validSettings();
+      s.essConfig = essConfig;
+      return s;
+    }
+
+    const validEss = () => ({
+      enabled: true,
+      historyWindowHours: 24,
+      historyPeriod: '5minute',
+      refreshIntervalSeconds: 30,
+      batteries: [
+        { name: 'Basen Green', cellVoltagePrefix: 'sensor.bms0_cell_', cellCount: 16, socEntity: 'sensor.bms0_soc' },
+      ],
+      system: { name: 'Victron system', batteryPowerEntity: 'sensor.sys_power' },
+    });
+
+    it('normalizes a valid essConfig', () => {
+      const result = normalizeSettings(withEss(validEss()));
+      expect(result.essConfig.batteries).toHaveLength(1);
+      expect(result.essConfig.batteries[0].cellCount).toBe(16);
+      expect(result.essConfig.system.name).toBe('Victron system');
+    });
+
+    it('clamps historyWindowHours to 1..168 and refreshIntervalSeconds to >=5', () => {
+      const result = normalizeSettings(withEss({ ...validEss(), historyWindowHours: 9999, refreshIntervalSeconds: 1 }));
+      expect(result.essConfig.historyWindowHours).toBe(168);
+      expect(result.essConfig.refreshIntervalSeconds).toBe(5);
+    });
+
+    it('rejects a battery without a name', () => {
+      const ess = validEss();
+      ess.batteries = [{ cellCount: 4 }];
+      expect(() => normalizeSettings(withEss(ess))).toThrow('essConfig.batteries[0].name');
+    });
+
+    it('rejects a non-array batteries field', () => {
+      expect(() => normalizeSettings(withEss({ ...validEss(), batteries: {} }))).toThrow('essConfig.batteries must be an array');
+    });
+
+    it('validates historyPeriod against the enum', () => {
+      expect(() => normalizeSettings(withEss({ ...validEss(), historyPeriod: 'daily' }))).toThrow('essConfig.historyPeriod');
+    });
+
+    it('drops empty/blank entity ids but keeps the battery', () => {
+      const ess = validEss();
+      ess.batteries[0].currentEntity = '   ';
+      const result = normalizeSettings(withEss(ess));
+      expect(result.essConfig.batteries[0].currentEntity).toBeUndefined();
+      expect(result.essConfig.batteries[0].socEntity).toBe('sensor.bms0_soc');
+    });
+
+    // The headline merge guard: a PATCH of one scalar field must not wipe batteries.
+    it('PATCHing one scalar field via mergeSettings preserves batteries', () => {
+      const base = withEss(validEss());
+      const merged = mergeSettings(base, { essConfig: { historyWindowHours: 12 } });
+      expect(merged.essConfig.historyWindowHours).toBe(12);
+      expect(merged.essConfig.batteries).toHaveLength(1);
+      expect(merged.essConfig.batteries[0].name).toBe('Basen Green');
+      expect(merged.essConfig.system.name).toBe('Victron system');
+    });
+  });
+
   describe('sanitizeSettingsResponse', () => {
     it('removes haToken and adds hasHaToken flag', () => {
       const s = validSettings();

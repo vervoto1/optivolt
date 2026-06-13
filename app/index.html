@@ -517,6 +517,15 @@
               </svg>
               <span class="hidden sm:inline">EV</span>
             </button>
+            <button id="tab-ess" role="tab" aria-selected="false" aria-controls="panel-ess"
+              class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400/50">
+              <!-- Battery icon -->
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="currentColor"
+                aria-hidden="true">
+                <path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/>
+              </svg>
+              <span class="hidden sm:inline">ESS</span>
+            </button>
             <button id="tab-predictions" role="tab" aria-selected="false" aria-controls="panel-predictions"
               class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400/50">
               <!-- Trending up / predictions icon -->
@@ -2079,6 +2088,55 @@
         <h3 class="mb-3 sidebar-label">Charging schedule</h3>
         <table id="ev-schedule-table" class="min-w-full text-sm"></table>
       </div>
+    </section>
+
+  </div>
+
+  <!-- ESS dashboard panel -->
+  <div id="panel-ess" role="tabpanel" aria-labelledby="tab-ess"
+    class="mx-auto w-full max-w-7xl px-4 py-8 grid gap-6 lg:grid-cols-3 panel-hidden">
+
+    <!-- Empty / error state (shown when HA is unconfigured or a fetch fails) -->
+    <section id="ess-empty" class="card revealed lg:col-span-3 hidden">
+      <div class="py-10 text-center">
+        <div class="text-slate-300 dark:text-slate-600 mb-2">
+          <svg xmlns="http://www.w3.org/2000/svg" class="inline-block h-8 w-8" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/>
+          </svg>
+        </div>
+        <div id="ess-empty-message" class="text-sm text-slate-500 dark:text-slate-400">
+          Connect Home Assistant in Settings to view the battery system.
+        </div>
+      </div>
+    </section>
+
+    <!-- Per-battery cards are built here by ess-tab.js (full-width grid item). -->
+    <div id="ess-batteries" class="lg:col-span-3 grid gap-6"></div>
+
+    <!-- Combined SoC development (full width) -->
+    <section id="ess-soc-card" class="card lg:col-span-3 hidden">
+      <h3 class="mb-3 sidebar-label">State of charge — recent history</h3>
+      <div class="h-72 w-full chart-wrap">
+        <canvas id="ess-soc-chart" class="h-full w-full"></canvas>
+        <div class="chart-empty">
+          <svg width="80" height="28" viewBox="0 0 80 28" aria-hidden="true" class="chart-empty-bars">
+            <rect x="0"  y="16" width="7" height="12" rx="1.5"/>
+            <rect x="9"  y="8"  width="7" height="20" rx="1.5"/>
+            <rect x="18" y="12" width="7" height="16" rx="1.5"/>
+            <rect x="27" y="4"  width="7" height="24" rx="1.5"/>
+            <rect x="36" y="9"  width="7" height="19" rx="1.5"/>
+            <rect x="45" y="2"  width="7" height="26" rx="1.5"/>
+            <rect x="54" y="11" width="7" height="17" rx="1.5"/>
+          </svg>
+          <span>Waiting for data…</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Victron system card (full width) -->
+    <section id="ess-system-card" class="card lg:col-span-3 hidden">
+      <h3 id="ess-system-name" class="mb-3 sidebar-label">System</h3>
+      <div id="ess-system-scalars" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4"></div>
     </section>
 
   </div>

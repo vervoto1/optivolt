@@ -12,6 +12,7 @@ import predictionsRouter from './routes/predictions.ts';
 import planAccuracyRouter from './routes/plan-accuracy.ts';
 import haRouter from './routes/ha.ts';
 import evRouter from './routes/ev.ts';
+import essRouter from './routes/ess.ts';
 import shoreOptimizerRouter from './routes/shore-optimizer.ts';
 
 const app = express();
@@ -30,6 +31,7 @@ app.use('/predictions', predictionsRouter);
 app.use('/plan-accuracy', planAccuracyRouter);
 app.use('/ha', haRouter);
 app.use('/ev', evRouter);
+app.use('/ess', essRouter);
 app.use('/shore-optimizer', shoreOptimizerRouter);
 
 app.get('/health', (_req: Request, res: Response) => {

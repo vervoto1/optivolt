@@ -10,6 +10,9 @@ import type {
   PvCurtailmentConfig,
   CvPhaseConfig,
   AdaptiveLearningConfig,
+  EssConfig,
+  EssBatteryConfig,
+  EssSystemConfig,
 } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
 
@@ -25,6 +28,7 @@ export type SettingsPatch = Partial<Settings> & {
   pvCurtailment?: Partial<PvCurtailmentConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
   adaptiveLearning?: Partial<AdaptiveLearningConfig>;
+  essConfig?: Partial<EssConfig>;
 };
 
 const HH_MM = /^\d{2}:\d{2}$/;
@@ -144,6 +148,9 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     pvCurtailment: patch.pvCurtailment ? { ...base.pvCurtailment, ...patch.pvCurtailment } as PvCurtailmentConfig : base.pvCurtailment,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
     adaptiveLearning: patch.adaptiveLearning ? { ...base.adaptiveLearning, ...patch.adaptiveLearning } as AdaptiveLearningConfig : base.adaptiveLearning,
+    // Deep-merge essConfig so a PATCH of one scalar (e.g. historyWindowHours)
+    // does not shallow-replace the whole block and wipe `batteries`.
+    essConfig: patch.essConfig ? { ...base.essConfig, ...patch.essConfig } as EssConfig : base.essConfig,
     /* v8 ignore end */
   };
 
@@ -250,6 +257,9 @@ export function normalizeSettings(settings: Settings): Settings {
   }
   if (normalized.adaptiveLearning) {
     normalized.adaptiveLearning = normalizeAdaptiveLearning(normalized.adaptiveLearning);
+  }
+  if (normalized.essConfig) {
+    normalized.essConfig = normalizeEssConfig(normalized.essConfig);
   }
 
   return normalized;
@@ -390,6 +400,118 @@ function normalizeAdaptiveLearning(adaptiveLearning: AdaptiveLearningConfig): Ad
     enabled: expectBoolean(adaptiveLearning.enabled, 'adaptiveLearning.enabled'),
     mode: expectEnum(adaptiveLearning.mode, ['suggest', 'auto'], 'adaptiveLearning.mode'),
     minDataDays: Math.max(1, Math.round(expectFiniteNumber(adaptiveLearning.minDataDays, 'adaptiveLearning.minDataDays'))),
+  };
+}
+
+/** Trim a value to a non-empty entity-id string, or undefined. Permissive: any non-empty string is accepted. */
+function optEntity(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeExtraEntities(value: unknown, label: string): { entity: string; name?: string }[] {
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, `${label} must be an array`);
+  }
+  return value
+    .map((raw, i) => {
+      assertObject(raw, `${label}[${i}]`);
+      const entity = optEntity(raw.entity);
+      if (!entity) return null;
+      const name = optEntity(raw.name);
+      return name ? { entity, name } : { entity };
+    })
+    .filter((e): e is { entity: string; name?: string } => e !== null);
+}
+
+const ESS_BATTERY_ENTITY_KEYS = [
+  'socEntity', 'currentEntity', 'totalVoltageEntity', 'chargingPowerEntity',
+  'dischargingPowerEntity', 'capacitySettingEntity', 'capacityRemainingEntity',
+  'minCellVoltageEntity', 'maxCellVoltageEntity', 'balancingBinaryEntity',
+  'balancingCurrentEntity',
+] as const;
+
+function normalizeEssBattery(battery: unknown, idx: number): EssBatteryConfig {
+  assertObject(battery, `essConfig.batteries[${idx}]`);
+  const name = expectString(battery.name, `essConfig.batteries[${idx}].name`).trim();
+  if (!name) {
+    throw new HttpError(400, `essConfig.batteries[${idx}].name must be a non-empty string`);
+  }
+
+  const result: EssBatteryConfig = { name };
+
+  const prefix = optEntity(battery.cellVoltagePrefix);
+  if (prefix) result.cellVoltagePrefix = prefix;
+  if (battery.cellCount != null) {
+    result.cellCount = Math.max(0, Math.round(expectFiniteNumber(battery.cellCount, `essConfig.batteries[${idx}].cellCount`)));
+  }
+  if (battery.cellVoltageEntities != null) {
+    if (!Array.isArray(battery.cellVoltageEntities)) {
+      throw new HttpError(400, `essConfig.batteries[${idx}].cellVoltageEntities must be an array`);
+    }
+    result.cellVoltageEntities = battery.cellVoltageEntities
+      .map(e => optEntity(e))
+      .filter((e): e is string => e !== undefined);
+  }
+  if (battery.temperatureEntities != null) {
+    if (!Array.isArray(battery.temperatureEntities)) {
+      throw new HttpError(400, `essConfig.batteries[${idx}].temperatureEntities must be an array`);
+    }
+    result.temperatureEntities = battery.temperatureEntities
+      .map((t, tIdx) => {
+        assertObject(t, `essConfig.batteries[${idx}].temperatureEntities[${tIdx}]`);
+        const entity = optEntity(t.entity);
+        if (!entity) return null;
+        return { entity, name: optEntity(t.name) ?? entity };
+      })
+      .filter((t): t is { entity: string; name: string } => t !== null);
+  }
+
+  for (const key of ESS_BATTERY_ENTITY_KEYS) {
+    const v = optEntity(battery[key]);
+    if (v) result[key] = v;
+  }
+
+  if (battery.extraEntities != null) {
+    result.extraEntities = normalizeExtraEntities(battery.extraEntities, `essConfig.batteries[${idx}].extraEntities`);
+  }
+
+  return result;
+}
+
+const ESS_SYSTEM_ENTITY_KEYS = [
+  'maxChargeCurrentEntity', 'batteryPowerEntity', 'batteryCurrentEntity',
+  'batteryVoltageEntity', 'socEntity',
+] as const;
+
+function normalizeEssSystem(system: unknown): EssSystemConfig {
+  assertObject(system, 'essConfig.system');
+  const result: EssSystemConfig = {};
+  const name = optEntity(system.name);
+  if (name) result.name = name;
+  for (const key of ESS_SYSTEM_ENTITY_KEYS) {
+    const v = optEntity(system[key]);
+    if (v) result[key] = v;
+  }
+  if (system.extraEntities != null) {
+    result.extraEntities = normalizeExtraEntities(system.extraEntities, 'essConfig.system.extraEntities');
+  }
+  return result;
+}
+
+function normalizeEssConfig(essConfig: EssConfig): EssConfig {
+  assertObject(essConfig, 'essConfig');
+  if (!Array.isArray(essConfig.batteries)) {
+    throw new HttpError(400, 'essConfig.batteries must be an array');
+  }
+  return {
+    enabled: expectBoolean(essConfig.enabled, 'essConfig.enabled'),
+    batteries: essConfig.batteries.map((b, i) => normalizeEssBattery(b, i)),
+    ...(essConfig.system != null ? { system: normalizeEssSystem(essConfig.system) } : {}),
+    historyWindowHours: Math.max(1, Math.min(168, Math.round(expectFiniteNumber(essConfig.historyWindowHours, 'essConfig.historyWindowHours')))),
+    historyPeriod: expectEnum(essConfig.historyPeriod, ['5minute', 'hour'] as const, 'essConfig.historyPeriod'),
+    refreshIntervalSeconds: Math.max(5, Math.min(3600, Math.round(expectFiniteNumber(essConfig.refreshIntervalSeconds, 'essConfig.refreshIntervalSeconds')))),
   };
 }
 
