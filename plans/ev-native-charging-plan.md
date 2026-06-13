@@ -16,11 +16,19 @@ OptiVolt currently lacks — notably **low-price charging** and **low-SoC
 charging** — plus price limit, minimum SoC, opportunistic charging, continuous
 charging, keep-on, and an earliest-start window.
 
-OptiVolt continues to **plan only**; Home Assistant continues to **actuate** the
-physical charger (Tesla Wall Connector, 11 kW). OptiVolt exposes the plan and
-the live decision over `/ev/*`; an HA automation drives the charger from it (see
-the Appendix). This preserves OptiVolt's design rule: "HA controls the physical
-charger, OptiVolt only plans."
+OptiVolt becomes the **sole owner** of EV charging: it plans, applies the live
+overrides, **and actuates the physical charger** (Tesla Wall Connector, 11 kW)
+directly via Home Assistant service calls. The goal is to **retire the EV Smart
+Charging integration entirely** — OptiVolt does both the deciding and the
+driving. It still exposes the plan and live decision over `/ev/*` for
+observability. Keeping OptiVolt plan-only with an HA automation as the actuator
+remains a supported fallback — see "EV actuation in OptiVolt" below.
+
+> **Note — this expands OptiVolt's role.** Today OptiVolt's only actuator is
+> Victron MQTT; everything HA-related is read-only. Adding charger control means
+> OptiVolt issues HA **service calls** (a new write path) and runs its own fast
+> control loop. The design below makes that safe: idempotent, fail-safe, single
+> owner.
 
 ---
 
@@ -140,6 +148,12 @@ accordingly:
   `api/routes/ev.ts`): low-price, low-SoC, keep-on. These read **live** price +
   EV SoC at request time and override the planned decision for `/ev/current`
   (and annotate `/ev/schedule`). They do **not** require re-solving the LP.
+- **Actuation layer** (new `api/services/ev-actuator-service.ts`): a fast control
+  tick that takes the effective decision from the override layer and **drives the
+  charger** via HA service calls (`switch.turn_on`/`switch.turn_off`, plus
+  optional `number.set_value` for current), idempotently and fail-safe. This is
+  the piece that makes OptiVolt independent of the integration. See "EV actuation
+  in OptiVolt".
 
 This keeps the expensive solve day-ahead while the reactive behaviors stay live
 and cheap, exactly matching the integration's feel.
@@ -167,6 +181,13 @@ evLowSocChargingLevel_percent?: number;
 evContinuous?: boolean;
 evKeepOn?: boolean;
 evSource?: 'native' | 'haSchedule';            // default 'native'; 'haSchedule' = legacy reader
+// Actuation (OptiVolt drives the charger itself — see "EV actuation in OptiVolt")
+evActuationEnabled?: boolean;                  // default false; when true OptiVolt controls the charger
+evChargerSwitchEntity?: string;                // switch.* that starts/stops charging
+evChargerCurrentEntity?: string;               // number.* charge current in A (optional)
+evControlIntervalSeconds?: number;             // actuator tick cadence, default 60
+evFailSafeMode?: 'hold' | 'stop';              // on error/restart: 'hold' = no write (default), 'stop' = turn off
+evActuationPaused?: boolean;                    // user kill-switch to suspend OptiVolt charger control
 ```
 
 Add matching defaults to `api/defaults/default-settings.json` and validation in
@@ -340,11 +361,14 @@ Each new control needs: the element id, registration in
 | 5 | Opportunistic value bands (incl. type 2) | EV tops up beyond target only when cheap |
 | 6 | EV tab mode badge + target-met indicator + schedule annotation | UI surfaces active/forecast mode |
 | 7 (optional) | Continuous-charging MILP contiguity penalty | Fewer charge on/off cycles when enabled |
-| 8 | HA actuation glue documented + sample automation (Appendix) | HA drives charger from OptiVolt decision |
+| 8 | HA service-call write path (`callHaService`) + charger control settings | OptiVolt can switch the charger + set current via HA |
+| 9 | EV actuator service (fast tick, idempotent, fail-safe) + cutover | OptiVolt owns EV charging end-to-end; integration uninstalled |
 
-Phases 1–6 reach functional parity for the requested low-price / low-SoC / price
-limit / min SoC / opportunistic settings. 7 is a refinement; 8 is the HA-side
-companion.
+Phases 1–6 reach **decision parity** for low-price / low-SoC / price limit /
+min SoC / opportunistic. 7 refines charge-cycling. **8–9 give OptiVolt charger
+actuation so the EV Smart Charging integration can be removed entirely** — this
+is the difference between "OptiVolt has all the planning logic" and "OptiVolt is
+independent of the integration".
 
 ---
 
@@ -361,7 +385,12 @@ Per `AGENTS.md`: `npm run typecheck`, `npm run lint`, `npm run test:run`.
   (low-SoC > low-price > min-SoC floor > planned); plug-status gating; mode +
   power returned; tolerant of missing HA (falls back to planned).
 - **Route tests**: `/ev/current` reflects overrides; `/ev/schedule` annotations;
-  `/ev/status` shape.
+  `/ev/status` shape; `/ev/actuation` reports last command.
+- **`ev-actuator-service`** (`tests/api/`): idempotent writes (no duplicate
+  service call when desired state is unchanged); fail-safe (no charger write on
+  HA error / missing plan / restart); plug-gating; `evFailSafeMode: 'stop'`
+  issues a single `turn_off` on sustained error; `evActuationPaused` suspends
+  control; mock `callHaService`.
 - **Browser** (`tests/app/`): new settings inputs hydrate and snapshot; mode
   badge renders per `/ev/current`; `haSchedule` source hides native controls.
 
@@ -381,28 +410,93 @@ If a release is cut, bump the 3 version files + `CHANGELOG.md` per `CLAUDE.md`.
 - The live decision (`/ev/current`) flips to **low-SoC** then **low-price**
   overrides by priority, reacting to live SoC and price without re-solving; the
   EV tab shows the active mode.
-- OptiVolt remains plan-only; an HA automation actuates the charger from the
-  `/ev/*` endpoints (Appendix). The legacy `haSchedule` reader still works when
-  selected.
+- With `evActuationEnabled`, OptiVolt **drives the charger directly** via HA
+  service calls on a fast control tick — idempotently and fail-safe (no charger
+  write on error or restart) — so the **EV Smart Charging integration can be
+  uninstalled**. Plan-only + an HA actuation automation remains a supported
+  fallback, and the legacy `haSchedule` reader still works when selected.
 - `npm run typecheck`, `npm run lint`, and `npm run test:run` pass.
 
 ---
 
-## Appendix: Home Assistant actuation glue
+## EV actuation in OptiVolt
 
-OptiVolt plans; HA drives the charger. This glue lives in the
-`vervoto1/homeassistant` repo, documented here for completeness.
+This is the piece that makes OptiVolt **independent** of the EV Smart Charging
+integration: OptiVolt drives the physical charger itself via Home Assistant
+service calls, so the integration can be uninstalled. (If you prefer to keep
+OptiVolt plan-only, skip this and use the HA-automation fallback at the end.)
 
-- Expose OptiVolt's decision to HA as a REST sensor polling
-  `http://optivolt:3000/ev/status` (or `/ev/current`), surfacing `mode`,
-  `is_charging`, and `ev_charge_A`.
-- An HA automation reacts to that sensor: start/stop the Tesla Wall Connector and
-  set charging current to `ev_charge_A` when `is_charging` is true; stop
-  otherwise. The current EV Smart Charging integration can be retired, or kept in
-  a passive/manual mode purely as the charger-control shim while OptiVolt owns
-  planning.
-- Keep the JK BMS safety automation (Victron max charge current) unchanged; it is
-  independent of EV planning.
-- Because the charger sits behind the Victron inverter, EV draw already affects
-  grid import/export in the LP — no extra coupling is needed beyond the existing
-  EV flow variables.
+### HA service-call write path (`api/services/ha-client.ts`)
+
+OptiVolt's `ha-client.ts` is read-only today. Add a generic writer:
+
+```ts
+callHaService({ haUrl, haToken, domain, service, target, data }):
+  Promise<void>;   // POST {baseUrl}/api/services/{domain}/{service}
+```
+
+Reuse `resolveHaHttpConfig` for credentials: in add-on mode it posts through the
+supervisor proxy (`http://supervisor/core` + `SUPERVISOR_TOKEN`); the add-on
+manifest `optivolt/config.yaml` must declare `homeassistant_api: true` so the
+supervisor allows service calls. Keep the function generic — the EV actuator is
+just its first caller.
+
+### Actuator service (`api/services/ev-actuator-service.ts`)
+
+A lightweight control loop, **separate** from the 15-min planner, registered at
+server start the same way `api/services/auto-calculate.ts` is wired:
+
+1. Every `evControlIntervalSeconds` (default 60), compute the effective decision
+   with `computeEvDecision(settings, getLastPlan())` from the override layer.
+2. Gate first: if `!evActuationEnabled` or `evActuationPaused`, do nothing. If
+   the EV is not plug-connected, ensure the charger is off (subject to fail-safe)
+   and return.
+3. Drive the charger **idempotently** — only issue a service call when the desired
+   state differs from the last command OptiVolt sent (track last command in
+   memory):
+   - on/off via `callHaService('switch', is_charging ? 'turn_on' : 'turn_off', { entity_id: evChargerSwitchEntity })`
+   - charge current, if `evChargerCurrentEntity` is set, via
+     `callHaService('number', 'set_value', { entity_id: evChargerCurrentEntity }, { value: ev_charge_A })`
+4. Record the last actuation (mode, command, value, timestamp, ok/error) in
+   memory for `GET /ev/actuation` and the EV-tab badge.
+
+Add a small `GET /ev/actuation` route returning that last-actuation record for
+observability.
+
+### Fail-safe and ownership rules
+
+- **Single owner.** When `evActuationEnabled`, OptiVolt is the **only** writer to
+  the charger entities. The EV Smart Charging integration must be
+  disabled/removed so the two never fight (the cutover steps enforce this).
+- **Fail-safe = no write on uncertainty.** On any error (HA unreachable, missing
+  live SoC/price, no current plan) or right after an OptiVolt restart, the
+  actuator makes **no** charger write — the charger holds its last physical
+  state. Never leave the charger forced-on as a side effect of a failure.
+  `evFailSafeMode: 'stop'` is an opt-in stricter mode that issues a single
+  `turn_off` on sustained error.
+- **Respect manual control.** A user toggling the charger by hand should not be
+  instantly reverted; `evActuationPaused` suspends OptiVolt control, and the
+  idempotent design avoids spamming writes.
+- **Clean startup.** On boot, read the charger's current state before the first
+  command so the first tick is idempotent and does not blip the charger.
+
+### Cutover — retire the integration
+
+1. Configure `evChargerSwitchEntity` (and optionally `evChargerCurrentEntity`),
+   then enable `evActuationEnabled`.
+2. Disable the EV Smart Charging integration's charger control (or uninstall it)
+   so there is a single owner.
+3. Verify a full cycle: plug in below target → OptiVolt charges in the planned
+   cheap slots; force a low-SoC or low-price condition → OptiVolt charges
+   immediately; reach target → OptiVolt stops.
+4. Leave the JK BMS safety automation (Victron max charge current) unchanged — it
+   is independent of EV charging. The charger sits behind the Victron inverter,
+   so EV draw already affects grid import/export in the LP; no extra coupling is
+   needed beyond the existing EV flow variables.
+
+### Fallback — keep OptiVolt plan-only (optional)
+
+Leave `evActuationEnabled` off and drive the charger from an HA automation that
+polls `GET /ev/current` / `GET /ev/status` (`mode`, `is_charging`,
+`ev_charge_A`) and calls `switch.turn_on` / `switch.turn_off` (+ current).
+Same decision source; actuation just lives in HA instead of OptiVolt.
