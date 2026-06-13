@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchHaStats } from '../../../api/services/ha-client.ts';
+import { fetchHaStats, fetchHaEntityStates, fetchHaHistory } from '../../../api/services/ha-client.ts';
 
 // ---------------------------------------------------------------------------
 // WebSocket mock factory
@@ -528,5 +528,103 @@ describe('fetchHaEntityState', () => {
       'http://supervisor/core/api/states/sensor.foo',
       { headers: { Authorization: 'Bearer supervisor-secret' } },
     );
+  });
+});
+
+describe('fetchHaEntityStates (bulk)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.SUPERVISOR_TOKEN;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it('issues a single GET /api/states with the bearer token', async () => {
+    const states = [{ entity_id: 'sensor.a', state: '1', attributes: {}, last_changed: '', last_updated: '' }];
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(states) });
+
+    const result = await fetchHaEntityStates({
+      haUrl: 'ws://homeassistant.local:8123/api/websocket',
+      haToken: 'test-token',
+    });
+
+    expect(result).toEqual(states);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://homeassistant.local:8123/api/states',
+      { headers: { Authorization: 'Bearer test-token' } },
+    );
+  });
+
+  it('throws when HA is not configured (no token, no supervisor)', async () => {
+    await expect(fetchHaEntityStates({ haUrl: '', haToken: '' }))
+      .rejects.toThrow('not configured');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('throws on non-ok response', async () => {
+    global.fetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(fetchHaEntityStates({ haUrl: 'ws://ha:8123/api/websocket', haToken: 't' }))
+      .rejects.toThrow('503');
+  });
+});
+
+describe('fetchHaHistory', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.SUPERVISOR_TOKEN;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it('returns [] without fetching when no entity ids are requested', async () => {
+    const result = await fetchHaHistory({ haUrl: 'ws://ha:8123/api/websocket', haToken: 't', entityIds: [], startTime: '2026-06-13T00:00:00Z' });
+    expect(result).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('builds the period URL with filter_entity_id, no_attributes and minimal_response', async () => {
+    const history = [[{ entity_id: 'sensor.a', state: '3.3', last_changed: '2026-06-13T00:00:00Z' }]];
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(history) });
+
+    const result = await fetchHaHistory({
+      haUrl: 'ws://homeassistant.local:8123/api/websocket',
+      haToken: 'test-token',
+      entityIds: ['sensor.a', 'sensor.b'],
+      startTime: '2026-06-13T00:00:00Z',
+      endTime: '2026-06-13T12:00:00Z',
+    });
+
+    expect(result).toEqual(history);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toContain('http://homeassistant.local:8123/api/history/period/');
+    expect(url).toContain('filter_entity_id=sensor.a%2Csensor.b');
+    expect(url).toContain('no_attributes=true');
+    expect(url).toContain('minimal_response=true');
+    expect(url).toContain('end_time=2026-06-13T12%3A00%3A00Z');
+    expect(init).toEqual({ headers: { Authorization: 'Bearer test-token' } });
+  });
+
+  it('throws when HA is not configured', async () => {
+    await expect(fetchHaHistory({ haUrl: '', haToken: '', entityIds: ['sensor.a'], startTime: '2026-06-13T00:00:00Z' }))
+      .rejects.toThrow('not configured');
+  });
+
+  it('throws on non-ok response', async () => {
+    global.fetch.mockResolvedValue({ ok: false, status: 500 });
+    await expect(fetchHaHistory({ haUrl: 'ws://ha:8123/api/websocket', haToken: 't', entityIds: ['sensor.a'], startTime: '2026-06-13T00:00:00Z' }))
+      .rejects.toThrow('500');
   });
 });

@@ -1,6 +1,7 @@
 import { refreshVrmSettings } from "./src/api/api.js";
 import { loadInitialConfig } from "./src/config-store.js";
 import { initPredictionsTab } from "./src/predictions.js";
+import { initEssTab, deactivateEssTab } from "./src/ess-tab.js";
 import {
   initDepartureDatetimeMin,
   refreshEvSensorStates,
@@ -43,6 +44,10 @@ function setupTabSwitcher() {
     { tab: document.getElementById('tab-optimizer'),   panel: document.getElementById('panel-optimizer') },
     { tab: document.getElementById('tab-predictions'), panel: document.getElementById('panel-predictions') },
     { tab: document.getElementById('tab-ev'),          panel: document.getElementById('panel-ev') },
+    // ESS tab is lazy: it does no HA traffic until first activated, and stops
+    // polling on deactivation so the interval never leaks after a tab switch.
+    { tab: document.getElementById('tab-ess'),         panel: document.getElementById('panel-ess'),
+      onActivate: () => { void initEssTab(); }, onDeactivate: deactivateEssTab },
     { tab: document.getElementById('tab-settings'),    panel: document.getElementById('panel-settings') },
   ].filter(t => t.tab && t.panel);
 
@@ -91,6 +96,12 @@ function setupTabSwitcher() {
       // Force reflow, then remove panel-enter to trigger fade-in transition
       incoming.panel.getBoundingClientRect();
       incoming.panel.classList.remove('panel-enter');
+
+      // Run per-tab lifecycle hooks once the panel is actually the active one
+      // (activeIndex flips here, after the crossfade — keying off this avoids
+      // starting/leaking polling on rapid switches).
+      outgoing.onDeactivate?.();
+      incoming.onActivate?.();
 
       activeIndex = newIndex;
     }, 200);

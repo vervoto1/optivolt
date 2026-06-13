@@ -36,12 +36,23 @@ export async function loadSettings(): Promise<Settings> {
           ...(settings.pvCurtailment ?? {}),
         } as Settings['pvCurtailment']
       : undefined;
+    // Deep-merge essConfig so newly-added default scalar fields survive on top
+    // of a persisted block, while persisted batteries/system/entities win.
+    // Without this, the shallow {...defaults, ...settings} below would replace
+    // the whole block and a persisted essConfig would never pick up new defaults.
+    const mergedEssConfig = (defaults.essConfig || settings.essConfig)
+      ? {
+          ...(defaults.essConfig ?? {}),
+          ...(settings.essConfig ?? {}),
+        } as Settings['essConfig']
+      : undefined;
     const merged = {
       ...defaults,
       ...settings,
       dataSources: mergedDataSources,
       ...(mergedShoreOptimizer ? { shoreOptimizer: mergedShoreOptimizer } : {}),
       ...(mergedPvCurtailment ? { pvCurtailment: mergedPvCurtailment } : {}),
+      ...(mergedEssConfig ? { essConfig: mergedEssConfig } : {}),
     };
     // Strip the field from the merged object so the auto-split migration
     // in normalizeSettings sees a missing inverterEfficiency_percent and

@@ -7,7 +7,7 @@
  */
 
 import type { HaReading } from '../../lib/ha-postprocess.ts';
-import { resolveHaWsConfig } from './ha-config.ts';
+import { resolveHaHttpConfig, resolveHaWsConfig } from './ha-config.ts';
 
 // ----------------------------- REST: entity state -----------------------------
 
@@ -60,6 +60,93 @@ export async function fetchHaEntityState({
   }
 
   return res.json() as Promise<HaEntityState>;
+}
+
+interface FetchHaCredentials {
+  haUrl: string;
+  haToken: string;
+}
+
+/**
+ * Fetch ALL entity states in one request via the HA REST `GET /api/states`
+ * built-in. Far cheaper than N per-entity GETs when a dashboard reads dozens of
+ * sensors on a poll loop. The caller indexes the result by entity id; ids that
+ * are absent simply have no entry (per-entity tolerance for entity-id drift).
+ */
+export async function fetchHaEntityStates({ haUrl, haToken }: FetchHaCredentials): Promise<HaEntityState[]> {
+  const cfg = resolveHaHttpConfig(haUrl, haToken);
+  if (!cfg) {
+    throw new Error('Home Assistant connection is not configured');
+  }
+
+  const res = await fetch(`${cfg.baseUrl}/api/states`, {
+    headers: { Authorization: `Bearer ${cfg.token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`HA returned ${res.status} for /api/states`);
+  }
+
+  return res.json() as Promise<HaEntityState[]>;
+}
+
+export interface HaHistoryEntry {
+  entity_id?: string;
+  state: string;
+  last_changed?: string;
+  last_updated?: string;
+}
+
+interface FetchHaHistoryOptions extends FetchHaCredentials {
+  entityIds: string[];
+  startTime: string;
+  endTime?: string;
+}
+
+/**
+ * Fetch raw recorder history via the HA REST `GET /api/history/period` endpoint.
+ *
+ * This is the fallback for entities that have **no long-term statistics** (no
+ * `state_class`, or excluded from the recorder) — for which
+ * `recorder/statistics_during_period` returns an empty array. Per-cell BMS
+ * voltages and cell temperatures frequently fall in this bucket, so without raw
+ * history the trend charts would silently render blank.
+ *
+ * Returns one inner array of state entries per requested entity (HA preserves
+ * request order). `no_attributes` keeps the payload small while retaining the
+ * `entity_id`/`state`/`last_changed` fields the caller needs.
+ */
+export async function fetchHaHistory({
+  haUrl,
+  haToken,
+  entityIds,
+  startTime,
+  endTime,
+}: FetchHaHistoryOptions): Promise<HaHistoryEntry[][]> {
+  const cfg = resolveHaHttpConfig(haUrl, haToken);
+  if (!cfg) {
+    throw new Error('Home Assistant connection is not configured');
+  }
+  if (entityIds.length === 0) {
+    return [];
+  }
+
+  const params = new URLSearchParams();
+  params.set('filter_entity_id', entityIds.join(','));
+  params.set('no_attributes', 'true');
+  params.set('minimal_response', 'true');
+  if (endTime) params.set('end_time', endTime);
+
+  const url = `${cfg.baseUrl}/api/history/period/${encodeURIComponent(startTime)}?${params.toString()}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${cfg.token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`HA returned ${res.status} for /api/history/period`);
+  }
+
+  return res.json() as Promise<HaHistoryEntry[][]>;
 }
 
 interface FetchHaStatsOptions {

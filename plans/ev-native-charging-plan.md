@@ -383,7 +383,7 @@ SoC, opportunistic levels, and continuity through. Effective opportunistic cap =
      `battery_to_ev`. Cap total `ev_floor_charge_t ≤ evMaxPow_W` and bound it to 0
      once the floor is satisfied.
 
-   ```
+   ```text
    PRICE-MASK vs MIN-SOC-FLOOR (decision)
      slot t price > limit?
         │ no ──► normal masked planning (ev_charge_t free, c_ev_target soft)
