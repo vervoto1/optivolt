@@ -79,6 +79,78 @@ compatibility (see "Source selection" below).
 
 ---
 
+## Foundations (Phase 0 — do these BEFORE any new feature/MILP/actuation work)
+
+A cross-model review (eng review + two independent outside voices) converged on
+one point: **fix the physical model and ownership boundaries first.** These are
+pre-existing correctness issues that every later phase inherits and amplifies.
+None of phases 1-9 are safe to build until Phase 0 lands.
+
+### 0a. Three-phase charge power (SHIPPED bug)
+
+The amps↔watts conversion is hardcoded **single-phase**:
+`config-builder.ts:119-120` uses `evMaxChargeCurrent_A * 230`, and
+`parse-solution.ts:4` is `const EV_CHARGE_VOLTAGE_V = 230; // single-phase`.
+The target charger is an **11 kW three-phase** Tesla Wall Connector, so at 16 A
+the model plans/actuates ~3.7 kW instead of ~11 kW — and the actuator would
+command amps off that wrong wattage.
+
+- Add a setting `evChargePhases?: 1 | 3` (default `3` for this hardware) — or
+  equivalently `evChargeVoltage_V` — and define one shared constant
+  `EV_W_PER_A = phases * 230`.
+- Replace the hardcoded `* 230` / `/ 230` at **both** sites (`config-builder.ts`
+  and `parse-solution.ts`) with that constant so the LP build and the solution
+  parse agree. Add it to defaults + schema (1 or 3) and surface it in the UI.
+- Test: 16 A on a 3-phase config ⇒ ~11 kW max power in the LP and ~16 A back
+  out of parse; 1-phase config ⇒ ~3.7 kW (regression guard against re-hardcoding).
+
+### 0b. One authoritative EV ownership (legacy vs native double-count)
+
+`id="ev-enabled"` exists **twice** (`index.html:1508` and `:1934`);
+`getElementById` returns the first, and `state.js` writes **both**
+`evConfig.enabled` (legacy) and flat `evEnabled` (native) from that single
+element (`state.js:47`,`:123`,`:200`,`:209`). Meanwhile `planner-service.ts:210`
+injects the legacy HA `evLoad` whenever `evConfig.enabled`. Net effect: enabling
+native EV also enables the legacy reader, so native LP charge **and** injected
+`evLoad_W` both land → **double-counted EV load**.
+
+- Collapse the EV configuration to **one authoritative mode**. `evSource`
+  (`'native' | 'haSchedule'`) becomes that switch — but it must replace the
+  shared `ev-enabled` checkbox, not sit alongside it. Remove the duplicate id;
+  give the legacy and native blocks distinct ids; derive `evConfig.enabled`
+  strictly from `evSource === 'haSchedule'` and `evEnabled` from
+  `evSource === 'native'`, never from the same element.
+- Gate `planner-service.ts:210` on `evSource === 'haSchedule'` so the legacy
+  `evLoad` injection cannot fire in native mode.
+- This also resolves the "evSource is a 4th concept" concern: there is exactly
+  one EV mode selector; `dataSources.evLoad`, legacy `evConfig`, and flat native
+  settings all hang off it.
+- Test: native mode does not inject `evLoad_W`; legacy mode does; the two cannot
+  both be active.
+
+### 0c. Runtime overrides must reconcile with the Victron DESS schedule
+
+`dess-mapper.ts:90` builds the schedule written to Victron from the **planned**
+`ev_charge` (`expectedLoad = row.load + row.ev_charge`). A low-SoC/low-price
+override that charges full-power **off-plan** is invisible to the DESS schedule
+already pushed to Victron, so Victron can discharge the home battery into the EV
+or violate planned grid limits until the next solve+write.
+
+Pick one (document the choice):
+- **(preferred) Override triggers a fast re-plan+re-write.** When the override
+  layer changes the effective EV decision, run a (cheap) re-solve with the
+  override's EV draw pinned and re-write the Victron DESS schedule, so the
+  battery/grid plan stays consistent. Reuses the existing planner+mqtt write path.
+- **or bound the override to the planned envelope** — overrides may only *shift
+  within* the already-scheduled EV power/grid budget, never exceed it (weaker;
+  defeats "charge now regardless").
+
+Until 0c is decided, the actuation phases (8-9) must not ship — an off-plan
+charger command without a matching Victron schedule is the exact "two systems
+disagree about the battery" failure.
+
+---
+
 ## The EV Smart Charging features to port
 
 Mapped from the integration's entities (`const.py`, `number.py`, `switch.py`,
@@ -165,8 +237,11 @@ and cheap, exactly matching the integration's feel.
 ### `api/types.ts` (extend the EV block in `Settings`)
 
 ```ts
+// Phase 0: physical model (fixes the shipped single-phase assumption)
+evChargePhases?: 1 | 3;                         // default 3 here; sets EV_W_PER_A = phases*230
+evMaxPlanAgeSeconds?: number;                   // actuator: ignore plans older than this (fail-safe)
 evStartTime?: string;                          // earliest charge time (ISO local), optional
-evChargingSpeed_pct_per_h?: number;            // informational/derived (see notes)
+evChargingSpeed_pct_per_h?: number;            // informational/derived, NOT persisted — compute in UI
 evApplyPriceLimit?: boolean;
 evMaxPrice_cents_per_kWh?: number;
 evMinSoc_percent?: number;
@@ -256,13 +331,23 @@ SoC, opportunistic levels, and continuity through. Effective opportunistic cap =
    `ev_soc_{depSlot-1} ≥ evTargetWh`) with a soft constraint: add a non-negative
    `ev_target_shortfall` and the constraint
    `ev_soc_{depSlot-1} + ev_target_shortfall ≥ evTargetWh`, plus
-   `BIG_PENALTY × ev_target_shortfall` in the objective. `BIG_PENALTY` must sit
-   **above** the largest per-Wh import cost in the horizon but **below** the
-   `softMinSocPenalty`/`TIEBREAK` scales so it doesn't distort battery economics —
-   reuse the existing magnitude discipline (the TIEBREAK ladder is `5e-7…4e-6`;
-   the shortfall penalty is a *large* coefficient, e.g. `100` c€/Wh, far above any
-   realistic price). Surface `ev_target_shortfall` in the solution so
-   `parse-solution` can derive `ev_target_met`.
+   `BIG_PENALTY × ev_target_shortfall` in the objective.
+
+   **Dimensions (get this right — the objective mixes scales).** Objective
+   coefficients are in **c€ per Wh of the variable**: import terms are
+   `price_cents × priceCoeff` (`build-lp.ts:128`), the soft battery-min-SoC
+   penalty is `0.05` c€/Wh (`build-lp.ts:125`), and the TIEBREAKs are `~1e-6`
+   (`build-lp.ts:112`). `ev_target_shortfall` is a Wh quantity, so `BIG_PENALTY`
+   is a c€/Wh coefficient that must be **strictly greater than the largest
+   achievable per-Wh saving from *not* charging** (i.e. above
+   `max(importPrice) × priceCoeff` over the horizon, with margin) so the solver
+   always prefers hitting the target when it physically/price-mask can. It is NOT
+   "below TIEBREAK/softMinSoc" — it is the largest coefficient in the objective.
+   Compute it from the actual price array (e.g.
+   `BIG_PENALTY = max(importCoeff_cents) × 10`) rather than a magic constant, and
+   assert the ordering `BIG_PENALTY ≫ batteryCost ≫ softMinSoc ≫ TIEBREAK` in a
+   test. Surface `ev_target_shortfall` in the solution so `parse-solution` can
+   derive `ev_target_met`.
 
    3a. **Remove/recompute the cardinality lower bound.** `c_ev_min_on`
    (`build-lp.ts:462`, `Σ ev_on_t ≥ kMin`) was derived from the *hard* deficit and
@@ -274,20 +359,29 @@ SoC, opportunistic levels, and continuity through. Effective opportunistic cap =
    Prefer (b) only if you still want the relaxation-tightening; (a) is simpler and
    safe. This is the single highest-risk LP interaction — cover it with the
    regression test in Testing.
-4. **Minimum-SoC floor (hard, MILP-gated, mask-exempt).** A *static* mask cannot
-   express "exempt the floor slots" because the floor slots aren't known at build
-   time. Use a MILP indicator instead:
-   - Add `ev_soc_t ≥ evMinFloorWh` for all `t` at/after the first slot the floor
-     is physically reachable from `evInitialWh` at max power (a hard floor, like
-     today's soc bounds — independent of price).
-   - Introduce a binary `ev_floor_active_t` and a separate flow term
-     `ev_floor_charge_t` (AC into the charger) that is **excluded from the price
-     mask**. Bound `ev_floor_charge_t = 0` whenever the floor is already satisfied
-     (`ev_soc_{t-1} ≥ evMinFloorWh` ⇒ via the indicator), and route it into
-     `c_ev_soc_t` exactly like `grid_to_ev` (AC, `evChargeWhPerW` factor).
-   - The floor charge competes with nothing on price (it's a safety obligation),
-     so it carries only the normal import cost in the objective, no mask, no
-     opportunistic reward.
+4. **Minimum-SoC floor (soft-with-huge-penalty, mask-exempt, fully sourced).**
+   Two traps to avoid: (i) a *static* mask cannot "exempt the floor slots"
+   because the floor slots aren't known at build time; (ii) a **hard** floor can
+   make the whole LP infeasible — reachability isn't just charger power and slot
+   count, it's also bounded by house-load balance (`c_load`, `build-lp.ts:293`)
+   and the grid-import cap (`build-lp.ts:336`), so "first physically reachable
+   slot" computed from `evMaxPow_W` alone (as `config-builder.ts:128` does today)
+   can be wrong. Therefore make the floor **soft with a penalty above
+   `BIG_PENALTY`** (floor outranks target), never a hard constraint:
+   - Add `ev_soc_t + ev_floor_shortfall_t ≥ evMinFloorWh` for `t` from the
+     earliest *estimated* reachable slot, with `FLOOR_PENALTY × ev_floor_shortfall_t`
+     in the objective and `FLOOR_PENALTY > BIG_PENALTY` (priority: floor > target).
+     Soft ⇒ the model is always feasible; the penalty ⇒ the floor is met whenever
+     physically possible.
+   - Mask-exemption via a dedicated, **fully sourced** flow `ev_floor_charge_t`
+     (AC into the charger) that is excluded from the price mask. It must NOT be
+     free energy: split it into `g2ev_floor_t + η_inv·pv2ev_floor_t +
+     η_inv·b2ev_floor_t` (same source decomposition as `ev_charge`), feed those
+     into `c_ev_soc_t` with the correct `evChargeWhPerW`/`evChargeWhPerW_dc`
+     factors, **and add `g2ev_floor_t` into the grid-import cap** (`build-lp.ts:334`)
+     and the PV/battery source balances, exactly like `grid_to_ev`/`pv_to_ev`/
+     `battery_to_ev`. Cap total `ev_floor_charge_t ≤ evMaxPow_W` and bound it to 0
+     once the floor is satisfied.
 
    ```
    PRICE-MASK vs MIN-SOC-FLOOR (decision)
@@ -297,8 +391,9 @@ SoC, opportunistic levels, and continuity through. Effective opportunistic cap =
                     │
                     └─ but ev_soc_{t-1} < evMinFloorWh ?
                           │ no ──► stays masked (0)
-                          └ yes ─► ev_floor_charge_t > 0 allowed (mask-exempt,
-                                    pays import cost, bounded by evMaxPow_W)
+                          └ yes ─► ev_floor_charge_t > 0 allowed (mask-exempt),
+                                    sourced from grid/pv/battery, counted in the
+                                    grid-import cap, bounded by evMaxPow_W
    ```
 5. **Opportunistic value band (bounded reward).** For SoC above target up to the
    opportunistic cap, add a small **negative cost** on stored EV energy in that
@@ -426,9 +521,10 @@ Each new control needs: the element id, registration in
 
 | Phase | Scope | Output |
 |-------|-------|--------|
+| **0** | **Foundations (see section above): 3-phase units, one authoritative EV ownership, override↔DESS reconciliation** | **Physical model + ownership correct; no double-count; overrides keep Victron consistent** |
 | 1 | Settings: new EV fields + defaults + schema; UI inputs wired (no behavior yet) | Settings round-trip; controls visible |
-| 2 | LP masks: earliest-start + price limit; soft target SoC | Plan respects window + price ceiling; stays feasible |
-| 3 | Minimum-SoC floor | EV guaranteed to reach min SoC ASAP, mask-exempt |
+| 2 | LP masks: earliest-start + price limit; soft target SoC (+ cardinality-bound fix #3a) | Plan respects window + price ceiling; stays feasible |
+| 3 | Minimum-SoC floor (soft, sourced, mask-exempt) | EV reaches min SoC ASAP when feasible; never infeasible |
 | 4 | Runtime overrides: low-price + low-SoC + keep-on in `ev-decision-service` + `/ev/current` | Live decision flips to override modes correctly |
 | 5 | Opportunistic value bands (incl. type 2) | EV tops up beyond target only when cheap |
 | 6 | EV tab mode badge + target-met indicator + schedule annotation | UI surfaces active/forecast mode |
@@ -436,11 +532,14 @@ Each new control needs: the element id, registration in
 | 8 | HA service-call write path (`callHaService`) + charger control settings | OptiVolt can switch the charger + set current via HA |
 | 9 | EV actuator service (fast tick, idempotent, fail-safe) + cutover | OptiVolt owns EV charging end-to-end; integration uninstalled |
 
-Phases 1–6 reach **decision parity** for low-price / low-SoC / price limit /
-min SoC / opportunistic. 7 refines charge-cycling. **8–9 give OptiVolt charger
-actuation so the EV Smart Charging integration can be removed entirely** — this
-is the difference between "OptiVolt has all the planning logic" and "OptiVolt is
-independent of the integration".
+**Phase 0 is a hard prerequisite for all of 1-9** (cross-model consensus): the
+three-phase fix, the legacy/native ownership collapse, and the override↔DESS
+reconciliation are correctness foundations, not enhancements. Phases 1–6 then
+reach **decision parity** for low-price / low-SoC / price limit / min SoC /
+opportunistic. 7 refines charge-cycling. **8–9 give OptiVolt charger actuation so
+the EV Smart Charging integration can be removed entirely** — and must not ship
+until 0c (override↔DESS) is decided, or an off-plan charger command can fight the
+Victron schedule.
 
 ---
 
@@ -464,6 +563,23 @@ Per `AGENTS.md`: `npm run typecheck`, `npm run lint`, `npm run test:run`.
   - **No false "target met".** With the requested target above what's reachable,
     assert `ev_target_met === false` and `ev_target_shortfall > 0` (proves the
     `achievableTargetWh` clamp no longer masks the shortfall).
+  - **Phase 0 — three-phase units.** `evChargePhases: 3` + 16 A ⇒ ~11 kW max EV
+    power in the LP and ~16 A back out of `parse-solution`; `evChargePhases: 1`
+    ⇒ ~3.7 kW. Regression guard against re-hardcoding 230.
+  - **Min-SoC floor never infeasible.** Construct a case where the floor is NOT
+    reachable given house load + grid-import cap; assert the LP is **feasible**
+    with `ev_floor_shortfall > 0` (soft floor), not an infeasible solve.
+  - **Floor charge is sourced + capped.** Assert `ev_floor_charge_t` increments
+    EV SoC only via grid/pv/battery sub-flows and that `g2ev_floor_t` is counted
+    in the grid-import cap (no free energy).
+  - **Penalty ordering.** Assert `FLOOR_PENALTY > BIG_PENALTY ≫ batteryCost ≫
+    softMinSoc ≫ TIEBREAK` for the generated coefficients.
+- **Phase 0 — ownership (`tests/api/`)**: native mode (`evSource:'native'`) does
+  NOT inject legacy `evLoad_W` via `planner-service`; `haSchedule` mode does;
+  the two cannot both be active (no shared `ev-enabled` element).
+- **Phase 0 — override↔DESS (`tests/api/`)**: an override that deviates from the
+  planned EV draw triggers a re-plan + Victron re-write (or is bounded to the
+  planned envelope), so the written DESS schedule matches actual charger draw.
 - **`ev-decision-service`** (`tests/api/`): priority ordering
   (low-SoC > low-price > min-SoC floor > planned); plug-status gating; mode +
   power returned; tolerant of missing HA (falls back to planned).
@@ -542,14 +658,27 @@ server start the same way `api/services/auto-calculate.ts` is wired:
 1. Every `evControlIntervalSeconds` (default 60), compute the effective decision
    with `computeEvDecision(settings, getLastPlan())` from the override layer.
 
-   > **Dependency — actuation needs a current plan, which needs auto-calculate.**
-   > `getLastPlan()` is populated only by `auto-calculate.ts`, which is opt-in
-   > (`if (!config?.enabled) return;`). If a user enables `evActuationEnabled`
-   > but not `autoCalculate`, `getLastPlan()` is `null` forever and (per
-   > fail-safe) the charger is never driven — a **silent** dead feature. Surface
-   > this: on actuator start, if auto-calculate is disabled, log a warning and
-   > report it in `GET /ev/actuation` (`status: 'no_plan_source'`). Optionally
-   > trigger a solve from the actuator. Add a startup-validation test.
+   > **Dependency + freshness — don't trust `getLastPlan()` blindly.**
+   > `getLastPlan()` is in-memory and replaced **only after a solve completes**
+   > (`planner-service.ts:307`), by either `auto-calculate.ts` (opt-in:
+   > `if (!config?.enabled) return;`) **or** a manual `POST /calculate`
+   > (`calculate.ts:21`). So:
+   > - **No plan source:** if neither auto-calculate is enabled nor a plan has
+   >   ever been computed, `getLastPlan()` is `null` → no charger write (silent
+   >   dead feature). On actuator start, warn and report
+   >   `status: 'no_plan_source'` in `GET /ev/actuation`; optionally trigger a
+   >   solve. Startup-validation test required.
+   > - **Staleness:** a plan can be up to one auto-calc interval old (or older if
+   >   auto-calc is off and nobody hit `/calculate`). The actuator must read a
+   >   **plan-freshness timestamp** and treat a plan older than a configurable
+   >   `evMaxPlanAgeSeconds` as "uncertain → no write" (fail-safe), not act on
+   >   stale slots.
+   > - **Observed-state reconciliation, not just `lastCommand`:** each tick,
+   >   reconcile *intended* state against the charger's *observed* state (the
+   >   contention check in step 4 is part of this), since `lastCommand` memory is
+   >   lost on restart and can diverge from physical reality.
+   > - Snapshot the `getLastPlan()` reference once per tick (it can be swapped
+   >   mid-tick with no locking).
 2. Gate first: if `!evActuationEnabled` or `evActuationPaused`, do nothing.
    Plug-status gating with **staleness awareness**: read `evPlugSensor`; if the
    value is `unavailable`/`unknown` (a transient HA hiccup), treat it as

@@ -214,6 +214,16 @@ Add an `essConfig` validator consistent with the other optional config blocks:
 one of the allowed enum values. Be permissive about entity-id strings (any
 non-empty string), since they are user-specific.
 
+> **CRITICAL — add `essConfig` to the deep-merge list.** `settings-store.ts` only
+> deep-merges the *known* nested blocks (`dataSources`, `shoreOptimizer`,
+> `pvCurtailment`, ~`settings-store.ts:25`); everything else goes through a
+> shallow `{...defaults, ...settings}`. A nested `essConfig` left out of that list
+> is **shallow-replaced**, so a future ESS settings UI (phase 7) that PATCHes a
+> single field like `historyWindowHours` will **wipe `batteries`** and the rest.
+> Add an explicit `mergedEssConfig` (deep-merge defaults + persisted, and
+> per-battery array handling) alongside the existing blocks. Test: PATCH one
+> scalar field, assert `batteries` survives.
+
 ---
 
 ## Backend
@@ -224,7 +234,11 @@ Two functions, both pure orchestration over `ha-client.ts`:
 
 - `getEssState(settings)`:
   1. Resolve the enabled `essConfig`; throw `HttpError(422)` if HA is not
-     configured (mirror `api/routes/ha.ts`).
+     configured. **Do NOT "mirror `/ha/entity`"** — that route only checks
+     `haUrl` and not the token (`ha.ts:17`) and will attempt a doomed REST call
+     when no token exists. Call `resolveHaHttpConfig(haUrl, haToken)` (for the
+     bulk-state REST path) / `resolveHaWsConfig` (for stats/history WS) directly
+     and return 422 when they return `null`, so a missing token fails fast.
   2. Expand each battery's cell-voltage entity list (prefix+count or explicit).
   3. Collect **all** scalar + cell + temperature entity ids across batteries and
      system into one set, then fetch their live states.
@@ -284,8 +298,13 @@ Two functions, both pure orchestration over `ha-client.ts`:
   >    using `history/history_during_period` (REST `GET /api/history/period/...`,
   >    or the WS `history/history_during_period` command) for entities that lack
   >    statistics. `getEssHistory` chooses per entity: statistics where available
-  >    (cheap, pre-aggregated), raw history otherwise. Raw history is higher
-  >    volume — clamp the window and/or downsample client-side.
+  >    (cheap, pre-aggregated), raw history otherwise.
+  > 3. **Downsample on the server, not the client.** Raw `history_during_period`
+  >    can return thousands of points per sensor × ~40 sensors; shipping that to
+  >    the browser and downsampling there is too late (the payload is already
+  >    huge). Cap/bucket per entity **server-side** in `getEssHistory` (e.g. to
+  >    the requested `period` granularity, ~N points max) so this never becomes
+  >    the heaviest endpoint in the app on recorder-heavy installs.
   >
   > This is the headline risk for the tab: without it, the cell-voltage trends —
   > the main reason the dashboard exists — may ship blank.
@@ -364,8 +383,17 @@ Add `getEssState()` and `getEssHistory({ hours, period })` using the existing
   - Build per-battery card DOM dynamically from the state response so it scales
     to N batteries.
   - Start a refresh interval (`essConfig.refreshIntervalSeconds`) that re-fetches
-    **state** (cheap) while the ESS tab is the active panel; pause when hidden.
-    Re-fetch **history** on tab (re)activation, not every interval.
+    **state** while the ESS tab is the active panel; re-fetch **history** on tab
+    (re)activation, not every interval.
+    - **Explicit interval lifecycle (don't leak timers).** `activeIndex` only
+      flips *after* the 200 ms crossfade transition (`main.js:76`), and the
+      switcher is closed over inside `setupTabSwitcher`. Keying "is the ESS tab
+      active?" off DOM hidden state or click handlers leaks polling after rapid
+      tab switches. Own a single `setInterval` handle in `ess-tab.js`; start it on
+      ESS activation and **`clearInterval` on deactivation** (expose a
+      `deactivateEssTab()` the switcher calls, or subscribe to an explicit tab
+      lifecycle event). Test: switching away clears the interval (no further
+      `getEssState` calls).
 - Charts via `renderChart(canvas, { type, data, options })`:
   - Snapshot bars: `type: 'bar'`, x = `Cell 1..16`, single dataset, colour from
     palette (e.g. a battery-blue from `SOLUTION_COLORS.soc`).
