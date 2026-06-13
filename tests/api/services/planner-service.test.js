@@ -441,6 +441,10 @@ describe('computePlan — updateData path', () => {
 describe('computePlan — evConfig EV load refresh', () => {
   const evSettings = {
     ...baseSettings,
+    // Legacy haSchedule mode requires the master switch + source selector, not
+    // just evConfig.enabled (the authoritative resolveEvMode gate).
+    evEnabled: true,
+    evSource: 'haSchedule',
     evConfig: {
       enabled: true,
       scheduleSensor: 'sensor.ev_schedule',
@@ -516,6 +520,20 @@ describe('computePlan — evConfig EV load refresh', () => {
 
   it('does not call fetchEvLoadFromHA when evConfig.enabled is false', async () => {
     loadSettings.mockResolvedValue({ ...baseSettings });
+
+    await computePlan();
+
+    expect(fetchEvLoadFromHA).not.toHaveBeenCalled();
+  });
+
+  it('does NOT inject legacy evLoad in native mode (no double-count)', async () => {
+    // evEnabled + native source: the LP plans EV charge, so the legacy reader
+    // must stay silent even when evConfig.enabled is (stale) true.
+    loadSettings.mockResolvedValue({
+      ...evSettings,
+      evSource: 'native',
+      evConfig: { ...evSettings.evConfig, enabled: true },
+    });
 
     await computePlan();
 

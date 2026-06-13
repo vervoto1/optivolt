@@ -323,6 +323,8 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      evEnabled: true,
+      evSource: 'haSchedule',
       evConfig: { enabled: true },
     });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -345,6 +347,8 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      evEnabled: true,
+      evSource: 'haSchedule',
       evConfig: { enabled: true },
     });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -416,6 +420,8 @@ describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null'
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+      evEnabled: true,
+      evSource: 'haSchedule',
       evConfig: { enabled: true },
     });
     mqttService.readVictronSocPercent.mockResolvedValue(50);

@@ -264,6 +264,26 @@ describe('buildSolverConfigFromSettings — EV', () => {
     expect(cfg.evLoad_W.every(v => v === 0)).toBe(true);
   });
 
+  it('SUPPRESSES data.evLoad injection in native mode (no double-count)', () => {
+    // Native mode plans EV charge in the LP, so the uncontrollable data.evLoad
+    // must NOT also be folded into the house load — else the EV is counted twice.
+    const evValues = Array(96).fill(0);
+    evValues[2] = 11000;
+    const data = { ...makeData(), evLoad: { start: NOW_STRING, step: 15, values: evValues } };
+    const nativeSettings = { ...mockSettings, evEnabled: true, evSource: 'native' };
+    const cfg = buildSolverConfigFromSettings(nativeSettings, data, NOW_MS);
+    expect(cfg.evLoad_W.every(v => v === 0)).toBe(true);
+  });
+
+  it('keeps data.evLoad injection in haSchedule mode', () => {
+    const evValues = Array(96).fill(0);
+    evValues[2] = 11000;
+    const data = { ...makeData(), evLoad: { start: NOW_STRING, step: 15, values: evValues } };
+    const legacySettings = { ...mockSettings, evEnabled: true, evSource: 'haSchedule' };
+    const cfg = buildSolverConfigFromSettings(legacySettings, data, NOW_MS);
+    expect(cfg.evLoad_W[2]).toBe(11000);
+  });
+
   it('passes disableDischargeWhileEvCharging from settings.evConfig', () => {
     const settings = {
       ...mockSettings,
@@ -753,25 +773,22 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     expect(cfg.ev.evChargePhases).toBe(1);
   });
 
-  it('clamps achievable target when max charge falls short of requested target', () => {
-    // 50% initial = 30 000 Wh, 8 slots × 3680 W × 0.25 h = 7 360 Wh reachable
-    // achievable = min(48000, 37360, 60000) = 37360 → 62.267%
+  it('passes the REQUESTED target through unclamped (capacity-only; soft target carries feasibility)', () => {
+    // The old achievable-charge clamp silently lowered the target before the LP
+    // saw it, so the (now soft) target read as "met" while the car sat below the
+    // user's requested SoC. The requested 80% must pass through verbatim.
     const cfg = buildSolverConfigFromSettings(
       evSettings, makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
     );
-    const expectedPct = (37360 / 60000) * 100;
-    expect(cfg.ev.evTargetSoc_percent).toBeCloseTo(expectedPct, 3);
+    expect(cfg.ev.evTargetSoc_percent).toBe(80);
   });
 
-  it('reduces achievable target by evChargeEfficiency_percent when clamping', () => {
-    // 90% efficiency: 8 slots × 3680 W × 0.25 h × 0.9 = 6624 Wh reachable
-    // achievable = min(48000, 30000 + 6624, 60000) = 36624 → 61.04%
+  it('does not lower the target by charge efficiency (no achievable clamp)', () => {
     const cfg = buildSolverConfigFromSettings(
       { ...evSettings, evChargeEfficiency_percent: 90 },
       makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
     );
-    const expectedPct = (36624 / 60000) * 100;
-    expect(cfg.ev.evTargetSoc_percent).toBeCloseTo(expectedPct, 3);
+    expect(cfg.ev.evTargetSoc_percent).toBe(80);
   });
 
   it('passes evChargeEfficiency_percent through to EvConfig', () => {

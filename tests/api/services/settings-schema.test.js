@@ -424,4 +424,47 @@ describe('settings-schema', () => {
       expect(result.hasHaToken).toBe(false);
     });
   });
+
+  describe('EV native-charging settings', () => {
+    it('defaults evSource to native', () => {
+      const s = normalizeSettings(validSettings());
+      expect(s.evSource).toBe('native');
+    });
+
+    it('keeps a valid haSchedule source', () => {
+      const s = normalizeSettings({ ...validSettings(), evSource: 'haSchedule' });
+      expect(s.evSource).toBe('haSchedule');
+    });
+
+    it('coerces booleans and clamps actuation numerics', () => {
+      const s = normalizeSettings({
+        ...validSettings(),
+        evApplyPriceLimit: 'yes',          // non-boolean → false
+        evLowSocChargingEnabled: true,
+        evControlIntervalSeconds: 2,        // below min → 5
+        evMaxPlanAgeSeconds: 10_000_000,    // above max → 86400
+        evFailSafeMode: 'bogus',            // invalid → hold
+      });
+      expect(s.evApplyPriceLimit).toBe(false);
+      expect(s.evLowSocChargingEnabled).toBe(true);
+      expect(s.evControlIntervalSeconds).toBe(5);
+      expect(s.evMaxPlanAgeSeconds).toBe(86_400);
+      expect(s.evFailSafeMode).toBe('hold');
+    });
+
+    it('leaves optional numeric levels undefined when absent, allows negative prices', () => {
+      const s = normalizeSettings(validSettings());
+      expect(s.evMaxPrice_cents_per_kWh).toBeUndefined();
+      const s2 = normalizeSettings({ ...validSettings(), evMaxPrice_cents_per_kWh: -3 });
+      expect(s2.evMaxPrice_cents_per_kWh).toBe(-3);
+    });
+
+    it('PATCH of one EV field preserves the others (flat merge)', () => {
+      const base = normalizeSettings({ ...validSettings(), evMaxChargeCurrent_A: 16, evChargePhases: 3 });
+      const merged = mergeSettings(base, { evLowSocChargingEnabled: true });
+      expect(merged.evLowSocChargingEnabled).toBe(true);
+      expect(merged.evMaxChargeCurrent_A).toBe(16);
+      expect(merged.evChargePhases).toBe(3);
+    });
+  });
 });

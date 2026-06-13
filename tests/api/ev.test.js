@@ -111,3 +111,30 @@ describe('GET /ev/current', () => {
     expect(res.body.timestampMs).toBe(START_MS);
   });
 });
+
+describe('GET /ev/status', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('returns a compact status object', async () => {
+    getLastPlan.mockReturnValue(mockPlan);
+    const res = await get(app, '/ev/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('mode');
+    expect(res.body).toHaveProperty('is_charging');
+    expect(res.body).toHaveProperty('targetSoc_percent');
+  });
+
+  it('does not 404 when no plan exists (status is plan-tolerant)', async () => {
+    getLastPlan.mockReturnValue(null);
+    const res = await get(app, '/ev/status');
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /ev/actuation', () => {
+  it('returns the last actuation record (never_run before any tick)', async () => {
+    const res = await get(app, '/ev/actuation');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('status');
+  });
+});

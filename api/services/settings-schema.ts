@@ -234,6 +234,8 @@ export function normalizeSettings(settings: Settings): Settings {
   normalized.evPlugSensor = String(normalized.evPlugSensor ?? '').trim();
   normalized.evDepartureTime = String(normalized.evDepartureTime ?? '');
 
+  normalizeEvNativeSettings(normalized);
+
   if (normalized.evConfig) {
     normalized.evConfig = normalizeEvConfig(normalized.evConfig);
   }
@@ -263,6 +265,65 @@ export function normalizeSettings(settings: Settings): Settings {
   }
 
   return normalized;
+}
+
+/** Coerce to a finite number, or undefined (for optional numeric settings). */
+function optNumber(value: unknown): number | undefined {
+  return Number.isFinite(value) ? Number(value) : undefined;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number.isFinite(value) ? Math.round(Number(value)) : fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Normalize the native EV planning + actuation settings (feature-parity port).
+ * All fields are optional; booleans default false, the actuation numerics get
+ * sane defaults, and optional numeric levels are left undefined when absent so a
+ * disabled toggle never activates from a stray default.
+ */
+function normalizeEvNativeSettings(s: Settings): void {
+  s.evSource = s.evSource === 'haSchedule' ? 'haSchedule' : 'native';
+
+  // Earliest-start window (ISO local datetime or empty)
+  s.evStartTime = typeof s.evStartTime === 'string' ? s.evStartTime : '';
+
+  // Price limit
+  s.evApplyPriceLimit = s.evApplyPriceLimit === true;
+  s.evMaxPrice_cents_per_kWh = optNumber(s.evMaxPrice_cents_per_kWh); // may be negative
+
+  // Minimum-SoC floor
+  const minSoc = optNumber(s.evMinSoc_percent);
+  s.evMinSoc_percent = minSoc === undefined ? undefined : normalizeSocPercent(minSoc);
+
+  // Opportunistic bands
+  s.evOpportunisticEnabled = s.evOpportunisticEnabled === true;
+  const opp1 = optNumber(s.evOpportunisticLevel_percent);
+  s.evOpportunisticLevel_percent = opp1 === undefined ? undefined : normalizeSocPercent(opp1);
+  s.evOpportunisticType2Enabled = s.evOpportunisticType2Enabled === true;
+  const opp2 = optNumber(s.evOpportunisticType2Level_percent);
+  s.evOpportunisticType2Level_percent = opp2 === undefined ? undefined : normalizeSocPercent(opp2);
+
+  // Reactive overrides
+  s.evLowPriceChargingEnabled = s.evLowPriceChargingEnabled === true;
+  s.evLowPriceChargingLevel_cents_per_kWh = optNumber(s.evLowPriceChargingLevel_cents_per_kWh); // may be negative
+  s.evLowSocChargingEnabled = s.evLowSocChargingEnabled === true;
+  const lowSoc = optNumber(s.evLowSocChargingLevel_percent);
+  s.evLowSocChargingLevel_percent = lowSoc === undefined ? undefined : normalizeSocPercent(lowSoc);
+
+  // Behaviour
+  s.evContinuous = s.evContinuous === true;
+  s.evKeepOn = s.evKeepOn === true;
+
+  // Actuation
+  s.evActuationEnabled = s.evActuationEnabled === true;
+  s.evChargerSwitchEntity = String(s.evChargerSwitchEntity ?? '').trim();
+  s.evChargerCurrentEntity = String(s.evChargerCurrentEntity ?? '').trim();
+  s.evControlIntervalSeconds = clampInt(s.evControlIntervalSeconds, 5, 3600, 60);
+  s.evMaxPlanAgeSeconds = clampInt(s.evMaxPlanAgeSeconds, 60, 86_400, 1800);
+  s.evFailSafeMode = s.evFailSafeMode === 'stop' ? 'stop' : 'hold';
+  s.evActuationPaused = s.evActuationPaused === true;
 }
 
 function normalizeDataSources(dataSources: DataSources): DataSources {

@@ -38,6 +38,8 @@ export function fetchHaEntityState(entityId) {
 // --- EV ---
 export const fetchEvSchedule = () => getJson('/ev/schedule');
 export const fetchEvCurrent = () => getJson('/ev/current');
+export const fetchEvStatus = () => getJson('/ev/status');
+export const fetchEvActuation = () => getJson('/ev/actuation');
 
 // --- ESS dashboard ---
 export const getEssState = () => getJson('/ess/state');

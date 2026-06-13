@@ -66,7 +66,59 @@ export interface Settings {
   evDepartureTime: string;
   evTargetSoc_percent: number;
   evChargeEfficiency_percent: number;
+  /**
+   * Authoritative EV mode selector. 'native' = OptiVolt plans EV charging in the
+   * LP; 'haSchedule' = legacy reader injects the external EV Smart Charging
+   * integration's schedule as evLoad. Exactly one path is active (gated together
+   * with evEnabled), so native LP charge and injected evLoad can never
+   * double-count. Default 'native'.
+   */
+  evSource?: EvSource;
+
+  // ---- Feature-parity planning controls (port of EV Smart Charging) ----
+  /** Earliest charge time (ISO local datetime). Empty = no earliest-start restriction. */
+  evStartTime?: string;
+  /** Never charge (normal planning) in slots whose import price exceeds evMaxPrice. */
+  evApplyPriceLimit?: boolean;
+  evMaxPrice_cents_per_kWh?: number;
+  /** Minimum-SoC safety floor (%) reached ASAP, independent of price. */
+  evMinSoc_percent?: number;
+  /** Top up beyond target toward this SoC (%) when energy is cheap/surplus. */
+  evOpportunisticEnabled?: boolean;
+  evOpportunisticLevel_percent?: number;
+  /** Second, higher opportunistic band. */
+  evOpportunisticType2Enabled?: boolean;
+  evOpportunisticType2Level_percent?: number;
+  /** Reactive override: charge now at full power when the live buy price is at/below the level. */
+  evLowPriceChargingEnabled?: boolean;
+  evLowPriceChargingLevel_cents_per_kWh?: number;
+  /** Reactive override: charge now when live EV SoC is below the level (priority over low-price). */
+  evLowSocChargingEnabled?: boolean;
+  evLowSocChargingLevel_percent?: number;
+  /** Prefer a single contiguous charging block (MILP contiguity bias). */
+  evContinuous?: boolean;
+  /** Keep the charger energized once started within the charge window. */
+  evKeepOn?: boolean;
+
+  // ---- Actuation (OptiVolt drives the charger itself via HA service calls) ----
+  /** When true, the actuator controls the physical charger. Default false. */
+  evActuationEnabled?: boolean;
+  /** switch.* entity that starts/stops charging. */
+  evChargerSwitchEntity?: string;
+  /** number.* entity for charge current in A (optional). */
+  evChargerCurrentEntity?: string;
+  /** Actuator tick cadence in seconds. Default 60. */
+  evControlIntervalSeconds?: number;
+  /** Ignore plans older than this (fail-safe). Default 1800. */
+  evMaxPlanAgeSeconds?: number;
+  /** On sustained error/restart: 'hold' = no write (default), 'stop' = turn off. */
+  evFailSafeMode?: EvFailSafeMode;
+  /** User kill-switch to suspend OptiVolt charger control. */
+  evActuationPaused?: boolean;
 }
+
+export type EvSource = 'native' | 'haSchedule';
+export type EvFailSafeMode = 'hold' | 'stop';
 
 export interface EvConfig {
   enabled: boolean;

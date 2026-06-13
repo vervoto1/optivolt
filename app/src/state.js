@@ -44,7 +44,9 @@ export function snapshotUI(els) {
 
     // EV CHARGING
     evConfig: {
-      enabled: els.evEnabled?.checked ?? false,
+      // Legacy reader is active only in haSchedule mode, derived from the single
+      // master switch + source selector (never a second ev-enabled checkbox).
+      enabled: (els.evEnabled?.checked ?? false) && (els.evSource?.value === 'haSchedule'),
       chargerPower_W: Number(els.evChargerPower?.value) || 11000,
       disableDischargeWhileCharging: els.evDisableDischarge?.checked ?? true,
       scheduleSensor: els.evScheduleSensor?.value ?? '',
@@ -131,6 +133,29 @@ export function snapshotUI(els) {
     evSocSensor: els.evSocSensor?.value ?? '',
     evPlugSensor: els.evPlugSensor?.value ?? '',
 
+    // EV native-charging feature parity
+    evSource: els.evSource?.value || 'native',
+    evStartTime: els.evStartTime?.value ?? '',
+    evMinSoc_percent: num(els.evMinSoc?.value),
+    evApplyPriceLimit: !!els.evApplyPriceLimit?.checked,
+    evMaxPrice_cents_per_kWh: num(els.evMaxPrice?.value),
+    evOpportunisticEnabled: !!els.evOpportunisticEnabled?.checked,
+    evOpportunisticLevel_percent: num(els.evOpportunisticLevel?.value),
+    evOpportunisticType2Enabled: !!els.evOpportunisticType2Enabled?.checked,
+    evOpportunisticType2Level_percent: num(els.evOpportunisticType2Level?.value),
+    evLowPriceChargingEnabled: !!els.evLowPriceEnabled?.checked,
+    evLowPriceChargingLevel_cents_per_kWh: num(els.evLowPriceLevel?.value),
+    evLowSocChargingEnabled: !!els.evLowSocEnabled?.checked,
+    evLowSocChargingLevel_percent: num(els.evLowSocLevel?.value),
+    evKeepOn: !!els.evKeepOn?.checked,
+    evContinuous: !!els.evContinuous?.checked,
+    evActuationEnabled: !!els.evActuationEnabled?.checked,
+    evActuationPaused: !!els.evActuationPaused?.checked,
+    evChargerSwitchEntity: els.evChargerSwitchEntity?.value ?? '',
+    evChargerCurrentEntity: els.evChargerCurrentEntity?.value ?? '',
+    evControlIntervalSeconds: num(els.evControlInterval?.value),
+    evFailSafeMode: els.evFailSafeMode?.value || 'hold',
+
     // UI-only
     tableShowKwh: !!els.tableKwh?.checked,
     // Note: updateDataBeforeRun / pushToVictron are not part of the persisted settings
@@ -197,8 +222,7 @@ export function hydrateUI(els, obj = {}) {
     els.haSettingsGroup.hidden = !!obj.isAddon;
   }
 
-  // EV CHARGING
-  if (els.evEnabled) els.evEnabled.checked = obj.evConfig?.enabled ?? false;
+  // EV CHARGING (legacy evConfig fields; master enable is the flat evEnabled below)
   if (els.evChargerPower) els.evChargerPower.value = obj.evConfig?.chargerPower_W ?? 11000;
   if (els.evDisableDischarge) els.evDisableDischarge.checked = obj.evConfig?.disableDischargeWhileCharging ?? true;
   if (els.evScheduleSensor) els.evScheduleSensor.value = obj.evConfig?.scheduleSensor ?? '';
@@ -219,6 +243,30 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.evTargetSoc, obj.evTargetSoc_percent);
   setIfDef(els.evSocSensor, obj.evSocSensor);
   setIfDef(els.evPlugSensor, obj.evPlugSensor);
+
+  // EV native-charging feature parity
+  if (els.evSource && obj.evSource != null) els.evSource.value = String(obj.evSource);
+  setIfDef(els.evStartTime, obj.evStartTime);
+  setIfDef(els.evMinSoc, obj.evMinSoc_percent);
+  if (els.evApplyPriceLimit) els.evApplyPriceLimit.checked = !!obj.evApplyPriceLimit;
+  setIfDef(els.evMaxPrice, obj.evMaxPrice_cents_per_kWh);
+  if (els.evOpportunisticEnabled) els.evOpportunisticEnabled.checked = !!obj.evOpportunisticEnabled;
+  setIfDef(els.evOpportunisticLevel, obj.evOpportunisticLevel_percent);
+  if (els.evOpportunisticType2Enabled) els.evOpportunisticType2Enabled.checked = !!obj.evOpportunisticType2Enabled;
+  setIfDef(els.evOpportunisticType2Level, obj.evOpportunisticType2Level_percent);
+  if (els.evLowPriceEnabled) els.evLowPriceEnabled.checked = !!obj.evLowPriceChargingEnabled;
+  setIfDef(els.evLowPriceLevel, obj.evLowPriceChargingLevel_cents_per_kWh);
+  if (els.evLowSocEnabled) els.evLowSocEnabled.checked = !!obj.evLowSocChargingEnabled;
+  setIfDef(els.evLowSocLevel, obj.evLowSocChargingLevel_percent);
+  if (els.evKeepOn) els.evKeepOn.checked = !!obj.evKeepOn;
+  if (els.evContinuous) els.evContinuous.checked = !!obj.evContinuous;
+  if (els.evActuationEnabled) els.evActuationEnabled.checked = !!obj.evActuationEnabled;
+  if (els.evActuationPaused) els.evActuationPaused.checked = !!obj.evActuationPaused;
+  setIfDef(els.evChargerSwitchEntity, obj.evChargerSwitchEntity);
+  setIfDef(els.evChargerCurrentEntity, obj.evChargerCurrentEntity);
+  setIfDef(els.evControlInterval, obj.evControlIntervalSeconds);
+  if (els.evFailSafeMode && obj.evFailSafeMode != null) els.evFailSafeMode.value = String(obj.evFailSafeMode);
+  updateEvChargingSpeedHint(els, obj);
 
   // CV PHASE TUNING
   if (els.cvEnabled) els.cvEnabled.checked = obj.cvPhase?.enabled ?? false;
@@ -504,6 +552,22 @@ export function updateRebalanceNudgeUI(els, nudge) {
 export function updateTerminalCustomUI(els) {
   const isCustom = els.terminal?.value === "custom";
   if (els.terminalCustom) els.terminalCustom.disabled = !isCustom;
+}
+
+// Read-only "charging speed (%/h)" hint derived from max current + phases +
+// capacity, so users migrating from EV Smart Charging recognize the figure.
+export function updateEvChargingSpeedHint(els, obj = {}) {
+  if (!els.evChargingSpeedHint) return;
+  const amps = Number(obj.evMaxChargeCurrent_A);
+  const phases = Number(obj.evChargePhases) === 1 ? 1 : 3;
+  const capKwh = Number(obj.evBatteryCapacity_kWh);
+  if (!Number.isFinite(amps) || !Number.isFinite(capKwh) || capKwh <= 0 || amps <= 0) {
+    els.evChargingSpeedHint.textContent = "";
+    return;
+  }
+  const maxPowKw = (amps * 230 * phases) / 1000;
+  const pctPerH = (maxPowKw / capKwh) * 100;
+  els.evChargingSpeedHint.textContent = `≈ ${pctPerH.toFixed(0)}%/h at max (${maxPowKw.toFixed(1)} kW)`;
 }
 
 

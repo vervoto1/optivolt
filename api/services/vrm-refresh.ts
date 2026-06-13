@@ -4,6 +4,7 @@ import { loadSettings, saveSettings } from './settings-store.ts';
 import { loadData, saveData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
 import { fetchEvLoadFromHA } from './ha-ev-service.ts';
+import { resolveEvMode } from './ev-mode.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
 import { runForecast } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
@@ -219,8 +220,9 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   }
 
   let evLoad = baseData.evLoad;
-  // EV load from Home Assistant (fetch when data source is 'ha' OR evConfig is enabled)
-  if (settings.dataSources.evLoad === 'ha' || settings.evConfig?.enabled) {
+  // EV load from Home Assistant: when the data source is explicitly 'ha', or in
+  // the legacy haSchedule EV mode (native mode plans EV in the LP — no injection).
+  if (settings.dataSources.evLoad === 'ha' || resolveEvMode(settings) === 'haSchedule') {
     try {
       const fetched = await fetchEvLoadFromHA(settings);
       // Use fresh data or clear stale schedule (e.g., car disconnected)

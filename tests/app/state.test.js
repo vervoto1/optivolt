@@ -28,6 +28,7 @@ function makeEls() {
     haUrl: { value: 'ws://homeassistant.local:8123/api/websocket' },
     haToken: { value: '' },
     evEnabled: { checked: false },
+    evSource: { value: 'native' },
     evChargerPower: { value: '11000' },
     evDisableDischarge: { checked: true },
     evScheduleSensor: { value: '' },
@@ -125,9 +126,11 @@ describe('state.js', () => {
     expect(els.haSettingsGroup.hidden).toBe(false);
   });
 
-  it('hydrateUI sets all EV config values', () => {
+  it('hydrateUI sets legacy EV config values (master enable is decoupled)', () => {
     const els = makeEls();
     hydrateUI(els, {
+      evEnabled: true,
+      evSource: 'haSchedule',
       evConfig: {
         enabled: true, chargerPower_W: 22000,
         disableDischargeWhileCharging: false,
@@ -135,7 +138,9 @@ describe('state.js', () => {
         connectedSwitch: 'switch.ev', alwaysApplySchedule: true,
       },
     });
+    // Master switch comes from the flat evEnabled, not evConfig.enabled.
     expect(els.evEnabled.checked).toBe(true);
+    expect(els.evSource.value).toBe('haSchedule');
     expect(els.evChargerPower.value).toBe(22000);
     expect(els.evAlwaysApply.checked).toBe(true);
   });

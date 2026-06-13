@@ -14,6 +14,18 @@ export type TerminalSocValuation = 'zero' | 'min' | 'avg' | 'max' | 'custom';
  */
 export type EvChargeMode = 'off' | 'fixed' | 'solar_only' | 'solar_grid' | 'max';
 
+/**
+ * Planning-semantics label for an EV charge slot, produced by parseSolution from
+ * the LP solution. SEPARATE from EvChargeMode (the hardware-actuation hint
+ * consumed by dess-mapper) — do not conflate them.
+ *   planned       — normal cost-optimal LP charging toward target
+ *   opportunistic — charging beyond target into the opportunistic band
+ *   min_soc       — mask-exempt floor charging to reach the minimum-SoC floor
+ * Runtime overrides (low_price, low_soc, keep_on) live on the decision object,
+ * not on the plan row.
+ */
+export type EvPlanMode = 'planned' | 'opportunistic' | 'min_soc';
+
 export interface EvConfig {
   evMinChargePower_W: number;
   evMaxChargePower_W: number;
@@ -30,6 +42,35 @@ export interface EvConfig {
    * when omitted so existing callers keep their prior behavior.
    */
   evChargePhases?: number;
+
+  // ---- Feature-parity planning controls (all optional; absent = inactive) ----
+  /**
+   * Earliest allowed charging slot index (inclusive). Slots before this are
+   * masked (ev_charge forced to 0). Default 0 (no earliest-start restriction).
+   */
+  evStartSlot?: number;
+  /**
+   * When true, slots whose import price exceeds evMaxPrice_cents_per_kWh are
+   * masked off for normal planning (the min-SoC floor stays exempt).
+   */
+  evApplyPriceLimit?: boolean;
+  evMaxPrice_cents_per_kWh?: number;
+  /**
+   * Minimum-SoC safety floor (% of EV capacity). Enforced as soon as physically
+   * possible via a soft, mask-exempt, fully-sourced floor flow. Soft ⇒ never
+   * makes the LP infeasible; penalty ⇒ met whenever reachable.
+   */
+  evMinSocFloor_percent?: number;
+  /**
+   * Opportunistic top-up cap (% of EV capacity, > target). EV energy stored in
+   * (target, cap] at departure earns a bounded reward so the car only tops up
+   * beyond target when energy is cheap/surplus.
+   */
+  evOpportunisticCap_percent?: number;
+  /** Second, higher opportunistic cap (% of EV capacity, > type-1 cap). */
+  evOpportunisticType2Cap_percent?: number;
+  /** When true, bias toward one contiguous charging block (MILP transition penalty). */
+  evContinuous?: boolean;
 }
 
 /**
@@ -141,6 +182,12 @@ export interface PlanRow {
   ev_charge_A: number;  // charge current A (ev_charge / (AC_PHASE_VOLTAGE_V * evChargePhases))
   ev_charge_mode: EvChargeMode;
   ev_soc_percent: number;  // EV SoC %
+  /** Planning-semantics label (separate from ev_charge_mode). Optional: only meaningful for EV-active solves. */
+  ev_plan_mode?: EvPlanMode;
+  /** Shortfall vs requested target SoC at this slot's EV SoC, in Wh (0 when met). Set on the departure slot. */
+  ev_target_shortfall_Wh?: number;
+  /** True when the requested EV target SoC is met by the departure slot (shortfall ≈ 0). */
+  ev_target_met?: boolean;
 }
 
 /**
