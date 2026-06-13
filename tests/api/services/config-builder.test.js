@@ -696,6 +696,7 @@ const evSettings = {
   evEnabled: true,
   evMinChargeCurrent_A: 6,
   evMaxChargeCurrent_A: 16,
+  evChargePhases: 1, // explicit single-phase so the power assertions below are unambiguous
   evBatteryCapacity_kWh: 60,
   evDepartureTime: '2024-01-01T14:00:00Z', // 2 h after NOW_MS → 8 slots @ 15 min
   evTargetSoc_percent: 80,
@@ -730,6 +731,26 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     expect(cfg.ev.evBatteryCapacity_Wh).toBe(60_000);
     expect(cfg.ev.evInitialSoc_percent).toBe(50);
     expect(cfg.ev.evDepartureSlot).toBe(8); // 2h / 15min = 8 slots
+    expect(cfg.ev.evChargePhases).toBe(1);
+  });
+
+  it('uses three-phase power (3x per amp) when evChargePhases is 3', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evChargePhases: 3 }, makeData(), NOW_MS,
+      { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evMinChargePower_W).toBe(6 * 230 * 3);   // 4140
+    expect(cfg.ev.evMaxChargePower_W).toBe(16 * 230 * 3);  // 11040 ≈ 11 kW
+    expect(cfg.ev.evChargePhases).toBe(3);
+  });
+
+  it('treats an unset/invalid evChargePhases as single-phase', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evChargePhases: undefined }, makeData(), NOW_MS,
+      { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evMaxChargePower_W).toBe(16 * 230); // falls back to ×230
+    expect(cfg.ev.evChargePhases).toBe(1);
   });
 
   it('clamps achievable target when max charge falls short of requested target', () => {

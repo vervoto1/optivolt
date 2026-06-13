@@ -210,6 +210,9 @@ export function normalizeSettings(settings: Settings): Settings {
   if (normalized.evMaxChargeCurrent_A < normalized.evMinChargeCurrent_A) {
     [normalized.evMinChargeCurrent_A, normalized.evMaxChargeCurrent_A] = [normalized.evMaxChargeCurrent_A, normalized.evMinChargeCurrent_A];
   }
+  // EV charger AC phases: only 1 or 3 are meaningful. Default to 3 (the target
+  // hardware is a three-phase Wall Connector); single-phase users set 1.
+  normalized.evChargePhases = Number(normalized.evChargePhases) === 1 ? 1 : 3;
   normalized.evBatteryCapacity_kWh = Math.max(
     0,
     Number.isFinite(normalized.evBatteryCapacity_kWh) ? normalized.evBatteryCapacity_kWh : 0,

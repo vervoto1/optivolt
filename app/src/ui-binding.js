@@ -152,6 +152,7 @@ export function getElements() {
     // EV Charging LP-based fields (Settings tab)
     evMinChargeCurrent: $("#ev-min-charge-current"),
     evMaxChargeCurrent: $("#ev-max-charge-current"),
+    evChargePhases: $("#ev-charge-phases"),
     evBatteryCapacity: $("#ev-battery-capacity"),
     evChargeEfficiency: $("#ev-charge-efficiency"),
     evDepartureTime: $("#ev-departure-time"),

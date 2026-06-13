@@ -6,6 +6,7 @@ import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } f
 import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
+import { AC_PHASE_VOLTAGE_V } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult } from '../types.ts';
 
@@ -116,8 +117,12 @@ export function buildSolverConfigFromSettings(
 
   if (settings.evEnabled && evState?.pluggedIn) {
     const T = base.load_W.length;
-    const minPow_W = settings.evMinChargeCurrent_A * 230;
-    const maxPow_W = settings.evMaxChargeCurrent_A * 230;
+    // Three-phase chargers deliver 3x the power per amp. Single source for the
+    // A->W conversion; parse-solution does the inverse with the same phase count.
+    const phases = settings.evChargePhases === 3 ? 3 : 1;
+    const wattsPerAmp = AC_PHASE_VOLTAGE_V * phases;
+    const minPow_W = settings.evMinChargeCurrent_A * wattsPerAmp;
+    const maxPow_W = settings.evMaxChargeCurrent_A * wattsPerAmp;
     const capacityWh = settings.evBatteryCapacity_kWh * 1000;
     const stepHours = settings.stepSize_m / 60;
 
@@ -138,6 +143,7 @@ export function buildSolverConfigFromSettings(
         evTargetSoc_percent: (achievableTargetWh / capacityWh) * 100,
         evDepartureSlot: D,
         evChargeEfficiency_percent: settings.evChargeEfficiency_percent,
+        evChargePhases: phases,
       };
       base.ev = ev;
     }

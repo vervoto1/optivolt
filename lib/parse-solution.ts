@@ -1,7 +1,5 @@
 import type { PlanRow, SolverConfig, EvChargeMode } from './types.ts';
-import { DEFAULT_INVERTER_EFFICIENCY_PERCENT } from './build-lp.ts';
-
-const EV_CHARGE_VOLTAGE_V = 230; // single-phase AC voltage assumed for A conversion
+import { DEFAULT_INVERTER_EFFICIENCY_PERCENT, AC_PHASE_VOLTAGE_V } from './build-lp.ts';
 
 // Minimal type for the HiGHS solver result columns (keyed by variable name).
 interface HighsColumn {
@@ -27,6 +25,10 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   const cap = Math.max(1e-9, cfg.batteryCapacity_Wh);
   // v8 ignore next — trivial Math.max always true branch in practice
   const evCap = Math.max(1e-9, cfg.ev?.evBatteryCapacity_Wh ?? 1);
+  // Watts-per-amp for the EV charge-current readout. Must match the amps->watts
+  // factor config-builder used (AC_PHASE_VOLTAGE_V * phases). Defaults to
+  // single-phase when the phase count is absent.
+  const evWattsPerAmp = AC_PHASE_VOLTAGE_V * (cfg.ev?.evChargePhases === 3 ? 3 : 1);
   // Inverter efficiency: variables that cross the DC→AC boundary in the LP are
   // emitted as DC W; downstream consumers (plan-summary, plan-accuracy, DESS
   // mapper, UI) expect AC-side numbers matching the AC meter VRM reports.
@@ -123,7 +125,7 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
       pv2ev:         round(pv2ev_AC),
       b2ev:          round(b2ev_AC),
       ev_charge:     round(evW),
-      ev_charge_A:   round(evW / EV_CHARGE_VOLTAGE_V),
+      ev_charge_A:   round(evW / evWattsPerAmp),
       ev_charge_mode: evChargeMode(g2ev[t], pv2ev_AC, b2ev_AC, cfg.ev?.evMinChargePower_W ?? 0, pv2b[t]),
       ev_soc_percent: (evSoc[t] / evCap) * 100,
     });

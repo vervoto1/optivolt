@@ -57,6 +57,8 @@ export interface Settings {
   evEnabled: boolean;
   evMinChargeCurrent_A: number;
   evMaxChargeCurrent_A: number;
+  /** AC phases the EV charger uses (1 or 3). Three-phase delivers 3x the power per amp. */
+  evChargePhases: number;
   evBatteryCapacity_kWh: number;
   evSocSensor: string;
   evPlugSensor: string;
