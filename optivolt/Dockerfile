@@ -4,7 +4,12 @@ ARG BUILD_FROM
 #
 # Stage 1: install npm deps on the native builder platform to avoid QEMU
 # "Illegal instruction" crashes when cross-compiling for aarch64.
-FROM node:22-alpine AS deps
+# --platform=$BUILDPLATFORM pins this stage to the build host (amd64 runner) so
+# `npm ci` runs natively instead of under QEMU emulation. The runtime deps
+# (express, highs/WASM, mqtt) are arch-independent and dev-only native binaries
+# are stripped by `npm prune --omit=dev`, so the pruned node_modules copied into
+# the target-arch stage 2 below is portable across architectures.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS deps
 WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
