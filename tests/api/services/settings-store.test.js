@@ -218,6 +218,38 @@ describe('loadSettings — validateSettings edge cases', () => {
   });
 });
 
+describe('loadSettings — essConfig is defaults-authoritative', () => {
+  beforeEach(() => {
+    _reset();
+  });
+
+  const baseEss = (overrides = {}) => ({
+    enabled: true,
+    historyWindowHours: 24,
+    historyPeriod: '5minute',
+    refreshIntervalSeconds: 5,
+    batteries: [{ name: 'Default Batt' }],
+    ...overrides,
+  });
+
+  it('ignores a persisted essConfig and uses the default (so stale entities/cadence cannot pin)', async () => {
+    _set(getDefaultPath(), makeDefaults({ essConfig: baseEss() }));
+    // Persisted copy carries stale calibration extras and a stale 30s interval.
+    _set('/tmp/test-data/settings.json', {
+      essConfig: baseEss({
+        refreshIntervalSeconds: 30,
+        batteries: [{ name: 'Stale Batt', extraEntities: [{ entity: 'number.x_current_calibration', name: 'Current calibration' }] }],
+      }),
+    });
+
+    const settings = await loadSettings();
+
+    expect(settings.essConfig.batteries.map(b => b.name)).toEqual(['Default Batt']);
+    expect(settings.essConfig.batteries[0].extraEntities).toBeUndefined();
+    expect(settings.essConfig.refreshIntervalSeconds).toBe(5);
+  });
+});
+
 describe('saveSettings', () => {
   beforeEach(() => {
     _reset();
