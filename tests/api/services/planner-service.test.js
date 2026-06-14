@@ -6,12 +6,14 @@ vi.mock('../../../api/services/data-store.ts');
 vi.mock('../../../api/services/vrm-refresh.ts');
 vi.mock('../../../api/services/mqtt-service.ts');
 vi.mock('../../../api/services/plan-history-store.ts');
+vi.mock('../../../api/services/ha-client.ts');
 
 import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
+import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
 import { FeedIn } from '../../../lib/dess-mapper.ts';
 
@@ -303,6 +305,35 @@ describe('computePlan — MQTT SoC refresh', () => {
 
     await expect(computePlan()).rejects.toThrow('Failed to read battery SoC from Victron MQTT');
     expect(savePlanSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the EV in the plan after the MQTT SoC rebuild (regression: cfg rebuilt without evState)', async () => {
+    // getSolverInputs() builds cfg WITH the EV; the soc=mqtt path then rebuilds
+    // cfg, and previously did so without evState — silently dropping the EV every
+    // cycle (solve logged `ev: null`). The rebuild must now carry evState through.
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { ...baseSettings.dataSources, soc: 'mqtt' },
+      shoreOptimizer: { batteryInstance: 512 },
+      evEnabled: true,
+      evSocSensor: 'sensor.ev_soc',
+      evPlugSensor: 'sensor.ev_plug',
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evChargePhases: 1,
+      evBatteryCapacity_kWh: 60,
+      evChargeEfficiency_percent: 100,
+      evTargetSoc_percent: 80,
+      evDepartureTime: '', // defaults to end of horizon
+    });
+    readVictronSocPercent.mockResolvedValue(50);
+    fetchHaEntityState.mockImplementation(({ entityId }) =>
+      Promise.resolve({ state: entityId === 'sensor.ev_soc' ? '40' : 'connected' }));
+
+    const result = await computePlan();
+
+    expect(result.cfg.ev).toBeDefined();
+    expect(result.cfg.ev.evInitialSoc_percent).toBe(40);
   });
 });
 

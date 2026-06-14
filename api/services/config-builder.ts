@@ -268,7 +268,7 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
   return result;
 }
 
-export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings }> {
+export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: { pluggedIn: boolean; soc_percent: number } }> {
   const [settings, loadedData] = await Promise.all([loadSettings(), loadData()]);
   const startMs = getQuarterStart(new Date(), settings.stepSize_m);
   const pruned = pruneExpiredPredictionAdjustments(loadedData, startMs);
@@ -318,5 +318,8 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
     }
   }
 
-  return { cfg, timing: { startMs, stepMin: settings.stepSize_m }, data, settings };
+  // evState is returned so callers that REBUILD cfg (e.g. after an MQTT SoC
+  // refresh or a rebalance reset) can pass it back in — otherwise the rebuilt
+  // cfg silently drops the EV (no 4th arg → evState undefined → EV excluded).
+  return { cfg, timing: { startMs, stepMin: settings.stepSize_m }, data, settings, evState };
 }
