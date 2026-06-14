@@ -8,6 +8,8 @@ import type {
   ShoreOptimizerConfig,
   PvCurtailmentConfig,
   CvPhaseConfig,
+  BatteryChargeControlConfig,
+  BatteryBalanceControlConfig,
   AdaptiveLearningConfig,
   EssConfig,
   EssBatteryConfig,
@@ -25,6 +27,8 @@ export type SettingsPatch = Partial<Settings> & {
   shoreOptimizer?: Partial<ShoreOptimizerConfig>;
   pvCurtailment?: Partial<PvCurtailmentConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
+  batteryChargeControl?: Partial<BatteryChargeControlConfig>;
+  batteryBalanceControl?: Partial<BatteryBalanceControlConfig>;
   adaptiveLearning?: Partial<AdaptiveLearningConfig>;
   essConfig?: Partial<EssConfig>;
 };
@@ -144,6 +148,8 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     shoreOptimizer: patch.shoreOptimizer ? { ...base.shoreOptimizer, ...patch.shoreOptimizer } as ShoreOptimizerConfig : base.shoreOptimizer,
     pvCurtailment: patch.pvCurtailment ? { ...base.pvCurtailment, ...patch.pvCurtailment } as PvCurtailmentConfig : base.pvCurtailment,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
+    batteryChargeControl: patch.batteryChargeControl ? { ...base.batteryChargeControl, ...patch.batteryChargeControl } as BatteryChargeControlConfig : base.batteryChargeControl,
+    batteryBalanceControl: patch.batteryBalanceControl ? { ...base.batteryBalanceControl, ...patch.batteryBalanceControl } as BatteryBalanceControlConfig : base.batteryBalanceControl,
     adaptiveLearning: patch.adaptiveLearning ? { ...base.adaptiveLearning, ...patch.adaptiveLearning } as AdaptiveLearningConfig : base.adaptiveLearning,
     // Deep-merge essConfig so a PATCH of one scalar (e.g. historyWindowHours)
     // does not shallow-replace the whole block and wipe `batteries`.
@@ -250,6 +256,12 @@ export function normalizeSettings(settings: Settings): Settings {
   }
   if (normalized.cvPhase) {
     normalized.cvPhase = normalizeCvPhase(normalized.cvPhase);
+  }
+  if (normalized.batteryChargeControl) {
+    normalized.batteryChargeControl = normalizeBatteryChargeControl(normalized.batteryChargeControl);
+  }
+  if (normalized.batteryBalanceControl) {
+    normalized.batteryBalanceControl = normalizeBatteryBalanceControl(normalized.batteryBalanceControl);
   }
   if (normalized.adaptiveLearning) {
     normalized.adaptiveLearning = normalizeAdaptiveLearning(normalized.adaptiveLearning);
@@ -436,6 +448,88 @@ function normalizeCvPhase(cvPhase: CvPhaseConfig): CvPhaseConfig {
   };
 }
 
+/** Clamp a value to the plausible LiFePO4 cell-voltage range (V). */
+function clampCellVoltage(value: unknown, label: string): number {
+  return Math.max(1.5, Math.min(4.5, expectFiniteNumber(value, label)));
+}
+
+function normalizeBatteryChargeControl(cfg: BatteryChargeControlConfig): BatteryChargeControlConfig {
+  assertObject(cfg, 'batteryChargeControl');
+
+  if (!Array.isArray(cfg.currentLevels)) {
+    throw new HttpError(400, 'batteryChargeControl.currentLevels must be an array');
+  }
+  const levels = cfg.currentLevels.map((v, i) =>
+    Math.max(0, Math.round(expectFiniteNumber(v, `batteryChargeControl.currentLevels[${i}]`))),
+  );
+  if (levels.length === 0) {
+    throw new HttpError(400, 'batteryChargeControl.currentLevels must be a non-empty array');
+  }
+  // Discrete ladder, highest first, deduped, with a guaranteed 0 A bottom rung so the
+  // emergency branch always commands zero current regardless of configured levels.
+  const currentLevels = [...new Set([...levels, 0])].sort((a, b) => b - a);
+
+  // Enforce restore < reduce < emergency by sorting the three voltages ascending.
+  const [restoreVoltage, reduceVoltage, emergencyVoltage] = [
+    clampCellVoltage(cfg.restoreVoltage, 'batteryChargeControl.restoreVoltage'),
+    clampCellVoltage(cfg.reduceVoltage, 'batteryChargeControl.reduceVoltage'),
+    clampCellVoltage(cfg.emergencyVoltage, 'batteryChargeControl.emergencyVoltage'),
+  ].sort((a, b) => a - b);
+
+  const result: BatteryChargeControlConfig = {
+    enabled: expectBoolean(cfg.enabled, 'batteryChargeControl.enabled'),
+    dryRun: expectBoolean(cfg.dryRun, 'batteryChargeControl.dryRun'),
+    controlIntervalSeconds: clampInt(cfg.controlIntervalSeconds, 5, 3600, 30),
+    emergencyVoltage,
+    reduceVoltage,
+    restoreVoltage,
+    stabilizationSeconds: Math.max(0, Math.round(expectFiniteNumber(cfg.stabilizationSeconds, 'batteryChargeControl.stabilizationSeconds'))),
+    currentLevels,
+  };
+
+  if (cfg.maxCellVoltageEntities != null) {
+    if (!Array.isArray(cfg.maxCellVoltageEntities)) {
+      throw new HttpError(400, 'batteryChargeControl.maxCellVoltageEntities must be an array');
+    }
+    const entities = cfg.maxCellVoltageEntities.map(e => optEntity(e)).filter((e): e is string => e !== undefined);
+    if (entities.length > 0) result.maxCellVoltageEntities = entities;
+  }
+  const chargeEntity = optEntity(cfg.maxChargeCurrentEntity);
+  if (chargeEntity) result.maxChargeCurrentEntity = chargeEntity;
+
+  return result;
+}
+
+function normalizeBatteryBalanceControl(cfg: BatteryBalanceControlConfig): BatteryBalanceControlConfig {
+  assertObject(cfg, 'batteryBalanceControl');
+  const nonNeg = (v: unknown, label: string) => Math.max(0, expectFiniteNumber(v, label));
+
+  // Clamp each voltage to the plausible cell range, then enforce a sane monotonic
+  // ordering (bottomFloor ≤ bottomTop ≤ topStart ≤ topCap, and criticalHigh ≥ topStart)
+  // so misordered config can't write nonsensical balance thresholds to the BMS.
+  const bottomFloor = clampCellVoltage(cfg.bottomFloor, 'batteryBalanceControl.bottomFloor');
+  const bottomTop = Math.max(clampCellVoltage(cfg.bottomTop, 'batteryBalanceControl.bottomTop'), bottomFloor);
+  const topStart = Math.max(clampCellVoltage(cfg.topStart, 'batteryBalanceControl.topStart'), bottomTop);
+  const topCap = Math.max(clampCellVoltage(cfg.topCap, 'batteryBalanceControl.topCap'), topStart);
+  const criticalHighVoltage = Math.max(clampCellVoltage(cfg.criticalHighVoltage, 'batteryBalanceControl.criticalHighVoltage'), topStart);
+
+  return {
+    enabled: expectBoolean(cfg.enabled, 'batteryBalanceControl.enabled'),
+    dryRun: expectBoolean(cfg.dryRun, 'batteryBalanceControl.dryRun'),
+    controlIntervalSeconds: clampInt(cfg.controlIntervalSeconds, 5, 3600, 300),
+    highCurrentThreshold_A: nonNeg(cfg.highCurrentThreshold_A, 'batteryBalanceControl.highCurrentThreshold_A'),
+    tightTrigger: nonNeg(cfg.tightTrigger, 'batteryBalanceControl.tightTrigger'),
+    looseTrigger: nonNeg(cfg.looseTrigger, 'batteryBalanceControl.looseTrigger'),
+    step: Math.max(0.001, expectFiniteNumber(cfg.step, 'batteryBalanceControl.step')),
+    topCap,
+    criticalHighVoltage,
+    topStart,
+    bottomTop,
+    bottomFloor,
+    maxWarnVoltage: clampCellVoltage(cfg.maxWarnVoltage, 'batteryBalanceControl.maxWarnVoltage'),
+  };
+}
+
 function normalizeAdaptiveLearning(adaptiveLearning: AdaptiveLearningConfig): AdaptiveLearningConfig {
   assertObject(adaptiveLearning, 'adaptiveLearning');
   return {
@@ -471,7 +565,7 @@ const ESS_BATTERY_ENTITY_KEYS = [
   'socEntity', 'currentEntity', 'totalVoltageEntity', 'chargingPowerEntity',
   'dischargingPowerEntity', 'capacitySettingEntity', 'capacityRemainingEntity',
   'minCellVoltageEntity', 'maxCellVoltageEntity', 'balancingBinaryEntity',
-  'balancingCurrentEntity',
+  'balancingCurrentEntity', 'balanceStartVoltageEntity', 'balanceTriggerVoltageEntity',
 ] as const;
 
 function normalizeEssBattery(battery: unknown, idx: number): EssBatteryConfig {

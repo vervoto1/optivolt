@@ -81,12 +81,39 @@ export function getElements() {
     // EV master switch (EV tab)
     evEnabled: document.getElementById('ev-enabled'),
 
-    // CV Phase Tuning (Settings tab)
+    // CV Phase Tuning (Battery sub-tab)
     cvEnabled: document.getElementById('cv-enabled'),
     cvThreshold1Soc: document.getElementById('cv-threshold1-soc'),
     cvThreshold1Power: document.getElementById('cv-threshold1-power'),
     cvThreshold2Soc: document.getElementById('cv-threshold2-soc'),
     cvThreshold2Power: document.getElementById('cv-threshold2-power'),
+
+    // Battery charge-current controller (Battery sub-tab)
+    bccEnabled: document.getElementById('bcc-enabled'),
+    bccDryRun: document.getElementById('bcc-dry-run'),
+    bccInterval: document.getElementById('bcc-interval'),
+    bccEmergency: document.getElementById('bcc-emergency'),
+    bccReduce: document.getElementById('bcc-reduce'),
+    bccRestore: document.getElementById('bcc-restore'),
+    bccStabilization: document.getElementById('bcc-stabilization'),
+    bccLevels: document.getElementById('bcc-levels'),
+    bccStatus: document.getElementById('bcc-status'),
+
+    // Battery cell-balancing tuner (Battery sub-tab)
+    bbcEnabled: document.getElementById('bbc-enabled'),
+    bbcDryRun: document.getElementById('bbc-dry-run'),
+    bbcInterval: document.getElementById('bbc-interval'),
+    bbcHighCurrent: document.getElementById('bbc-high-current'),
+    bbcTightTrigger: document.getElementById('bbc-tight-trigger'),
+    bbcLooseTrigger: document.getElementById('bbc-loose-trigger'),
+    bbcStep: document.getElementById('bbc-step'),
+    bbcTopCap: document.getElementById('bbc-top-cap'),
+    bbcCriticalHigh: document.getElementById('bbc-critical-high'),
+    bbcTopStart: document.getElementById('bbc-top-start'),
+    bbcBottomTop: document.getElementById('bbc-bottom-top'),
+    bbcBottomFloor: document.getElementById('bbc-bottom-floor'),
+    bbcMaxWarn: document.getElementById('bbc-max-warn'),
+    bbcStatus: document.getElementById('bbc-status'),
 
     // Auto-Calculate
     autoCalcEnabled: document.getElementById('auto-calc-enabled'),

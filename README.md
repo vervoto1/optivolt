@@ -20,7 +20,9 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - EV charging integration: reads EV Smart Charging schedule from Home Assistant, adds EV load as separate demand in the optimizer, optional battery discharge constraint during charging, visible as orange bar in charts
 - Auto-calculate timer: built-in periodic calculation (configurable interval), replaces external HA automation triggers
 - HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
-- Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling
+- Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling (planner-side)
+- Battery charge-current limiter: real-time, voltage-based control of the Victron ESS max charge current with hysteresis and emergency stop (ports a Home Assistant safety automation)
+- Cell-balancing tuner: per-BMS adaptive balance start/trigger voltages (top/bottom balancing) from live cell voltage and current
 - Adaptive learning: compares planned vs actual battery SoC to auto-calibrate charge/discharge efficiency over time
 - Shore current optimizer: optional real-time shore limit control during planned grid-to-battery charging
 
@@ -121,6 +123,15 @@ The optimizer only runs when all gates pass:
 - The MPPT state is either active or voltage/current limited.
 
 The default config is scoped to one controller path only: `multi/6/Pv/0/MppOperationMode` and `multi/6/Ac/In/1/CurrentLimit`. It does not aggregate across other MPPTs or write other Multi instances. `dryRun` defaults to true and logs would-be writes without publishing; disable dry run only after validating behavior. The current runtime state is available at `GET /shore-optimizer/status`.
+
+### 2b. Battery Protection — Charge-current Limiter & Cell-balancing Tuner
+
+Two voltage-driven runtime controllers protect the LiFePO4 pack, configured on the **Settings → Battery** sub-tab. Both read live cell data from the `essConfig` entities used by the ESS dashboard, both default to **disabled + dry-run**, and both write Home Assistant `number` entities via service calls (no MQTT). Status for both is exposed at `GET /battery`.
+
+- **Charge-current limiter** (`batteryChargeControl`). Reacts to the live max cell voltage across all configured batteries and walks a discrete current ladder (default `400, 180, 50, 0` A): an emergency stop to 0 A above `emergencyVoltage` (3.65 V), a one-rung step **down** above `reduceVoltage` (3.5 V), and a dwell-gated one-rung step **up** below `restoreVoltage` (3.4 V). It writes `essConfig.system.maxChargeCurrentEntity`. It is boot-seeded from the observed register (no write on the first tick), idempotent, and fail-safe (holds on any read/write error or missing voltage). This replaces the Home Assistant "Battery Charge Current State Machine" automation. Unlike the planner-side CV-phase taper (which caps the charge power the optimizer *schedules*), this actuates the real register in real time.
+- **Cell-balancing tuner** (`batteryBalanceControl`). For each BMS, reads max cell voltage + pack current and writes that BMS's `balanceStartVoltageEntity` and `balanceTriggerVoltageEntity`: a tight trigger with a high start near the top of charge, a looser trigger stepped down toward a bottom floor, and a high-current back-off. It writes only when the decided values differ from the BMS's current ones. This replaces the Home Assistant `periodic_balance_check` automation; the JK BMS still performs the actual balancing.
+
+Single-owner contention is detected and logged if the matching HA automation is still running on the same register, so leaving dry-run on while you validate is safe. To go live: disable the HA automation, then clear `dryRun` and enable the OptiVolt controller.
 
 ### 3. Load Forecasting Periodic Trigger (Optional)
 Call the endpoint `/predictions/forecast/now` periodically from Home Assistant (via a REST Command) to generate up-to-date load forecasts. Be sure to first configure the predictor on the optimizer page of the UI.

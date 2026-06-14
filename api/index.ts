@@ -4,6 +4,8 @@ import { startDessPriceRefresh, stopDessPriceRefresh } from './services/dess-pri
 import { startPvCurtailment, stopPvCurtailment } from './services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from './services/shore-optimizer.ts';
 import { startEvActuator, stopEvActuator } from './services/ev-actuator-service.ts';
+import { startBatteryChargeController, stopBatteryChargeController } from './services/battery-charge-controller.ts';
+import { startBalanceTuner, stopBalanceTuner } from './services/balance-tuner.ts';
 import { loadSettings } from './services/settings-store.ts';
 
 const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
@@ -16,6 +18,8 @@ async function shutdown() {
   await stopPvCurtailment();
   stopShoreOptimizer();
   stopEvActuator();
+  stopBatteryChargeController();
+  stopBalanceTuner();
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);
@@ -33,6 +37,8 @@ app.listen(port, host, () => {
       startPvCurtailment(settings);
       startShoreOptimizer(settings);
       startEvActuator(settings);
+      startBatteryChargeController(settings);
+      startBalanceTuner(settings);
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });

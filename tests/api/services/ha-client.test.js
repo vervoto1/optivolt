@@ -496,7 +496,10 @@ describe('fetchHaEntityState', () => {
     expect(result).toEqual(mockState);
     expect(global.fetch).toHaveBeenCalledWith(
       'http://homeassistant.local:8123/api/states/sensor.ev_battery_level',
-      { headers: { Authorization: 'Bearer test-token' } },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer test-token' },
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 
@@ -526,7 +529,10 @@ describe('fetchHaEntityState', () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       'http://supervisor/core/api/states/sensor.foo',
-      { headers: { Authorization: 'Bearer supervisor-secret' } },
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer supervisor-secret' },
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 });

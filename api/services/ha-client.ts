@@ -9,6 +9,13 @@
 import type { HaReading } from '../../lib/ha-postprocess.ts';
 import { resolveHaHttpConfig, resolveHaWsConfig } from './ha-config.ts';
 
+// REST calls have no implicit timeout in Node's fetch. The control loops
+// (charge limiter, balance tuner) read/write through here every tick, and a hung
+// request would freeze the whole loop (the `ticking` guard skips later ticks) so
+// no over-voltage protection runs until the OS socket times out. Bound it well
+// under the default control interval so a stalled HA frees the next tick.
+const HA_REST_TIMEOUT_MS = 10_000;
+
 // ----------------------------- REST: entity state -----------------------------
 
 export interface HaEntityState {
@@ -53,6 +60,7 @@ export async function fetchHaEntityState({
   const url = `${baseUrl}/api/states/${encodeURIComponent(entityId)}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(HA_REST_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -124,6 +132,7 @@ export async function callHaService({
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(HA_REST_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`HA service ${domain}.${service} returned ${res.status}`);

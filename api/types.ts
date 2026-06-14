@@ -52,6 +52,8 @@ export interface Settings {
   shoreOptimizer?: ShoreOptimizerConfig;
   pvCurtailment?: PvCurtailmentConfig;
   cvPhase?: CvPhaseConfig;
+  batteryChargeControl?: BatteryChargeControlConfig;
+  batteryBalanceControl?: BatteryBalanceControlConfig;
   adaptiveLearning?: AdaptiveLearningConfig;
   essConfig?: EssConfig;
   evEnabled: boolean;
@@ -115,6 +117,74 @@ export interface CvPhaseConfig {
   thresholds: { soc_percent: number; maxChargePower_W: number }[];
 }
 
+/**
+ * Real-time charge-current limiter (port of the HA "Battery Charge Current State
+ * Machine" automation). Reacts to live max cell voltage with hysteresis and an
+ * emergency stop, writing the Victron ESS max-charge-current register. Unlike the
+ * CvPhase planner taper (SoC → planned power), this actuates the real register.
+ */
+export interface BatteryChargeControlConfig {
+  /** Master on/off. Default false. */
+  enabled: boolean;
+  /** Log the intended write without actuating. Default true. */
+  dryRun: boolean;
+  /** Control-loop tick cadence in seconds. Default 30. */
+  controlIntervalSeconds: number;
+  /** Max cell voltage (V) at/above which charging stops immediately (→ 0 A). Default 3.65. */
+  emergencyVoltage: number;
+  /** Max cell voltage (V) above which the level steps down. Default 3.5. */
+  reduceVoltage: number;
+  /** Max cell voltage (V) below which the level steps back up (after dwell). Default 3.4. */
+  restoreVoltage: number;
+  /** Minimum seconds between non-emergency level changes (hysteresis dwell). Default 30. */
+  stabilizationSeconds: number;
+  /** Discrete current levels (A), descending. Default [400, 180, 50, 0]. */
+  currentLevels: number[];
+  /**
+   * Max-cell-voltage source entities. Empty → derive from essConfig batteries'
+   * maxCellVoltageEntity (the controller uses the max across all of them).
+   */
+  maxCellVoltageEntities?: string[];
+  /** Charge-current number entity to write. Empty → essConfig.system.maxChargeCurrentEntity. */
+  maxChargeCurrentEntity?: string;
+}
+
+/**
+ * Per-BMS adaptive balancer-threshold tuner (port of the HA `periodic_balance_check`
+ * automation). Reads each BMS's max cell voltage + pack current and writes that
+ * BMS's balance start voltage + trigger (delta) numbers: tight trigger + high start
+ * near the top of charge, looser trigger stepped down toward a bottom floor, with a
+ * high-current back-off. The JK BMS performs the actual balancing.
+ */
+export interface BatteryBalanceControlConfig {
+  /** Master on/off. Default false. */
+  enabled: boolean;
+  /** Log the intended writes without actuating. Default true. */
+  dryRun: boolean;
+  /** Control-loop tick cadence in seconds. Default 300. */
+  controlIntervalSeconds: number;
+  /** |pack current| (A) above which balancing backs off (fixed start/trigger). Default 50. */
+  highCurrentThreshold_A: number;
+  /** Tight trigger delta (V) used in the top region. Default 0.005. */
+  tightTrigger: number;
+  /** Looser trigger delta (V) used in transition/bottom regions. Default 0.02. */
+  looseTrigger: number;
+  /** Voltage quantization step (V) for the stepped start voltage. Default 0.05. */
+  step: number;
+  /** Maximum balance start voltage (V) cap in the top window. Default 3.55. */
+  topCap: number;
+  /** Max cell voltage (V) above which the critical-high branch applies. Default 3.549. */
+  criticalHighVoltage: number;
+  /** Bottom of the top window / start of aggressive balancing (V). Default 3.45. */
+  topStart: number;
+  /** Top of the transition band; at/below this the low-voltage branch applies (V). Default 3.40. */
+  bottomTop: number;
+  /** Minimum balance start voltage (V) floor in the low region. Default 2.9. */
+  bottomFloor: number;
+  /** Max cell voltage (V) above which an out-of-range warning is surfaced. Default 3.6. */
+  maxWarnVoltage: number;
+}
+
 // ----------------------------- ESS dashboard ----------------------------
 
 /**
@@ -147,6 +217,10 @@ export interface EssBatteryConfig {
   maxCellVoltageEntity?: string;
   balancingBinaryEntity?: string;
   balancingCurrentEntity?: string;
+  /** number.* — JK BMS balance start voltage (write target for the balance tuner). */
+  balanceStartVoltageEntity?: string;
+  /** number.* — JK BMS balance trigger/delta voltage (write target for the balance tuner). */
+  balanceTriggerVoltageEntity?: string;
   /** Free-form extra entities, e.g. calibration numbers. */
   extraEntities?: { entity: string; name?: string }[];
 }

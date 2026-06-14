@@ -81,6 +81,31 @@
       { "soc_percent": 97, "maxChargePower_W": 2600 }
     ]
   },
+  "batteryChargeControl": {
+    "enabled": false,
+    "dryRun": true,
+    "controlIntervalSeconds": 30,
+    "emergencyVoltage": 3.65,
+    "reduceVoltage": 3.5,
+    "restoreVoltage": 3.4,
+    "stabilizationSeconds": 30,
+    "currentLevels": [400, 180, 50, 0]
+  },
+  "batteryBalanceControl": {
+    "enabled": false,
+    "dryRun": true,
+    "controlIntervalSeconds": 300,
+    "highCurrentThreshold_A": 50,
+    "tightTrigger": 0.005,
+    "looseTrigger": 0.02,
+    "step": 0.05,
+    "topCap": 3.55,
+    "criticalHighVoltage": 3.549,
+    "topStart": 3.45,
+    "bottomTop": 3.4,
+    "bottomFloor": 2.9,
+    "maxWarnVoltage": 3.6
+  },
   "adaptiveLearning": {
     "enabled": false,
     "mode": "suggest",
@@ -113,7 +138,9 @@
         "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_min_cell_voltage",
         "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms0_max_cell_voltage",
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms0_balancing",
-        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current"
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current",
+        "balanceStartVoltageEntity": "number.jk_bms_jk_bms_bms0_balance_starting_voltage",
+        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms0_balance_trigger_voltage"
       },
       {
         "name": "Gobel Power",
@@ -136,7 +163,9 @@
         "minCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_min_cell_voltage",
         "maxCellVoltageEntity": "sensor.jk_bms_jk_bms_bms1_max_cell_voltage",
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms1_balancing",
-        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current"
+        "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current",
+        "balanceStartVoltageEntity": "number.jk_bms_jk_bms_bms1_balance_starting_voltage",
+        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms1_balance_trigger_voltage"
       }
     ],
     "system": {

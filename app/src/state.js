@@ -52,6 +52,35 @@ export function snapshotUI(els) {
       ].filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0),
     },
 
+    // BATTERY CHARGE-CURRENT CONTROLLER — always send complete object (shallow merge safe)
+    batteryChargeControl: {
+      enabled: els.bccEnabled?.checked ?? false,
+      dryRun: els.bccDryRun?.checked ?? true,
+      controlIntervalSeconds: Math.max(5, num(els.bccInterval?.value) ?? 30),
+      emergencyVoltage: num(els.bccEmergency?.value) ?? 3.65,
+      reduceVoltage: num(els.bccReduce?.value) ?? 3.5,
+      restoreVoltage: num(els.bccRestore?.value) ?? 3.4,
+      stabilizationSeconds: Math.max(0, num(els.bccStabilization?.value) ?? 30),
+      currentLevels: parseLevels(els.bccLevels?.value),
+    },
+
+    // BATTERY CELL-BALANCING TUNER — always send complete object (shallow merge safe)
+    batteryBalanceControl: {
+      enabled: els.bbcEnabled?.checked ?? false,
+      dryRun: els.bbcDryRun?.checked ?? true,
+      controlIntervalSeconds: Math.max(5, num(els.bbcInterval?.value) ?? 300),
+      highCurrentThreshold_A: Math.max(0, num(els.bbcHighCurrent?.value) ?? 50),
+      tightTrigger: num(els.bbcTightTrigger?.value) ?? 0.005,
+      looseTrigger: num(els.bbcLooseTrigger?.value) ?? 0.02,
+      step: num(els.bbcStep?.value) ?? 0.05,
+      topCap: num(els.bbcTopCap?.value) ?? 3.55,
+      criticalHighVoltage: num(els.bbcCriticalHigh?.value) ?? 3.549,
+      topStart: num(els.bbcTopStart?.value) ?? 3.45,
+      bottomTop: num(els.bbcBottomTop?.value) ?? 3.4,
+      bottomFloor: num(els.bbcBottomFloor?.value) ?? 2.9,
+      maxWarnVoltage: num(els.bbcMaxWarn?.value) ?? 3.6,
+    },
+
     // Auto-Calculate — always send complete object (shallow merge safe)
     autoCalculate: {
       enabled: els.autoCalcEnabled?.checked ?? false,
@@ -253,6 +282,33 @@ export function hydrateUI(els, obj = {}) {
   if (els.cvThreshold1Power) els.cvThreshold1Power.value = cvT1?.maxChargePower_W ?? 9360;
   if (els.cvThreshold2Soc) els.cvThreshold2Soc.value = cvT2?.soc_percent ?? 97;
   if (els.cvThreshold2Power) els.cvThreshold2Power.value = cvT2?.maxChargePower_W ?? 2600;
+
+  // BATTERY CHARGE-CURRENT CONTROLLER
+  const bcc = obj.batteryChargeControl ?? {};
+  if (els.bccEnabled) els.bccEnabled.checked = bcc.enabled ?? false;
+  if (els.bccDryRun) els.bccDryRun.checked = bcc.dryRun ?? true;
+  if (els.bccInterval) els.bccInterval.value = bcc.controlIntervalSeconds ?? 30;
+  if (els.bccEmergency) els.bccEmergency.value = bcc.emergencyVoltage ?? 3.65;
+  if (els.bccReduce) els.bccReduce.value = bcc.reduceVoltage ?? 3.5;
+  if (els.bccRestore) els.bccRestore.value = bcc.restoreVoltage ?? 3.4;
+  if (els.bccStabilization) els.bccStabilization.value = bcc.stabilizationSeconds ?? 30;
+  if (els.bccLevels) els.bccLevels.value = formatLevels(bcc.currentLevels ?? [400, 180, 50, 0]);
+
+  // BATTERY CELL-BALANCING TUNER
+  const bbc = obj.batteryBalanceControl ?? {};
+  if (els.bbcEnabled) els.bbcEnabled.checked = bbc.enabled ?? false;
+  if (els.bbcDryRun) els.bbcDryRun.checked = bbc.dryRun ?? true;
+  if (els.bbcInterval) els.bbcInterval.value = bbc.controlIntervalSeconds ?? 300;
+  if (els.bbcHighCurrent) els.bbcHighCurrent.value = bbc.highCurrentThreshold_A ?? 50;
+  if (els.bbcTightTrigger) els.bbcTightTrigger.value = bbc.tightTrigger ?? 0.005;
+  if (els.bbcLooseTrigger) els.bbcLooseTrigger.value = bbc.looseTrigger ?? 0.02;
+  if (els.bbcStep) els.bbcStep.value = bbc.step ?? 0.05;
+  if (els.bbcTopCap) els.bbcTopCap.value = bbc.topCap ?? 3.55;
+  if (els.bbcCriticalHigh) els.bbcCriticalHigh.value = bbc.criticalHighVoltage ?? 3.549;
+  if (els.bbcTopStart) els.bbcTopStart.value = bbc.topStart ?? 3.45;
+  if (els.bbcBottomTop) els.bbcBottomTop.value = bbc.bottomTop ?? 3.4;
+  if (els.bbcBottomFloor) els.bbcBottomFloor.value = bbc.bottomFloor ?? 2.9;
+  if (els.bbcMaxWarn) els.bbcMaxWarn.value = bbc.maxWarnVoltage ?? 3.6;
 
   // Auto-Calculate
   if (els.autoCalcEnabled) els.autoCalcEnabled.checked = obj.autoCalculate?.enabled ?? false;
@@ -588,6 +644,23 @@ function setIfDef(el, v) {
 function num(val) {
   const n = Number(val);
   return Number.isFinite(n) ? n : null;
+}
+
+// Parse a CSV/space-separated current-levels string ("400, 180, 50, 0") into a
+// number array. Falls back to the default ladder when nothing valid is given so
+// the server never receives an empty (rejected) array.
+function parseLevels(val) {
+  const parsed = String(val ?? "")
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .map(Number)
+    .filter(n => Number.isFinite(n) && n >= 0);
+  return parsed.length > 0 ? parsed : [400, 180, 50, 0];
+}
+
+function formatLevels(levels) {
+  return (Array.isArray(levels) ? levels : []).join(", ");
 }
 
 function setText(el, txt) {
