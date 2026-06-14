@@ -138,3 +138,32 @@ describe('battery-charge-controller — dry-run + fail-safe + contention', () =>
     expect(callHaService).not.toHaveBeenCalled();
   });
 });
+
+describe('battery-charge-controller — seed-tick safety + robustness', () => {
+  it('emergency-stops on the very first tick when already over-voltage (no blind seed window)', async () => {
+    mockStates({ 'sensor.v0': '3.70', 'sensor.v1': '3.40', 'number.cc': '400' });
+    const r = await runBatteryChargeTick(NOW, settings()); // first tick, no prior seed
+    expect(r.reason).toBe('emergency');
+    expect(calledValues()).toEqual([0]);
+  });
+
+  it('holds (no write, no restore) on an implausible voltage read', async () => {
+    await runBatteryChargeTick(NOW, settings()); // seed 400
+    // A glitched 0 V read would push the state machine to RESTORE (raise current).
+    mockStates({ 'sensor.v0': '0', 'sensor.v1': '0', 'number.cc': '400' });
+    const r = await runBatteryChargeTick(NOW + 60_000, settings());
+    expect(r.status).toBe('no_voltage');
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('still protects when one voltage entity errors (allSettled, not all-or-nothing)', async () => {
+    await runBatteryChargeTick(NOW, settings()); // seed 400
+    fetchHaEntityState.mockImplementation(async ({ entityId }) => {
+      if (entityId === 'sensor.v0') throw new Error('404');
+      if (entityId === 'sensor.v1') return { state: '3.55' }; // above reduce
+      return { state: '400' }; // number.cc
+    });
+    await runBatteryChargeTick(NOW + 1000, settings());
+    expect(calledValues()).toEqual([180]); // reduced despite v0 failing
+  });
+});

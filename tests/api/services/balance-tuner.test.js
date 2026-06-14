@@ -118,4 +118,12 @@ describe('balance-tuner — fail-safe', () => {
     const r = await runBalanceTunerTick(NOW, settings());
     expect(r[0].status).toBe('no_voltage');
   });
+
+  it('holds (no write) on an implausible voltage read', async () => {
+    mockStates({ ...DEFAULT_STATES, 'sensor.v0': '5.0' }); // outside the plausible band
+    const r = await runBalanceTunerTick(NOW, settings());
+    expect(r[0].status).toBe('no_voltage');
+    const b0Writes = callHaService.mock.calls.filter(c => /(\.s0|\.t0)$/.test(c[0].target.entity_id));
+    expect(b0Writes).toHaveLength(0);
+  });
 });

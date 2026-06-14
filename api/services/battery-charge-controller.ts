@@ -2,7 +2,7 @@ import type { Settings, BatteryChargeControlConfig } from '../types.ts';
 import { fetchHaEntityState, callHaService } from './ha-client.ts';
 import {
   decideBatteryChargeLevel,
-  nearestLevelIndex,
+  nearestLevel,
   type BatteryChargeDecision,
 } from '../../lib/battery-charge-controller.ts';
 
@@ -56,8 +56,18 @@ export interface ChargeControlStatusView extends ChargeControlRecord {
 
 const CONTENTION_THRESHOLD = 3;
 
+// Physically plausible LiFePO4 cell-voltage band (V). A read outside this range is
+// a sensor fault (e.g. a glitched `0` would otherwise push the controller to RESTORE
+// charge current). Out-of-band reads are treated as "no voltage" → hold.
+const MIN_PLAUSIBLE_CELL_V = 1.5;
+const MAX_PLAUSIBLE_CELL_V = 4.5;
+
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
+// Tracks the last enabled state across stop/start so a settings save while already
+// enabled does NOT wipe seed/dwell/contention state (only a real disabled→enabled
+// edge resets). `intervalHandle` can't carry this: the settings route stops first.
+let wasEnabled = false;
 let activeSettings: Settings | null = null;
 // null = not yet boot-seeded.
 let lastCommandLevel: number | null = null;
@@ -143,21 +153,25 @@ export async function runBatteryChargeTick(nowMs: number = Date.now(), settingsO
     return record({ status: 'misconfigured', reason: 'no voltage source and/or charge-current entity configured', timestampMs: nowMs });
   }
 
-  // Read the live max cell voltage across all configured sources.
+  // Read the live max cell voltage across all configured sources. Per-entity
+  // tolerant (allSettled): one dead/renamed entity must not blind the whole pack
+  // — we take the max over whatever resolved, and only hold if NONE did.
   let maxCellVoltage: number | null = null;
-  try {
-    const states = await Promise.all(
-      vEntities.map(id => fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: id })),
-    );
-    for (const s of states) {
-      const v = parseNum(s.state);
-      if (v != null && (maxCellVoltage == null || v > maxCellVoltage)) maxCellVoltage = v;
-    }
-  } catch (err) {
-    return record({ status: 'error', reason: 'cell voltage read failed', error: msg(err), timestampMs: nowMs });
+  const states = await Promise.allSettled(
+    vEntities.map(id => fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: id })),
+  );
+  for (const s of states) {
+    if (s.status !== 'fulfilled') continue;
+    const v = parseNum(s.value.state);
+    if (v != null && (maxCellVoltage == null || v > maxCellVoltage)) maxCellVoltage = v;
   }
   if (maxCellVoltage == null) {
     return record({ status: 'no_voltage', reason: 'no valid cell voltage → hold', timestampMs: nowMs });
+  }
+  // Reject physically implausible reads (sensor fault) — a glitched low value would
+  // otherwise drive the controller to RESTORE (raise) charge current. Hold instead.
+  if (maxCellVoltage < MIN_PLAUSIBLE_CELL_V || maxCellVoltage > MAX_PLAUSIBLE_CELL_V) {
+    return record({ status: 'no_voltage', reason: `implausible cell voltage ${maxCellVoltage}V → hold`, maxCellVoltage, timestampMs: nowMs });
   }
 
   // Read the observed register (for seeding + contention). Tolerate failure on
@@ -172,16 +186,22 @@ export async function runBatteryChargeTick(nowMs: number = Date.now(), settingsO
     }
   }
 
-  // Clean startup: seed from the observed register, write nothing.
+  // Clean startup: seed the command level from the observed register. Normally we
+  // write nothing on the first tick — BUT never let the seed tick ignore an active
+  // over-voltage. If the pack is already above the reduce threshold, fall through to
+  // the decision path so the emergency/reduce write happens now, not a full interval
+  // later (matters after every boot, settings save, or re-enable).
   if (lastCommandLevel === null) {
-    const idx = nearestLevelIndex(cfg.currentLevels, observedLevel ?? 0);
-    lastCommandLevel = cfg.currentLevels[idx] ?? observedLevel ?? 0;
+    lastCommandLevel = nearestLevel(cfg.currentLevels, observedLevel ?? 0);
     lastChangeMs = nowMs;
-    return record({
-      status: 'seeded', reason: 'boot seed — no write on first tick',
-      maxCellVoltage, observedLevel, commandedLevel: lastCommandLevel, targetLevel: lastCommandLevel,
-      timestampMs: nowMs,
-    });
+    if (maxCellVoltage <= cfg.reduceVoltage) {
+      return record({
+        status: 'seeded', reason: 'boot seed — no write on first tick',
+        maxCellVoltage, observedLevel, commandedLevel: lastCommandLevel, targetLevel: lastCommandLevel,
+        timestampMs: nowMs,
+      });
+    }
+    // else: high voltage at seed time — proceed to the decision/write path below.
   }
 
   const dwellElapsed = (nowMs - lastChangeMs) >= cfg.stabilizationSeconds * 1000;
@@ -192,7 +212,7 @@ export async function runBatteryChargeTick(nowMs: number = Date.now(), settingsO
 
   // Single-owner contention (live writes only — in dry-run the register never moves).
   if (!cfg.dryRun && observedLevel != null) {
-    const observedRung = cfg.currentLevels[nearestLevelIndex(cfg.currentLevels, observedLevel)];
+    const observedRung = nearestLevel(cfg.currentLevels, observedLevel);
     if (observedRung !== lastCommandLevel) {
       contentionCount++;
       if (contentionCount >= CONTENTION_THRESHOLD) {
@@ -257,13 +277,19 @@ async function tickGuarded(): Promise<void> {
 
 /** Start the control loop. Stops any previous loop first. */
 export function startBatteryChargeController(settings: Settings): void {
-  const wasRunning = intervalHandle !== null;
   stopBatteryChargeController();
   activeSettings = settings;
   const cfg = settings.batteryChargeControl;
-  if (!cfg?.enabled) return;
-  // Reset ownership state only on a genuine (re)enable, not on every settings save.
-  if (!wasRunning) resetBatteryChargeState();
+  if (!cfg?.enabled) {
+    wasEnabled = false;
+    return;
+  }
+  // Reset ownership/seed state only on a genuine disabled→enabled transition, not on
+  // every settings save while already enabled (which would re-open the seed window).
+  // Tracked via `wasEnabled` because the settings route stops the loop before calling
+  // start, so `intervalHandle` is always null here and can't signal "was running".
+  if (!wasEnabled) resetBatteryChargeState();
+  wasEnabled = true;
   const sec = Math.max(5, cfg.controlIntervalSeconds || 30);
   console.log(`[battery-charge-controller] started (every ${sec}s, dryRun=${cfg.dryRun})`);
   intervalHandle = setInterval(() => { void tickGuarded(); }, sec * 1000);

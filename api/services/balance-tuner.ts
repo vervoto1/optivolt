@@ -42,6 +42,11 @@ export interface BalanceStatusView {
 // Two values agreeing within half a millivolt are "the same" write.
 const V_EPS = 0.0005;
 
+// Physically plausible LiFePO4 cell-voltage band (V); reads outside it are sensor
+// faults and must not drive a balance-threshold write.
+const MIN_PLAUSIBLE_CELL_V = 1.5;
+const MAX_PLAUSIBLE_CELL_V = 4.5;
+
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
 let activeSettings: Settings | null = null;
@@ -100,6 +105,11 @@ async function processBattery(settings: Settings, battery: EssBatteryConfig): Pr
   }
   if (maxCellVoltage == null || current == null) {
     return { ...base, status: 'no_voltage', reason: 'no valid voltage/current → hold', maxCellVoltage, current };
+  }
+  // Reject physically implausible voltage reads (sensor fault) — never write balance
+  // thresholds to the BMS off a glitched value. Hold instead.
+  if (maxCellVoltage < MIN_PLAUSIBLE_CELL_V || maxCellVoltage > MAX_PLAUSIBLE_CELL_V) {
+    return { ...base, status: 'no_voltage', reason: `implausible cell voltage ${maxCellVoltage}V → hold`, maxCellVoltage, current };
   }
 
   const decision: BalanceDecision = decideBalanceSettings(maxCellVoltage, current, cfg);

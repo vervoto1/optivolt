@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   decideBatteryChargeLevel,
   nearestLevelIndex,
+  nearestLevel,
 } from '../../lib/battery-charge-controller.ts';
 
 const policy = {
@@ -23,6 +24,15 @@ describe('nearestLevelIndex', () => {
   });
 });
 
+describe('nearestLevel', () => {
+  it('returns the closest rung VALUE, even when the ladder is unsorted', () => {
+    expect(nearestLevel([0, 50, 180, 400], 360)).toBe(400);
+    expect(nearestLevel([0, 50, 180, 400], 30)).toBe(50);
+    // Indexing the raw (unsorted) array with nearestLevelIndex would mis-pick here.
+    expect(nearestLevel([50, 400, 180, 0], 400)).toBe(400);
+  });
+});
+
 describe('decideBatteryChargeLevel — emergency', () => {
   it('drops to the lowest level immediately, bypassing dwell', () => {
     const d = decide(3.7, 400, false);
@@ -30,6 +40,12 @@ describe('decideBatteryChargeLevel — emergency', () => {
     expect(d.reason).toBe('emergency');
     expect(d.forced).toBe(true);
     expect(d.changed).toBe(true);
+  });
+
+  it('fires at exactly the emergency voltage (>=, not >)', () => {
+    const d = decide(3.65, 400, false); // == emergencyVoltage
+    expect(d.reason).toBe('emergency');
+    expect(d.level).toBe(0);
   });
 });
 

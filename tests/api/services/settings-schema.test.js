@@ -485,6 +485,28 @@ describe('settings-schema', () => {
       })).toThrow();
     });
 
+    it('always includes a 0 A rung so emergency can reach zero current', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        batteryChargeControl: chargeCfg({ currentLevels: [400, 180, 50] }), // no 0
+      });
+      expect(r.batteryChargeControl.currentLevels).toEqual([400, 180, 50, 0]);
+    });
+
+    it('enforces a monotonic ordering on the balance voltage thresholds', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        batteryBalanceControl: balanceCfg({
+          bottomFloor: 2.9, bottomTop: 3.5, topStart: 3.45, topCap: 3.4, criticalHighVoltage: 3.3,
+        }),
+      });
+      const b = r.batteryBalanceControl;
+      expect(b.bottomFloor).toBeLessThanOrEqual(b.bottomTop);
+      expect(b.bottomTop).toBeLessThanOrEqual(b.topStart);
+      expect(b.topStart).toBeLessThanOrEqual(b.topCap);
+      expect(b.criticalHighVoltage).toBeGreaterThanOrEqual(b.topStart);
+    });
+
     it('clamps balance-control numerics', () => {
       const r = normalizeSettings({
         ...validSettings(),

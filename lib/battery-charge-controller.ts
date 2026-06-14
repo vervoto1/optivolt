@@ -80,6 +80,17 @@ export function nearestLevelIndex(levels: number[], measuredA: number): number {
   return best;
 }
 
+/**
+ * Map a measured/commanded current (A) to the nearest rung VALUE on the ladder.
+ * Prefer this over indexing a raw `currentLevels` array with `nearestLevelIndex`:
+ * the index is into the internally-sorted ladder, so indexing an unsorted config
+ * array with it can pick the wrong rung. This always returns a valid rung value.
+ */
+export function nearestLevel(levels: number[], measuredA: number): number {
+  const rungs = ladder(levels);
+  return rungs[nearestLevelIndex(rungs, measuredA)];
+}
+
 export function decideBatteryChargeLevel(
   input: BatteryChargeInput,
   policy: BatteryChargePolicy,
@@ -97,8 +108,9 @@ export function decideBatteryChargeLevel(
     changed: rungs[levelIndex] !== input.currentLevel,
   });
 
-  // Emergency: straight to the lowest level (0 A), ignoring dwell.
-  if (v > policy.emergencyVoltage) {
+  // Emergency: straight to the lowest level (0 A), ignoring dwell. Uses `>=` so a
+  // cell pinned exactly at the configured limit still triggers the emergency stop.
+  if (v >= policy.emergencyVoltage) {
     return make(lastIdx, 'emergency', true);
   }
 

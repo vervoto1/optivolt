@@ -462,11 +462,12 @@ function normalizeBatteryChargeControl(cfg: BatteryChargeControlConfig): Battery
   const levels = cfg.currentLevels.map((v, i) =>
     Math.max(0, Math.round(expectFiniteNumber(v, `batteryChargeControl.currentLevels[${i}]`))),
   );
-  // Discrete ladder, highest first, deduped.
-  const currentLevels = [...new Set(levels)].sort((a, b) => b - a);
-  if (currentLevels.length === 0) {
+  if (levels.length === 0) {
     throw new HttpError(400, 'batteryChargeControl.currentLevels must be a non-empty array');
   }
+  // Discrete ladder, highest first, deduped, with a guaranteed 0 A bottom rung so the
+  // emergency branch always commands zero current regardless of configured levels.
+  const currentLevels = [...new Set([...levels, 0])].sort((a, b) => b - a);
 
   // Enforce restore < reduce < emergency by sorting the three voltages ascending.
   const [restoreVoltage, reduceVoltage, emergencyVoltage] = [
@@ -502,6 +503,16 @@ function normalizeBatteryChargeControl(cfg: BatteryChargeControlConfig): Battery
 function normalizeBatteryBalanceControl(cfg: BatteryBalanceControlConfig): BatteryBalanceControlConfig {
   assertObject(cfg, 'batteryBalanceControl');
   const nonNeg = (v: unknown, label: string) => Math.max(0, expectFiniteNumber(v, label));
+
+  // Clamp each voltage to the plausible cell range, then enforce a sane monotonic
+  // ordering (bottomFloor ≤ bottomTop ≤ topStart ≤ topCap, and criticalHigh ≥ topStart)
+  // so misordered config can't write nonsensical balance thresholds to the BMS.
+  const bottomFloor = clampCellVoltage(cfg.bottomFloor, 'batteryBalanceControl.bottomFloor');
+  const bottomTop = Math.max(clampCellVoltage(cfg.bottomTop, 'batteryBalanceControl.bottomTop'), bottomFloor);
+  const topStart = Math.max(clampCellVoltage(cfg.topStart, 'batteryBalanceControl.topStart'), bottomTop);
+  const topCap = Math.max(clampCellVoltage(cfg.topCap, 'batteryBalanceControl.topCap'), topStart);
+  const criticalHighVoltage = Math.max(clampCellVoltage(cfg.criticalHighVoltage, 'batteryBalanceControl.criticalHighVoltage'), topStart);
+
   return {
     enabled: expectBoolean(cfg.enabled, 'batteryBalanceControl.enabled'),
     dryRun: expectBoolean(cfg.dryRun, 'batteryBalanceControl.dryRun'),
@@ -510,11 +521,11 @@ function normalizeBatteryBalanceControl(cfg: BatteryBalanceControlConfig): Batte
     tightTrigger: nonNeg(cfg.tightTrigger, 'batteryBalanceControl.tightTrigger'),
     looseTrigger: nonNeg(cfg.looseTrigger, 'batteryBalanceControl.looseTrigger'),
     step: Math.max(0.001, expectFiniteNumber(cfg.step, 'batteryBalanceControl.step')),
-    topCap: clampCellVoltage(cfg.topCap, 'batteryBalanceControl.topCap'),
-    criticalHighVoltage: clampCellVoltage(cfg.criticalHighVoltage, 'batteryBalanceControl.criticalHighVoltage'),
-    topStart: clampCellVoltage(cfg.topStart, 'batteryBalanceControl.topStart'),
-    bottomTop: clampCellVoltage(cfg.bottomTop, 'batteryBalanceControl.bottomTop'),
-    bottomFloor: clampCellVoltage(cfg.bottomFloor, 'batteryBalanceControl.bottomFloor'),
+    topCap,
+    criticalHighVoltage,
+    topStart,
+    bottomTop,
+    bottomFloor,
     maxWarnVoltage: clampCellVoltage(cfg.maxWarnVoltage, 'batteryBalanceControl.maxWarnVoltage'),
   };
 }
