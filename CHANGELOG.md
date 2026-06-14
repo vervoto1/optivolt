@@ -2,6 +2,7 @@
 
 ## 0.7.35 - 2026-06-14
 
+- **Feature: EV "if connected" preview when the car is disconnected.** When the car is unplugged the real plan correctly excludes the EV (so the Victron/DESS schedule stays unaffected), but that left the EV charts flat at 0% — hiding when you actually need to plug in. `computePlan` now additionally solves a separate, display-only EV preview seeded from the live SoC (as if plugged in now), exposed via `getLastEvPreview()`, on `GET /ev/schedule` (`preview:true`), and on the `/calculate` result (`evPreview`). It is **never** written to Victron and never drives actuation. The EV tab renders it behind a "Preview" banner, and the main solution SoC chart overlays the preview EV-SoC line while keeping real battery/grid data on every other series. When the car is connected, the real plan is shown as before.
 - **Chore: bump the Home Assistant add-on base image from Alpine 3.21 to 3.22.** Picks up the newer Alpine base (OS-level security and package updates) for both `aarch64` and `amd64` builds. Node.js is unchanged — Alpine 3.22 ships the same Node 22.22.x as 3.21, so the runtime is identical and this is a base-OS refresh only. Also aligned the dev/CI toolchain to Node 22 (`.nvmrc`, Tests workflow) to match the shipped runtime, and bumped the Tests workflow GitHub Actions (`checkout@v6`, `setup-node@v6`) plus eslint to 10.5.0.
 
 ## 0.7.34 - 2026-06-14
