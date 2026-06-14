@@ -145,7 +145,13 @@ export function buildSolverConfigFromSettings(
     const maxPow_W = settings.evMaxChargeCurrent_A * wattsPerAmp;
     const capacityWh = settings.evBatteryCapacity_kWh * 1000;
 
-    const D = departureTimeToSlot(settings.evDepartureTime, nowMs, settings.stepSize_m, T);
+    // "Ready by" deadline. When the user has not set one, default to the end of
+    // the known horizon — i.e. reach target by the last slot we have prices for,
+    // charging in the cheapest hours along the way. (Only reached when the EV is
+    // connected, so the home-battery co-optimisation still ignores an absent EV.)
+    const D = settings.evDepartureTime?.trim()
+      ? departureTimeToSlot(settings.evDepartureTime, nowMs, settings.stepSize_m, T)
+      : T;
     // Earliest-start window: slot index at/after which charging is allowed.
     const startSlot = startTimeToSlot(settings.evStartTime, nowMs, settings.stepSize_m);
 

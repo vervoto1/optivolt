@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.33 - 2026-06-14
+
+- **Fix: plan EV charging when no "Ready by" deadline is set.** Native EV planning only runs when there is a valid charge window. With "Ready by" left empty, the window collapsed to zero slots and the EV was dropped from the plan entirely — so the schedule showed no EV charging and the EV SoC chart read 0% even with the car connected at a known SoC. An unset "Ready by" now defaults to the **end of the known price horizon** (reach target by the last slot we have prices for, charging in the cheapest hours along the way). The plug gate is unchanged: the EV is still only folded into the home-battery co-optimization when it is actually connected, so the home-battery plan never prepares for an EV draw that won't happen.
+
 ## 0.7.32 - 2026-06-14
 
 - **Remove the legacy HA-schedule EV mode and reorganize EV settings.** With native EV planning now the way OptiVolt charges (0.7.31), the alternate "EV Smart Charging schedule reader" mode it replaced is removed, and the EV-related settings move out of the day-to-day EV tab.
