@@ -5,14 +5,12 @@ vi.mock('../../../api/services/settings-store.ts');
 vi.mock('../../../api/services/data-store.ts');
 vi.mock('../../../api/services/vrm-refresh.ts');
 vi.mock('../../../api/services/mqtt-service.ts');
-vi.mock('../../../api/services/ha-ev-service.ts');
 vi.mock('../../../api/services/plan-history-store.ts');
 
 import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
-import { fetchEvLoadFromHA } from '../../../api/services/ha-ev-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
 import { FeedIn } from '../../../lib/dess-mapper.ts';
@@ -62,7 +60,6 @@ describe('computePlan — rebalance bookkeeping', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -192,7 +189,6 @@ describe('planAndMaybeWrite — DESS slot count', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -222,7 +218,6 @@ describe('computePlan — error handling', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -277,7 +272,6 @@ describe('computePlan — MQTT SoC refresh', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({
       ...baseSettings,
       dataSources: { ...baseSettings.dataSources, soc: 'mqtt' },
@@ -322,7 +316,6 @@ describe('computePlan — plan snapshot timing', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -354,7 +347,6 @@ describe('planAndMaybeWrite — DESS fingerprint cache', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -398,7 +390,6 @@ describe('computePlan — updateData path', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -438,109 +429,6 @@ describe('computePlan — updateData path', () => {
   });
 });
 
-describe('computePlan — evConfig EV load refresh', () => {
-  const evSettings = {
-    ...baseSettings,
-    // Legacy haSchedule mode requires the master switch + source selector, not
-    // just evConfig.enabled (the authoritative resolveEvMode gate).
-    evEnabled: true,
-    evSource: 'haSchedule',
-    evConfig: {
-      enabled: true,
-      scheduleSensor: 'sensor.ev_schedule',
-      chargerPower_W: 7400,
-    },
-    haUrl: 'ws://homeassistant.local:8123/api/websocket',
-    haToken: 'test-token',
-  };
-
-  // EV load time series aligned to NOW
-  const evLoad = {
-    start: NOW_STRING,
-    step: 15,
-    values: [7400, 7400, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  };
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(NOW_STRING));
-    vi.resetAllMocks();
-    refreshSeriesFromVrmAndPersist.mockResolvedValue();
-    setDynamicEssSchedule.mockResolvedValue();
-    saveSettings.mockResolvedValue();
-    saveData.mockResolvedValue();
-    savePlanSnapshot.mockResolvedValue();
-    loadData.mockResolvedValue({ ...baseData });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('refreshes EV load from HA when evConfig.enabled is true', async () => {
-    loadSettings.mockResolvedValue({ ...evSettings });
-    fetchEvLoadFromHA.mockResolvedValue(evLoad);
-
-    const result = await computePlan();
-
-    expect(fetchEvLoadFromHA).toHaveBeenCalledTimes(1);
-    expect(fetchEvLoadFromHA).toHaveBeenCalledWith(expect.objectContaining({ evConfig: expect.objectContaining({ enabled: true }) }));
-    expect(result).toBeDefined();
-  });
-
-  it('clears evLoad_W when fetchEvLoadFromHA returns null (car disconnected)', async () => {
-    loadSettings.mockResolvedValue({ ...evSettings });
-    fetchEvLoadFromHA.mockResolvedValue(null);
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    const result = await computePlan();
-
-    expect(fetchEvLoadFromHA).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('EV load cleared'));
-    expect(result).toBeDefined();
-
-    logSpy.mockRestore();
-  });
-
-  it('logs warning but still computes plan when fetchEvLoadFromHA rejects', async () => {
-    loadSettings.mockResolvedValue({ ...evSettings });
-    fetchEvLoadFromHA.mockRejectedValue(new Error('HA unreachable'));
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const result = await computePlan();
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[calculate] Failed to refresh EV load from HA:',
-      'HA unreachable',
-    );
-    expect(result).toBeDefined();
-
-    warnSpy.mockRestore();
-  });
-
-  it('does not call fetchEvLoadFromHA when evConfig.enabled is false', async () => {
-    loadSettings.mockResolvedValue({ ...baseSettings });
-
-    await computePlan();
-
-    expect(fetchEvLoadFromHA).not.toHaveBeenCalled();
-  });
-
-  it('does NOT inject legacy evLoad in native mode (no double-count)', async () => {
-    // evEnabled + native source: the LP plans EV charge, so the legacy reader
-    // must stay silent even when evConfig.enabled is (stale) true.
-    loadSettings.mockResolvedValue({
-      ...evSettings,
-      evSource: 'native',
-      evConfig: { ...evSettings.evConfig, enabled: true },
-    });
-
-    await computePlan();
-
-    expect(fetchEvLoadFromHA).not.toHaveBeenCalled();
-  });
-});
-
 describe('planAndMaybeWrite — writeToVictron=false', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -551,7 +439,6 @@ describe('planAndMaybeWrite — writeToVictron=false', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });
@@ -580,7 +467,6 @@ describe('computePlan — horizon warnings', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -630,7 +516,6 @@ describe('computePlan — EV info in solve log', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -664,7 +549,6 @@ describe('computePlan — rebalance context', () => {
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -712,7 +596,6 @@ describe('computePlan — savePlanSnapshot fire-and-forget', () => {
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
     saveData.mockResolvedValue();
-    fetchEvLoadFromHA.mockResolvedValue(null);
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });
   });

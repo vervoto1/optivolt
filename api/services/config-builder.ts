@@ -106,14 +106,11 @@ export function buildSolverConfigFromSettings(
   // charging via the controllable grid/pv/battery_to_ev variables, so the
   // uncontrollable data.evLoad must NOT also be folded into the house load — that
   // would double-count the EV (the same draw as both fixed load AND planned
-  // charge). Suppress it in native mode; keep it for off / haSchedule modes
-  // (where it is the manual/API or legacy-reader EV load).
+  // charge). Suppress it in native mode; keep it in off mode (where data.evLoad
+  // is a manually/API-injected uncontrollable EV draw).
   base.evLoad_W = (resolveEvMode(settings) !== 'native' && data.evLoad)
     ? extractWindow(data.evLoad, nowMs, endMs)
     : new Array(base.load_W.length).fill(0);
-
-  // Pass through EV discharge constraint setting
-  base.disableDischargeWhileEvCharging = settings.evConfig?.disableDischargeWhileCharging ?? false;
 
   // Manual CV phase thresholds remain supported and act as the baseline.
   if (settings.cvPhase?.enabled && settings.cvPhase.thresholds?.length) {

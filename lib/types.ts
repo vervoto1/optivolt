@@ -111,7 +111,6 @@ export interface SolverConfig {
 
   // EV charging
   evLoad_W?: number[];
-  disableDischargeWhileEvCharging?: boolean;
 
   // Rebalancing (optional — only present when rebalanceEnabled is true)
   rebalanceHoldSlots?: number;

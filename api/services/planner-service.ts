@@ -14,11 +14,9 @@ import { saveData } from './data-store.ts';
 import { applyPredictionAdjustmentsToData } from './prediction-adjustments.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
-import { fetchEvLoadFromHA } from './ha-ev-service.ts';
-import { resolveEvMode } from './ev-mode.ts';
 import { getRebalanceNudge, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
-import { extractWindow, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
+import { getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
@@ -208,25 +206,6 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   if (settings.dataSources.soc === 'mqtt') {
     data = await refreshMqttSocForPlan(data, settings.shoreOptimizer?.batteryInstance);
     cfg = buildSolverConfigFromSettings(settings, data, timing.startMs);
-  }
-
-  // Refresh EV load from HA only in the legacy haSchedule mode (schedule changes
-  // frequently). Native mode plans EV charge in the LP and must NOT also inject
-  // evLoad, or EV draw would be double-counted.
-  if (resolveEvMode(settings) === 'haSchedule') {
-    try {
-      const evLoad = await fetchEvLoadFromHA(settings);
-      if (evLoad) {
-        cfg.evLoad_W = extractWindow(evLoad, timing.startMs, timing.startMs + cfg.load_W.length * settings.stepSize_m * 60_000);
-        console.log(`[calculate] EV load refreshed from HA (${cfg.evLoad_W.filter(v => v > 0).length} active slots)`);
-      } else {
-        // Clear stale EV load (e.g., car disconnected, schedule empty)
-        cfg.evLoad_W = new Array(cfg.load_W.length).fill(0);
-        console.log('[calculate] EV load cleared (not available from HA)');
-      }
-    } catch (err) {
-      console.warn('[calculate] Failed to refresh EV load from HA:', (err as Error).message);
-    }
   }
 
   // Pre-solve bookkeeping: if a rebalance cycle just completed, auto-disable

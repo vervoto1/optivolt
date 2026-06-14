@@ -26,15 +26,6 @@ function validSettings() {
     haUrl: 'ws://ha:8123/api/websocket',
     haToken: 'secret',
     dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt', evLoad: 'api' },
-    evConfig: {
-      enabled: false,
-      chargerPower_W: 11000,
-      disableDischargeWhileCharging: true,
-      scheduleSensor: '',
-      scheduleAttribute: '',
-      connectedSwitch: '',
-      alwaysApplySchedule: false,
-    },
     autoCalculate: { enabled: false, intervalMinutes: 15, updateData: true, writeToVictron: true },
     haPriceConfig: {
       sensor: '', todayAttribute: 'today', tomorrowAttribute: 'tomorrow',
@@ -94,18 +85,6 @@ describe('settings-schema', () => {
       expect(() => normalizeSettings(s)).toThrow('dataSources must be an object');
     });
 
-    it('throws on non-boolean evConfig field', () => {
-      const s = validSettings();
-      s.evConfig.enabled = 'yes';
-      expect(() => normalizeSettings(s)).toThrow('evConfig.enabled must be a boolean');
-    });
-
-    it('throws on non-string evConfig field', () => {
-      const s = validSettings();
-      s.evConfig.scheduleSensor = 123;
-      expect(() => normalizeSettings(s)).toThrow('evConfig.scheduleSensor must be a string');
-    });
-
     it('throws on non-finite number', () => {
       const s = validSettings();
       s.stepSize_m = NaN;
@@ -146,12 +125,6 @@ describe('settings-schema', () => {
       const s = validSettings();
       s.dessPriceRefresh.time = 'noon';
       expect(() => normalizeSettings(s)).toThrow('dessPriceRefresh.time must be in HH:MM format');
-    });
-
-    it('throws on non-object evConfig', () => {
-      const s = validSettings();
-      s.evConfig = 'bad';
-      expect(() => normalizeSettings(s)).toThrow('evConfig must be an object');
     });
 
     it('throws on non-object autoCalculate', () => {
@@ -305,9 +278,9 @@ describe('settings-schema', () => {
   describe('mergeSettings', () => {
     it('merges patch into base with shallow merge of nested objects', () => {
       const base = validSettings();
-      const merged = mergeSettings(base, { evConfig: { enabled: true } });
-      expect(merged.evConfig.enabled).toBe(true);
-      expect(merged.evConfig.chargerPower_W).toBe(11000);
+      const merged = mergeSettings(base, { autoCalculate: { enabled: true } });
+      expect(merged.autoCalculate.enabled).toBe(true);
+      expect(merged.autoCalculate.intervalMinutes).toBe(15);
     });
 
     it('merges shoreOptimizer patches without dropping defaults', () => {
@@ -426,14 +399,18 @@ describe('settings-schema', () => {
   });
 
   describe('EV native-charging settings', () => {
-    it('defaults evSource to native', () => {
-      const s = normalizeSettings(validSettings());
-      expect(s.evSource).toBe('native');
+    it('coerces a stale "ha" evLoad data source to "api" (legacy reader removed)', () => {
+      const s = normalizeSettings({
+        ...validSettings(),
+        dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt', evLoad: 'ha' },
+      });
+      expect(s.dataSources.evLoad).toBe('api');
     });
 
-    it('keeps a valid haSchedule source', () => {
-      const s = normalizeSettings({ ...validSettings(), evSource: 'haSchedule' });
-      expect(s.evSource).toBe('haSchedule');
+    it('throws on an invalid evLoad data source', () => {
+      const s = validSettings();
+      s.dataSources.evLoad = 'invalid';
+      expect(() => normalizeSettings(s)).toThrow('dataSources.evLoad must be one of');
     });
 
     it('coerces booleans and clamps actuation numerics', () => {

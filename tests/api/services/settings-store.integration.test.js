@@ -26,23 +26,12 @@ describe('settings-store integration', () => {
     const settings = await loadSettings();
     settings.minSoc_percent = 90;
     settings.maxSoc_percent = 10;
-    settings.evConfig = {
-      ...settings.evConfig,
-      enabled: true,
-      chargerPower_W: 11000.4,
-      disableDischargeWhileCharging: true,
-      scheduleSensor: 'sensor.ev',
-      scheduleAttribute: 'charging_schedule',
-      connectedSwitch: 'switch.ev',
-      alwaysApplySchedule: false,
-    };
 
     await saveSettings(settings);
 
     const raw = JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8'));
     expect(raw.minSoc_percent).toBe(10);
     expect(raw.maxSoc_percent).toBe(90);
-    expect(raw.evConfig.chargerPower_W).toBe(11000);
   });
 
   it('loads stored settings with nested dataSources merge intact', async () => {

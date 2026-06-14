@@ -3,8 +3,6 @@ import type { VRMForecasts, VRMPrices } from '../../lib/vrm-api.ts';
 import { loadSettings, saveSettings } from './settings-store.ts';
 import { loadData, saveData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
-import { fetchEvLoadFromHA } from './ha-ev-service.ts';
-import { resolveEvMode } from './ev-mode.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
 import { runForecast } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
@@ -219,18 +217,9 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     }
   }
 
-  let evLoad = baseData.evLoad;
-  // EV load from Home Assistant: when the data source is explicitly 'ha', or in
-  // the legacy haSchedule EV mode (native mode plans EV in the LP — no injection).
-  if (settings.dataSources.evLoad === 'ha' || resolveEvMode(settings) === 'haSchedule') {
-    try {
-      const fetched = await fetchEvLoadFromHA(settings);
-      // Use fresh data or clear stale schedule (e.g., car disconnected)
-      evLoad = fetched ?? undefined;
-    } catch (err) {
-      console.warn('[vrm-refresh] Failed to fetch EV load from HA:', (err as Error).message);
-    }
-  }
+  // EV load is uncontrollable house load injected manually via POST /data (off
+  // mode). Native EV charging is planned in the LP and never injected here.
+  const evLoad = baseData.evLoad;
 
   let nextData: Data = {
     load,

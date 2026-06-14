@@ -14,12 +14,20 @@ export function initDepartureDatetimeMin(els) {
   input.min = toDatetimeLocal(new Date(blockMs));
 }
 
-export async function refreshEvSensorStates(els) {
-  const sensors = [
-    { input: els.evSocSensor, indicator: els.evSocValue },
+// Every HA entity input that shows a live "Current value:" readout below it.
+// `afterUpdate` runs side effects tied to a specific reading (e.g. the EV SoC
+// quick-set button); most entries have none.
+function sensorEntries(els) {
+  return [
+    { input: els.evSocSensor, indicator: els.evSocValue, afterUpdate: () => updateEvSocQuickSet(els) },
     { input: els.evPlugSensor, indicator: els.evPlugValue },
+    { input: els.evChargerSwitchEntity, indicator: els.evChargerSwitchValue },
+    { input: els.evChargerCurrentEntity, indicator: els.evChargerCurrentValue },
   ];
-  await Promise.allSettled(sensors.map(async ({ input, indicator }) => {
+}
+
+export async function refreshEvSensorStates(els) {
+  await Promise.allSettled(sensorEntries(els).map(async ({ input, indicator }) => {
     const entityId = input?.value?.trim();
     if (!entityId || !indicator) return;
     try {
@@ -74,12 +82,7 @@ function updateEvSocQuickSet(els) {
 }
 
 export function wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun }) {
-  const sensors = [
-    { input: els.evSocSensor, indicator: els.evSocValue },
-    { input: els.evPlugSensor, indicator: els.evPlugValue },
-  ];
-
-  for (const { input, indicator } of sensors) {
+  for (const { input, indicator, afterUpdate } of sensorEntries(els)) {
     if (!input || !indicator) continue;
 
     let seq = 0;
@@ -88,7 +91,7 @@ export function wireEvSensorInputs(els, { persistConfig, persistConfigDebounced,
       indicator.textContent = "";
       indicator.className = SENSOR_IND_NEUTRAL;
       delete indicator.dataset.haState;
-      updateEvSocQuickSet(els);
+      afterUpdate?.();
     });
 
     input.addEventListener("blur", async () => {
@@ -114,13 +117,13 @@ export function wireEvSensorInputs(els, { persistConfig, persistConfigDebounced,
         indicator.textContent = `Current value: ${state.state}`;
         indicator.className = SENSOR_IND_SUCCESS;
         indicator.dataset.haState = state.state;
-        updateEvSocQuickSet(els);
+        afterUpdate?.();
       } catch (err) {
         if (id !== seq) return;
         indicator.textContent = `Error: ${err.message}`;
         indicator.className = SENSOR_IND_ERROR;
         delete indicator.dataset.haState;
-        updateEvSocQuickSet(els);
+        afterUpdate?.();
       }
     });
   }

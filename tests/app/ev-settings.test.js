@@ -25,6 +25,10 @@ function setupEls() {
     <input id="ev-plug-sensor" />
     <span id="ev-soc-value"></span>
     <span id="ev-plug-value"></span>
+    <input id="ev-charger-switch-entity" />
+    <span id="ev-charger-switch-value"></span>
+    <input id="ev-charger-current-entity" />
+    <span id="ev-charger-current-value"></span>
   `;
   return {
     evDepartureTime: document.getElementById('ev-departure-time'),
@@ -35,6 +39,10 @@ function setupEls() {
     evPlugSensor: document.getElementById('ev-plug-sensor'),
     evSocValue: document.getElementById('ev-soc-value'),
     evPlugValue: document.getElementById('ev-plug-value'),
+    evChargerSwitchEntity: document.getElementById('ev-charger-switch-entity'),
+    evChargerSwitchValue: document.getElementById('ev-charger-switch-value'),
+    evChargerCurrentEntity: document.getElementById('ev-charger-current-entity'),
+    evChargerCurrentValue: document.getElementById('ev-charger-current-value'),
   };
 }
 
@@ -88,6 +96,41 @@ describe('EV settings wiring', () => {
     expect(els.evPlugValue.textContent).toBe('Current value: on');
     expect(els.evTargetSocQuickSet.disabled).toBe(false);
     expect(els.evTargetSoc.value).toBe('72');
+  });
+
+  it('shows live values for the actuation charger entities too', async () => {
+    const els = setupEls();
+    els.evChargerSwitchEntity.value = 'switch.tesla_charging';
+    els.evChargerCurrentEntity.value = 'number.tesla_charging_amps';
+    fetchHaEntityState.mockImplementation((id) =>
+      Promise.resolve({ state: id === 'switch.tesla_charging' ? 'on' : '16' }));
+
+    await refreshEvSensorStates(els);
+
+    expect(fetchHaEntityState).toHaveBeenCalledWith('switch.tesla_charging');
+    expect(fetchHaEntityState).toHaveBeenCalledWith('number.tesla_charging_amps');
+    expect(els.evChargerSwitchValue.textContent).toBe('Current value: on');
+    expect(els.evChargerCurrentValue.textContent).toBe('Current value: 16');
+  });
+
+  it('validates a non-SoC entity on blur without enabling SoC quick-set', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+    fetchHaEntityState.mockResolvedValue({ state: '16' });
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evChargerCurrentEntity.value = 'number.tesla_charging_amps';
+    els.evChargerCurrentEntity.dispatchEvent(new Event('blur'));
+    await flushPromises();
+
+    expect(persistConfig).toHaveBeenCalledTimes(1);
+    expect(fetchHaEntityState).toHaveBeenCalledWith('number.tesla_charging_amps');
+    expect(els.evChargerCurrentValue.textContent).toBe('Current value: 16');
+    // SoC readout (and therefore the SoC quick-set) is untouched by an unrelated entity.
+    expect(els.evSocValue.textContent).toBe('');
   });
 
   it('flushes settings before validating a sensor on blur', async () => {

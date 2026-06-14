@@ -46,7 +46,6 @@ export interface Settings {
   rebalanceHoldHours: number;
   haUrl: string;
   haToken: string;
-  evConfig?: EvConfig;
   autoCalculate?: AutoCalculateConfig;
   haPriceConfig?: HaPriceConfig;
   dessPriceRefresh?: DessPriceRefreshConfig;
@@ -66,14 +65,6 @@ export interface Settings {
   evDepartureTime: string;
   evTargetSoc_percent: number;
   evChargeEfficiency_percent: number;
-  /**
-   * Authoritative EV mode selector. 'native' = OptiVolt plans EV charging in the
-   * LP; 'haSchedule' = legacy reader injects the external EV Smart Charging
-   * integration's schedule as evLoad. Exactly one path is active (gated together
-   * with evEnabled), so native LP charge and injected evLoad can never
-   * double-count. Default 'native'.
-   */
-  evSource?: EvSource;
 
   // ---- Feature-parity planning controls (port of EV Smart Charging) ----
   /** Earliest charge time (ISO local datetime). Empty = no earliest-start restriction. */
@@ -117,18 +108,7 @@ export interface Settings {
   evActuationPaused?: boolean;
 }
 
-export type EvSource = 'native' | 'haSchedule';
 export type EvFailSafeMode = 'hold' | 'stop';
-
-export interface EvConfig {
-  enabled: boolean;
-  chargerPower_W: number;
-  disableDischargeWhileCharging: boolean;
-  scheduleSensor: string;
-  scheduleAttribute: string;
-  connectedSwitch: string;
-  alwaysApplySchedule: boolean;
-}
 
 export interface CvPhaseConfig {
   enabled: boolean;

@@ -25,9 +25,6 @@ vi.mock('../../../lib/vrm-api.ts', () => ({
 vi.mock('../../../api/services/settings-store.ts');
 vi.mock('../../../api/services/data-store.ts');
 vi.mock('../../../api/services/mqtt-service.ts');
-vi.mock('../../../api/services/ha-ev-service.ts', () => ({
-  fetchEvLoadFromHA: vi.fn().mockResolvedValue(null),
-}));
 vi.mock('../../../api/services/ha-price-service.ts', () => ({
   fetchPricesFromHA: vi.fn().mockResolvedValue(null),
 }));
@@ -318,53 +315,6 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
     );
     warnSpy.mockRestore();
   });
-
-  it('uses HA EV load when evConfig is enabled', async () => {
-    loadSettings.mockResolvedValue({
-      ...baseSettings,
-      dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
-      evEnabled: true,
-      evSource: 'haSchedule',
-      evConfig: { enabled: true },
-    });
-    mockFetchPrices.mockResolvedValue({ ...prices });
-
-    const { fetchEvLoadFromHA } = await import('../../../api/services/ha-ev-service.ts');
-    fetchEvLoadFromHA.mockResolvedValueOnce({
-      start: '2024-01-01T10:00:00.000Z',
-      step: 15,
-      values: [11000, 11000],
-    });
-
-    await refreshSeriesFromVrmAndPersist();
-
-    const savedData = saveData.mock.calls[0][0];
-    expect(savedData.evLoad).toBeDefined();
-    expect(savedData.evLoad.values).toEqual([11000, 11000]);
-  });
-
-  it('warns and clears evLoad when HA EV load fetch throws', async () => {
-    loadSettings.mockResolvedValue({
-      ...baseSettings,
-      dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
-      evEnabled: true,
-      evSource: 'haSchedule',
-      evConfig: { enabled: true },
-    });
-    mockFetchPrices.mockResolvedValue({ ...prices });
-
-    const { fetchEvLoadFromHA } = await import('../../../api/services/ha-ev-service.ts');
-    fetchEvLoadFromHA.mockRejectedValueOnce(new Error('EV service down'));
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await refreshSeriesFromVrmAndPersist();
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[vrm-refresh]'),
-      expect.stringContaining('EV service down'),
-    );
-    warnSpy.mockRestore();
-  });
 });
 
 describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null', () => {
@@ -413,26 +363,6 @@ describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null'
     // importPrice/exportPrice should fall back to baseData since HA returned null
     expect(savedData.importPrice).toEqual(baseData.importPrice);
     expect(savedData.exportPrice).toEqual(baseData.exportPrice);
-  });
-
-  it('sets evLoad to undefined when fetchEvLoadFromHA returns null', async () => {
-    // Line 161: fetched = null → evLoad = undefined
-    loadSettings.mockResolvedValue({
-      ...baseSettings,
-      dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
-      evEnabled: true,
-      evSource: 'haSchedule',
-      evConfig: { enabled: true },
-    });
-    mqttService.readVictronSocPercent.mockResolvedValue(50);
-
-    const { fetchEvLoadFromHA } = await import('../../../api/services/ha-ev-service.ts');
-    fetchEvLoadFromHA.mockResolvedValueOnce(null);
-
-    await refreshSeriesFromVrmAndPersist();
-
-    const savedData = saveData.mock.calls[0][0];
-    expect(savedData.evLoad).toBeUndefined();
   });
 });
 

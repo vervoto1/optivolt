@@ -18,6 +18,7 @@ import {
   hydrateUI,
   updateTerminalCustomUI,
 } from "./src/state.js";
+import { setupSettingsSubtabs } from "./src/settings-subtabs.js";
 
 // ---------- Helpers ----------
 function revealCards(panel) {
@@ -125,6 +126,7 @@ async function boot() {
   });
 
   setupTabSwitcher();
+  setupSettingsSubtabs();
   await initPredictionsTab();
 
   // Wire inputs with callbacks

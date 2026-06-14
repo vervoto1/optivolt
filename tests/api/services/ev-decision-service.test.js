@@ -27,7 +27,6 @@ function makePlan({ evCharge = 0, ic = 20, planMode = 'planned', targetMet = fal
 function makeSettings(overrides = {}) {
   return {
     evEnabled: true,
-    evSource: 'native',
     evMinChargeCurrent_A: 6,
     evMaxChargeCurrent_A: 16,
     evChargePhases: 3,
@@ -104,10 +103,10 @@ describe('computeEvDecision — priority + gating', () => {
     expect(d.plugConnected).toBe(null);
   });
 
-  it('does not apply overrides in haSchedule mode', async () => {
+  it('does not apply overrides when EV charging is disabled (not native)', async () => {
     mockHa({ soc: '20', plug: 'on' });
     const settings = makeSettings({
-      evSource: 'haSchedule',
+      evEnabled: false,
       evLowSocChargingEnabled: true, evLowSocChargingLevel_percent: 30,
     });
     const d = await computeEvDecision(settings, makePlan({ evCharge: 0 }), NOW);

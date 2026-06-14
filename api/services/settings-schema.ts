@@ -2,7 +2,6 @@
 import type {
   Settings,
   DataSources,
-  EvConfig,
   AutoCalculateConfig,
   HaPriceConfig,
   DessPriceRefreshConfig,
@@ -20,7 +19,6 @@ type JsonRecord = Record<string, unknown>;
 
 export type SettingsPatch = Partial<Settings> & {
   dataSources?: Partial<DataSources>;
-  evConfig?: Partial<EvConfig>;
   autoCalculate?: Partial<AutoCalculateConfig>;
   haPriceConfig?: Partial<HaPriceConfig>;
   dessPriceRefresh?: Partial<DessPriceRefreshConfig>;
@@ -140,7 +138,6 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     ...patch,
     /* v8 ignore start — ternary null branches for missing patch fields are untestable when patch is always {sources:{api}} */
     dataSources: patch.dataSources ? { ...base.dataSources, ...patch.dataSources } : base.dataSources,
-    evConfig: patch.evConfig ? { ...base.evConfig, ...patch.evConfig } as EvConfig : base.evConfig,
     autoCalculate: patch.autoCalculate ? { ...base.autoCalculate, ...patch.autoCalculate } as AutoCalculateConfig : base.autoCalculate,
     haPriceConfig: patch.haPriceConfig ? { ...base.haPriceConfig, ...patch.haPriceConfig } as HaPriceConfig : base.haPriceConfig,
     dessPriceRefresh: patch.dessPriceRefresh ? { ...base.dessPriceRefresh, ...patch.dessPriceRefresh } as DessPriceRefreshConfig : base.dessPriceRefresh,
@@ -236,9 +233,6 @@ export function normalizeSettings(settings: Settings): Settings {
 
   normalizeEvNativeSettings(normalized);
 
-  if (normalized.evConfig) {
-    normalized.evConfig = normalizeEvConfig(normalized.evConfig);
-  }
   if (normalized.autoCalculate) {
     normalized.autoCalculate = normalizeAutoCalculate(normalized.autoCalculate);
   }
@@ -284,8 +278,6 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
  * disabled toggle never activates from a stray default.
  */
 function normalizeEvNativeSettings(s: Settings): void {
-  s.evSource = s.evSource === 'haSchedule' ? 'haSchedule' : 'native';
-
   // Earliest-start window (ISO local datetime or empty)
   s.evStartTime = typeof s.evStartTime === 'string' ? s.evStartTime : '';
 
@@ -333,22 +325,11 @@ function normalizeDataSources(dataSources: DataSources): DataSources {
     pv: expectEnum(dataSources.pv, ['vrm', 'api', 'ha'] as const, 'dataSources.pv'),
     prices: expectEnum(dataSources.prices, ['vrm', 'api', 'ha'] as const, 'dataSources.prices'),
     soc: expectEnum(dataSources.soc, ['mqtt', 'api'] as const, 'dataSources.soc'),
+    // 'ha' was the legacy EV Smart Charging schedule reader (removed); the only
+    // remaining injection path is manual/API, so coerce stale 'ha' values to 'api'.
     evLoad: dataSources.evLoad == null
       ? undefined
-      : expectEnum(dataSources.evLoad, ['vrm', 'api', 'ha'] as const, 'dataSources.evLoad'),
-  };
-}
-
-function normalizeEvConfig(evConfig: EvConfig): EvConfig {
-  assertObject(evConfig, 'evConfig');
-  return {
-    enabled: expectBoolean(evConfig.enabled, 'evConfig.enabled'),
-    chargerPower_W: Math.max(0, Math.round(expectFiniteNumber(evConfig.chargerPower_W, 'evConfig.chargerPower_W'))),
-    disableDischargeWhileCharging: expectBoolean(evConfig.disableDischargeWhileCharging, 'evConfig.disableDischargeWhileCharging'),
-    scheduleSensor: expectString(evConfig.scheduleSensor, 'evConfig.scheduleSensor').trim(),
-    scheduleAttribute: expectString(evConfig.scheduleAttribute, 'evConfig.scheduleAttribute').trim(),
-    connectedSwitch: expectString(evConfig.connectedSwitch, 'evConfig.connectedSwitch').trim(),
-    alwaysApplySchedule: expectBoolean(evConfig.alwaysApplySchedule, 'evConfig.alwaysApplySchedule'),
+      : expectEnum(dataSources.evLoad === 'ha' ? 'api' : dataSources.evLoad, ['vrm', 'api'] as const, 'dataSources.evLoad'),
   };
 }
 
