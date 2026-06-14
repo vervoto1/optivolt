@@ -24,7 +24,7 @@ ENV \
   S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
   NODE_ENV=production
 
-# Alpine 3.21 ships Node.js 22 which supports native TypeScript execution.
+# Alpine 3.22 ships Node.js 22 which supports native TypeScript execution.
 RUN apk add --no-cache nodejs npm curl
 
 # Workdir for the app

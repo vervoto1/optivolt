@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.35 - 2026-06-14
+
+- **Chore: bump the Home Assistant add-on base image from Alpine 3.21 to 3.22.** Picks up the newer Alpine base (OS-level security and package updates) for both `aarch64` and `amd64` builds. Node.js is unchanged — Alpine 3.22 ships the same Node 22.22.x as 3.21, so the runtime is identical and this is a base-OS refresh only. Also aligned the dev/CI toolchain to Node 22 (`.nvmrc`, Tests workflow) to match the shipped runtime, and bumped the Tests workflow GitHub Actions (`checkout@v6`, `setup-node@v6`) plus eslint to 10.5.0.
+
 ## 0.7.34 - 2026-06-14
 
 - **Fix: native EV was dropped from every plan when the SoC source is Victron MQTT.** `getSolverInputs()` builds the solver config *with* the EV (from the live HA SoC/plug read), but the `dataSources.soc === 'mqtt'` path then **rebuilt the config without passing `evState`**, so the rebuilt config silently excluded the EV — the solver ran with `ev: null` every cycle, the schedule planned no EV charging, and the EV SoC chart read 0% even with the car connected at a known SoC. `getSolverInputs()` now returns `evState`, and both config rebuilds in `planner-service` (the MQTT-SoC refresh and the rebalance-reset paths) pass it through. Added a planner regression test that fails if either rebuild drops the EV. This is the real cause of the "EV SoC shows 0%" report; the 0.7.33 "Ready by" default was a separate, valid improvement.
