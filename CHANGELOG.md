@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.32 - 2026-06-14
+
+- **Remove the legacy HA-schedule EV mode and reorganize EV settings.** With native EV planning now the way OptiVolt charges (0.7.31), the alternate "EV Smart Charging schedule reader" mode it replaced is removed, and the EV-related settings move out of the day-to-day EV tab.
+  - **Legacy mode removed.** Deleted the `haSchedule` EV source and everything wired to it: the `evSource` selector, the `evConfig` settings block, the `ha-ev-service` schedule reader (`fetchEvLoadFromHA`), and the HA-schedule `evLoad` injection in `planner-service`/`vrm-refresh`. `resolveEvMode()` is now `off | native`, driven solely by the master `evEnabled` switch. The "Home Assistant" EV-load **data source** used the same reader, so it is gone too; a stale `dataSources.evLoad: "ha"` self-heals to `"api"` on save. Native EV charging is unaffected.
+  - **Dead LP plumbing removed.** `disableDischargeWhileEvCharging` lost its only writer when `evConfig` went away, so the now-unreachable "block battery discharge while EV charging" branch is removed from `build-lp` and `dess-mapper`. Behavior-preserving — the flag was never set in production, so the constraint never fired.
+  - **Settings split into sub-tabs.** The Settings tab now has **Power settings** and **EV charging** sub-tabs. The set-and-forget Smart Charging and Actuation cards (plus the charger/vehicle hardware config) move from the EV tab into the EV-charging sub-tab; the EV tab keeps only the daily-use card (enable, ready-by, target SoC, plan summary).
+  - **Live entity-value readouts.** Every Home Assistant entity input in the EV-charging settings (charger switch, charge-current, SoC, plug) now shows its current value below the field on blur — the same recognition aid the SoC/plug inputs already had — so it is easy to confirm the right entity is configured.
+
 ## 0.7.31 - 2026-06-14
 
 - **Feature: EV native charge planning, reactive overrides, and charger actuation** (the remainder of the `plans/ev-native-charging-plan.md` build brief). OptiVolt can now plan EV charging with the full feature set of the Home Assistant **EV Smart Charging** integration, react live, and (optionally) drive the charger itself — so that integration's planning *and* actuation can be retired.
