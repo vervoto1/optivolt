@@ -198,6 +198,7 @@
   "evLowSocChargingEnabled": false,
   "evContinuous": false,
   "evKeepOn": false,
+  "evChargeCurveEnabled": false,
   "evActuationEnabled": false,
   "evChargerSwitchEntity": "",
   "evChargerCurrentEntity": "",

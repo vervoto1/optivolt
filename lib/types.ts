@@ -71,6 +71,14 @@ export interface EvConfig {
   evOpportunisticType2Cap_percent?: number;
   /** When true, bias toward one contiguous charging block (MILP transition penalty). */
   evContinuous?: boolean;
+  /**
+   * Learned charge-acceptance taper: SoC% breakpoints above which the EV's onboard
+   * charger physically accepts less power (the car's BMS tapers near full). Same
+   * shape/semantics as the home-battery cvPhaseThresholds — a pure forecast input;
+   * OptiVolt does not command the taper, it predicts it so the plan stops assuming
+   * a flat rate to the target. Absent = flat cap (today's behaviour).
+   */
+  evChargeThresholds?: CvPhaseThreshold[];
 }
 
 /**

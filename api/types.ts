@@ -92,6 +92,12 @@ export interface Settings {
   evContinuous?: boolean;
   /** Keep the charger energized once started within the charge window. */
   evKeepOn?: boolean;
+  /**
+   * Opt-in: feed the learned EV charge-acceptance taper into the planner. Data
+   * collection + curve learning run regardless (so the curve is visible first);
+   * this flag only gates whether the taper affects the plan. Default false.
+   */
+  evChargeCurveEnabled?: boolean;
 
   // ---- Actuation (OptiVolt drives the charger itself via HA service calls) ----
   /** When true, the actuator controls the physical charger. Default false. */
@@ -371,6 +377,10 @@ export interface PlanSnapshotSlot {
   predictedLoad_W: number; // expected load at this slot
   predictedPv_W: number;   // expected PV at this slot
   strategy: number;
+  /** Predicted EV SoC (%) at start-of-slot. Present only on EV-active solves. */
+  predictedEvSoc_percent?: number;
+  /** Planned AC charge power (W) delivered to the EV this slot. Present only on EV-active solves. */
+  evChargePower_W?: number;
 }
 
 export interface PlanSnapshotConfig {
@@ -389,6 +399,10 @@ export interface SocSample {
   soc_percent: number;
   actualLoad_W?: number;
   actualPv_W?: number;
+  /** Actual EV SoC (%) read from the EV SoC sensor at sample time. */
+  actualEvSoc_percent?: number;
+  /** Whether the EV was plugged in at sample time (confound gate for EV calibration). */
+  evPluggedIn?: boolean;
 }
 
 export interface SlotDeviation {
@@ -427,6 +441,24 @@ export interface CalibrationResult {
   effectiveChargeRate: number;
   /** Aggregate discharge prediction accuracy (weighted average). */
   effectiveDischargeRate: number;
+  sampleCount: number;
+  confidence: number;             // 0..1
+  lastCalibratedMs: number;
+}
+
+/**
+ * Learned EV charge-acceptance taper. Mirrors {@link CalibrationResult} but for the
+ * EV's onboard charger: how much of the predicted (flat-rate) EV charge actually
+ * occurred per SoC band, derived from EV SoC history while plugged in. Used to
+ * forecast the BMS taper near full so the planner stops assuming a flat rate.
+ */
+export interface EvCalibrationResult {
+  /** Per-SoC EV charge acceptance (100 entries, index = SoC%). 0.40 = 40% of the predicted flat-rate charge occurred. */
+  evChargeCurve: AccuracyCurve;
+  /** Number of calibration samples per SoC band. */
+  evChargeSamples: BandSampleCounts;
+  /** Aggregate acceptance (weighted average over bands with data). */
+  effectiveChargeRate: number;
   sampleCount: number;
   confidence: number;             // 0..1
   lastCalibratedMs: number;

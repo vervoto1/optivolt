@@ -319,6 +319,7 @@ function normalizeEvNativeSettings(s: Settings): void {
   // Behaviour
   s.evContinuous = s.evContinuous === true;
   s.evKeepOn = s.evKeepOn === true;
+  s.evChargeCurveEnabled = s.evChargeCurveEnabled === true;
 
   // Actuation
   s.evActuationEnabled = s.evActuationEnabled === true;

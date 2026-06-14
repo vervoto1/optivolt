@@ -200,6 +200,7 @@ export function getElements() {
     evLowSocLevel: $("#ev-low-soc-level"),
     evKeepOn: $("#ev-keep-on"),
     evContinuous: $("#ev-continuous"),
+    evChargeCurveEnabled: $("#ev-charge-curve-enabled"),
     evActuationEnabled: $("#ev-actuation-enabled"),
     evActuationPaused: $("#ev-actuation-paused"),
     evChargerSwitchEntity: $("#ev-charger-switch-entity"),

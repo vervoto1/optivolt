@@ -2,10 +2,11 @@ import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { getRecentSnapshots } from './plan-history-store.ts';
 import { loadSocSamples, findLatestSampleAtOrBefore } from './soc-tracker.ts';
-import type { CalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
+import type { CalibrationResult, EvCalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
 
 const DATA_DIR = resolveDataDir();
 const CALIBRATION_PATH = path.join(DATA_DIR, 'calibration.json');
+const EV_CALIBRATION_PATH = path.join(DATA_DIR, 'ev-calibration.json');
 
 /** Minimum days of data before calibration produces results. */
 const DEFAULT_MIN_DATA_DAYS = 3;
@@ -318,6 +319,10 @@ const REDUCTION_THRESHOLD = 0.95;
  * @param basePower_W - nominal max power (maxChargePower_W or maxDischargePower_W)
  * @param direction - 'charge' or 'discharge'
  * @param minSamples - minimum samples per band to trust (default 2)
+ * @param maxThresholds - cap on emitted thresholds (default 8)
+ * @param minRate - lower clamp on the per-segment ratio (default MIN_RATE). The EV
+ *   taper passes a lower floor than the battery because a car's BMS genuinely drops
+ *   to a small fraction of full power near 100%.
  * @returns array of thresholds, max 8 entries
  */
 export function generateThresholdsFromCurve(
@@ -327,6 +332,7 @@ export function generateThresholdsFromCurve(
   direction: 'charge' | 'discharge',
   minSamples = 2,
   maxThresholds = MAX_THRESHOLDS,
+  minRate = MIN_RATE,
 ): { soc_percent: number; power_W: number }[] {
   const segmentWidth = Math.ceil(SOC_BANDS / NUM_SEGMENTS);
   const candidates: { soc_percent: number; power_W: number; reduction: number }[] = [];
@@ -355,7 +361,7 @@ export function generateThresholdsFromCurve(
 
     // Threshold sits at the segment boundary
     const socBoundary = direction === 'charge' ? lo : hi - 1;
-    const power_W = Math.round(basePower_W * clamp(avgRatio, MIN_RATE, MAX_RATE));
+    const power_W = Math.round(basePower_W * clamp(avgRatio, minRate, MAX_RATE));
 
     candidates.push({ soc_percent: socBoundary, power_W, reduction: 1 - avgRatio });
   }
@@ -374,4 +380,177 @@ export function generateThresholdsFromCurve(
   }
 
   return candidates.map(({ soc_percent, power_W }) => ({ soc_percent, power_W }));
+}
+
+// ============================================================================
+// EV charge-acceptance calibration
+// ----------------------------------------------------------------------------
+// The EV's onboard charger tapers near full (the car's BMS limits current); the
+// planner otherwise assumes a flat rate to target. This learns the acceptance
+// curve from EV-SoC history the same way the home battery learns its CV taper:
+// bucket actual-vs-predicted EV SoC change per SoC band. It is forecast-only —
+// OptiVolt never commands the taper, the car does.
+// ============================================================================
+
+/** Lower clamp on the EV acceptance ratio. Far below the battery's 0.50 because a
+ *  car genuinely drops to a small fraction of full power near 100%. */
+export const EV_MIN_RATE = 0.05;
+
+/** Samples needed for full EV confidence. Lower than the battery's 500 because the
+ *  EV charges far less often (a handful of sessions per week). */
+const EV_CONFIDENCE_DENOM = 200;
+
+/**
+ * Load persisted EV calibration, or null if none exists.
+ */
+export async function loadEvCalibration(): Promise<EvCalibrationResult | null> {
+  try {
+    return await readJson<EvCalibrationResult>(EV_CALIBRATION_PATH);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Persist EV calibration result.
+ */
+export async function saveEvCalibration(cal: EvCalibrationResult): Promise<void> {
+  await writeJson(EV_CALIBRATION_PATH, cal);
+}
+
+/**
+ * Reset EV calibration by deleting its file.
+ */
+export async function resetEvCalibration(): Promise<void> {
+  const fs = await import('node:fs/promises');
+  try {
+    await fs.unlink(EV_CALIBRATION_PATH);
+    console.log('[ev-calibrator] EV calibration data reset');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+/**
+ * Run EV calibration: compare predicted (flat-rate) vs actual EV SoC change across
+ * recent plans to derive a per-SoC-band acceptance curve. Returns null if there is
+ * insufficient EV-charging history. Mirrors {@link calibrate}.
+ */
+export async function calibrateEv(
+  minDataDays = DEFAULT_MIN_DATA_DAYS,
+): Promise<EvCalibrationResult | null> {
+  const snapshots = await getRecentSnapshots(Math.max(minDataDays + 1, 7));
+  const samples = await loadSocSamples();
+
+  if (snapshots.length === 0 || samples.length === 0) {
+    console.log(`[ev-calibrator] skipped: ${snapshots.length} snapshots, ${samples.length} samples`);
+    return null;
+  }
+
+  const oldestSnapshotMs = snapshots[0].createdAtMs;
+  const daysCovered = (Date.now() - oldestSnapshotMs) / (24 * 60 * 60_000);
+  if (daysCovered < minDataDays) {
+    console.log(`[ev-calibrator] skipped: ${daysCovered.toFixed(1)} days covered < ${minDataDays} min`);
+    return null;
+  }
+
+  const allRatios: RatioSample[] = [];
+  for (const snapshot of snapshots) {
+    collectEvRatios(snapshot, samples, allRatios);
+  }
+
+  if (allRatios.length === 0) {
+    console.log(`[ev-calibrator] skipped: 0 valid EV charge ratios from ${snapshots.length} snapshots`);
+    return null;
+  }
+
+  allRatios.sort((a, b) => a.timestampMs - b.timestampMs);
+
+  const prev = await loadEvCalibration();
+  const evChargeCurve = prev?.evChargeCurve?.length === SOC_BANDS
+    ? [...prev.evChargeCurve]
+    : defaultCurve();
+  const evChargeSamples = prev?.evChargeSamples?.length === SOC_BANDS
+    ? [...prev.evChargeSamples]
+    : defaultSampleCounts();
+
+  let count = 0;
+  for (const rs of allRatios) {
+    evChargeCurve[rs.socBand] = clamp(
+      EMA_ALPHA * rs.ratio + (1 - EMA_ALPHA) * evChargeCurve[rs.socBand],
+      EV_MIN_RATE,
+      MAX_RATE,
+    );
+    evChargeSamples[rs.socBand]++;
+    count++;
+  }
+
+  const confidence = Math.min(1.0, count / EV_CONFIDENCE_DENOM);
+  const effectiveChargeRate = clamp(weightedAvg(evChargeCurve, evChargeSamples), EV_MIN_RATE, MAX_RATE);
+
+  const result: EvCalibrationResult = {
+    evChargeCurve,
+    evChargeSamples,
+    effectiveChargeRate,
+    sampleCount: count,
+    confidence: Math.round(confidence * 100) / 100,
+    lastCalibratedMs: Date.now(),
+  };
+
+  await saveEvCalibration(result);
+  console.log(
+    `[ev-calibrator] acceptance=${effectiveChargeRate.toFixed(3)} ` +
+    `samples=${count} confidence=${result.confidence}`,
+  );
+
+  return result;
+}
+
+/**
+ * Collect EV acceptance ratios from a single plan snapshot. Only slots the plan
+ * predicted to charge the EV (evChargePower_W > 0) are considered, and only when
+ * the car was plugged in across the slot (excludes the unplugged-car confound).
+ */
+function collectEvRatios(
+  snapshot: PlanSnapshot,
+  samples: SocSample[],
+  out: RatioSample[],
+): void {
+  const now = Date.now();
+
+  for (let i = 1; i < snapshot.slots.length; i++) {
+    const slot = snapshot.slots[i];
+    const prevSlot = snapshot.slots[i - 1];
+
+    if (slot.timestampMs > now) break;
+
+    // Need a predicted EV SoC trajectory at both boundaries. The plan only raises
+    // EV SoC when it intends to charge, so the predictedChange floor below is the
+    // authoritative "was charging" signal (mirrors the battery collector).
+    if (slot.predictedEvSoc_percent == null || prevSlot.predictedEvSoc_percent == null) continue;
+
+    const prevSample = findLatestSampleAtOrBefore(samples, prevSlot.timestampMs);
+    const curSample = findLatestSampleAtOrBefore(samples, slot.timestampMs);
+    if (!prevSample || !curSample) continue;
+
+    // Confound gate: the car must have been plugged in at both boundaries, and we
+    // need an actual EV SoC reading at each.
+    if (!prevSample.evPluggedIn || !curSample.evPluggedIn) continue;
+    if (prevSample.actualEvSoc_percent == null || curSample.actualEvSoc_percent == null) continue;
+
+    const predictedChange = slot.predictedEvSoc_percent - prevSlot.predictedEvSoc_percent;
+    const actualChange = curSample.actualEvSoc_percent - prevSample.actualEvSoc_percent;
+
+    if (Math.abs(predictedChange) < MIN_SOC_CHANGE_PERCENT) continue;
+
+    const ratio = actualChange / predictedChange;
+    // Discard non-positive (car not actually charging) and gross outliers.
+    if (ratio <= 0 || ratio > 2.0) continue;
+
+    const avgSoc = (prevSlot.predictedEvSoc_percent + slot.predictedEvSoc_percent) / 2;
+    const socBand = clamp(Math.round(avgSoc), 0, SOC_BANDS - 1);
+
+    out.push({ timestampMs: slot.timestampMs, socBand, ratio, direction: 'charge' });
+  }
 }

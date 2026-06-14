@@ -1969,6 +1969,18 @@
                 <span class="toggle-knob"></span>
                 <span class="text-sm text-slate-600 dark:text-slate-400">Prefer continuous block</span>
               </label>
+              <label class="toggle">
+                <input id="ev-charge-curve-enabled" type="checkbox" data-settings-input>
+                <span class="toggle-knob"></span>
+                <span class="text-sm text-slate-600 dark:text-slate-400">Model charge taper (learned)</span>
+              </label>
+              <p class="text-xs text-slate-400 dark:text-slate-500 -mt-1">
+                Forecast the car's charge-acceptance taper near full from its own SoC
+                history, so the plan stops assuming a flat rate to target. Requires
+                adaptive learning in <em>auto</em> mode. Learns regardless; this only
+                applies it.
+              </p>
+              <p id="ev-charge-curve-status" class="text-xs text-slate-500 dark:text-slate-400"></p>
             </div>
           </section>
 

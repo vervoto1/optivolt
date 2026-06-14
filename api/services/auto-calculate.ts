@@ -2,7 +2,7 @@ import type { Settings } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
 import { sampleAndStoreSoc } from './soc-tracker.ts';
-import { calibrate } from './efficiency-calibrator.ts';
+import { calibrate, calibrateEv } from './efficiency-calibrator.ts';
 import { loadSettings } from './settings-store.ts';
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -86,6 +86,11 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
       if (al?.enabled) {
         calibrate(al.minDataDays ?? 3).catch(err =>
           console.warn('[auto-calculate] calibration failed:', (err as Error).message),
+        );
+        // EV charge-acceptance learning runs whenever adaptive learning is on, so
+        // the curve is ready before the user opts into applying it (evChargeCurveEnabled).
+        calibrateEv(al.minDataDays ?? 3).catch(err =>
+          console.warn('[auto-calculate] EV calibration failed:', (err as Error).message),
         );
       }
     } catch (err) {

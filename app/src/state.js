@@ -165,6 +165,7 @@ export function snapshotUI(els) {
     evLowSocChargingLevel_percent: num(els.evLowSocLevel?.value),
     evKeepOn: !!els.evKeepOn?.checked,
     evContinuous: !!els.evContinuous?.checked,
+    evChargeCurveEnabled: !!els.evChargeCurveEnabled?.checked,
     evActuationEnabled: !!els.evActuationEnabled?.checked,
     evActuationPaused: !!els.evActuationPaused?.checked,
     evChargerSwitchEntity: els.evChargerSwitchEntity?.value ?? '',
@@ -266,6 +267,7 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.evLowSocLevel, obj.evLowSocChargingLevel_percent);
   if (els.evKeepOn) els.evKeepOn.checked = !!obj.evKeepOn;
   if (els.evContinuous) els.evContinuous.checked = !!obj.evContinuous;
+  if (els.evChargeCurveEnabled) els.evChargeCurveEnabled.checked = !!obj.evChargeCurveEnabled;
   if (els.evActuationEnabled) els.evActuationEnabled.checked = !!obj.evActuationEnabled;
   if (els.evActuationPaused) els.evActuationPaused.checked = !!obj.evActuationPaused;
   setIfDef(els.evChargerSwitchEntity, obj.evChargerSwitchEntity);

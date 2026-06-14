@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { evaluateLatestPlan, evaluateRecentPlans } from '../services/plan-accuracy-service.ts';
-import { loadCalibration, resetCalibration, calibrate } from '../services/efficiency-calibrator.ts';
+import { loadCalibration, resetCalibration, calibrate, loadEvCalibration, resetEvCalibration, calibrateEv } from '../services/efficiency-calibrator.ts';
 import { loadPlanHistory, clearPlanHistory } from '../services/plan-history-store.ts';
 import { getRecentSamples, clearSocSamples } from '../services/soc-tracker.ts';
 
@@ -67,12 +67,12 @@ router.get('/history', async (req: Request, res: Response) => {
  * Returns the current calibration state.
  */
 router.get('/calibration', async (_req: Request, res: Response) => {
-  const calibration = await loadCalibration();
-  if (!calibration) {
-    res.json({ message: 'No calibration data yet (collecting data)', calibration: null });
+  const [calibration, evCalibration] = await Promise.all([loadCalibration(), loadEvCalibration()]);
+  if (!calibration && !evCalibration) {
+    res.json({ message: 'No calibration data yet (collecting data)', calibration: null, evCalibration: null });
     return;
   }
-  res.json({ calibration });
+  res.json({ calibration, evCalibration });
 });
 
 /**
@@ -81,12 +81,12 @@ router.get('/calibration', async (_req: Request, res: Response) => {
  */
 router.post('/calibrate', async (req: Request, res: Response) => {
   const minDataDays = Math.max(1, Number(req.query.minDataDays) || 1);
-  const result = await calibrate(minDataDays);
-  if (!result) {
-    res.json({ message: 'Calibration returned no result (insufficient data or all slots filtered)', calibration: null });
+  const [result, evResult] = await Promise.all([calibrate(minDataDays), calibrateEv(minDataDays)]);
+  if (!result && !evResult) {
+    res.json({ message: 'Calibration returned no result (insufficient data or all slots filtered)', calibration: null, evCalibration: null });
     return;
   }
-  res.json({ message: 'Calibration complete', calibration: result });
+  res.json({ message: 'Calibration complete', calibration: result, evCalibration: evResult });
 });
 
 /**
@@ -94,7 +94,7 @@ router.post('/calibrate', async (req: Request, res: Response) => {
  * Clears all calibration data so it can be rebuilt from scratch.
  */
 router.post('/calibration/reset', async (_req: Request, res: Response) => {
-  await resetCalibration();
+  await Promise.all([resetCalibration(), resetEvCalibration()]);
   res.json({ message: 'Calibration data reset' });
 });
 
@@ -103,7 +103,7 @@ router.post('/calibration/reset', async (_req: Request, res: Response) => {
  * Clears all adaptive learning data: calibration, plan history, and SoC samples.
  */
 router.post('/reset-all', async (_req: Request, res: Response) => {
-  await Promise.all([resetCalibration(), clearPlanHistory(), clearSocSamples()]);
+  await Promise.all([resetCalibration(), resetEvCalibration(), clearPlanHistory(), clearSocSamples()]);
   res.json({ message: 'All adaptive learning data cleared (calibration, plan history, SoC samples)' });
 });
 

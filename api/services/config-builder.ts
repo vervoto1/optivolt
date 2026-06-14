@@ -1,7 +1,7 @@
 import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
 import { loadData, saveData } from './data-store.ts';
-import { loadCalibration, generateThresholdsFromCurve } from './efficiency-calibrator.ts';
+import { loadCalibration, loadEvCalibration, generateThresholdsFromCurve, EV_MIN_RATE } from './efficiency-calibrator.ts';
 import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
@@ -9,7 +9,7 @@ import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
-import type { Settings, Data, CalibrationResult } from '../types.ts';
+import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 function departureTimeToSlot(
   departureTime: string,
@@ -268,6 +268,46 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
   return result;
 }
 
+/**
+ * Apply the learned EV charge-acceptance taper to the solver config. No-op unless
+ * an EV is in the plan (cfg.ev) and EV calibration confidence exceeds 0.5. Forecast
+ * only: it caps the planned EV charge power per SoC band so the plan stops assuming
+ * a flat rate to target. Uses the low EV floor (EV_MIN_RATE) so a real near-full
+ * taper can be represented.
+ */
+export function applyEvCalibration(cfg: SolverConfig, evCal: EvCalibrationResult): SolverConfig {
+  if (!cfg.ev) return cfg;
+  if (evCal.confidence < 0.5) return cfg;
+
+  const thresholds = generateThresholdsFromCurve(
+    evCal.evChargeCurve,
+    // v8 ignore next — null path of ?? is untestable with real calibration results
+    evCal.evChargeSamples ?? [],
+    cfg.ev.evMaxChargePower_W,
+    'charge',
+    2,
+    undefined,    // keep the default max-thresholds cap
+    EV_MIN_RATE,
+  );
+
+  if (thresholds.length === 0) return cfg;
+
+  console.log(
+    `[config-builder] Applying EV charge taper: ${thresholds.length} thresholds (confidence=${evCal.confidence})`,
+  );
+
+  return {
+    ...cfg,
+    ev: {
+      ...cfg.ev,
+      evChargeThresholds: thresholds.map(t => ({
+        soc_percent: t.soc_percent,
+        maxChargePower_W: t.power_W,
+      })),
+    },
+  };
+}
+
 export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: { pluggedIn: boolean; soc_percent: number } }> {
   const [settings, loadedData] = await Promise.all([loadSettings(), loadData()]);
   const startMs = getQuarterStart(new Date(), settings.stepSize_m);
@@ -315,6 +355,20 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
       }
     } catch (err) {
       console.warn('[config-builder] Failed to load calibration:', (err as Error).message);
+    }
+
+    // EV charge-acceptance taper: opt-in (evChargeCurveEnabled), and only when an EV
+    // is actually in the plan. Forecast-only; leaves the flat cap when disabled or
+    // not yet confident.
+    if (settings.evChargeCurveEnabled && cfg.ev) {
+      try {
+        const evCal = await loadEvCalibration();
+        if (evCal) {
+          cfg = applyEvCalibration(cfg, evCal);
+        }
+      } catch (err) {
+        console.warn('[config-builder] Failed to load EV calibration:', (err as Error).message);
+      }
     }
   }
 
