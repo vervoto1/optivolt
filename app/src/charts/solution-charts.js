@@ -175,11 +175,14 @@ function aggregateRows(rows, inputStep_m, targetStep_m) {
     });
 }
 
-export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null) {
+export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, evSocRows = null) {
   const timestampsMs = rows.map(r => r.timestampMs);
   const axis = buildTimeAxisFromTimestamps(timestampsMs);
 
-  const hasEvSoc = rows.some(r => (r.ev_soc_percent ?? 0) > 0);
+  // EV SoC line can be sourced from a preview row set (same horizon/timestamps)
+  // when the car is disconnected; the battery SoC line always uses `rows`.
+  const evRows = evSocRows ?? rows;
+  const hasEvSoc = evRows.some(r => (r.ev_soc_percent ?? 0) > 0);
 
   const makeSocGradient = (color) => (context) => {
     const { chart } = context;
@@ -207,7 +210,7 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null) 
   if (hasEvSoc) {
     datasets.push({
       label: "EV SoC (%)",
-      data: rows.map(r => r.ev_soc_percent ?? 0),
+      data: evRows.map(r => r.ev_soc_percent ?? 0),
       borderColor: SOLUTION_COLORS.ev_charge,
       backgroundColor: makeSocGradient(SOLUTION_COLORS.ev_charge),
       fill: 'origin',

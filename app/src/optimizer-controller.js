@@ -84,9 +84,20 @@ export function createOptimizerController({ els, services = {} }) {
       lastTableRebalanceWindow = result.rebalanceWindow ?? null;
       renderScheduleTable();
 
-      renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings);
-      deps.updateEvPanel(els, rows, result.summary, cfgForViz.stepSize_m);
-      deps.updateEvDepartureQuickSet(els, rows);
+      // When the car is disconnected the real plan has no EV; the backend then
+      // returns evPreview — the schedule as it would be if plugged in now. Use it
+      // for the EV charts/panel (display-only; never applied to Victron). The main
+      // SoC chart keeps real battery data and overlays the preview EV-SoC line.
+      const evPreview = result.evPreview ?? null;
+      renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings, evPreview?.rows ?? null);
+      deps.updateEvPanel(
+        els,
+        evPreview?.rows ?? rows,
+        evPreview?.summary ?? result.summary,
+        cfgForViz.stepSize_m,
+        evPreview,
+      );
+      deps.updateEvDepartureQuickSet(els, evPreview?.rows ?? rows);
     } catch (err) {
       console.error(err);
       if (els.status) {
@@ -130,12 +141,12 @@ export function createOptimizerController({ els, services = {} }) {
     return els.flows15m?.checked ? null : 60;
   }
 
-  function renderAllCharts(rows, cfg, rebalanceWindow = null, evSettings = null) {
+  function renderAllCharts(rows, cfg, rebalanceWindow = null, evSettings = null, evSocRows = null) {
     lastFlowsRenderData = { rows, cfg, rebalanceWindow, evSettings };
     deps.drawFlowsBarStackSigned(
       els.flows, rows, cfg.stepSize_m, rebalanceWindow, evSettings, flowsAggregateMinutes(),
     );
-    deps.drawSocChart(els.soc, rows, cfg.stepSize_m, evSettings);
+    deps.drawSocChart(els.soc, rows, cfg.stepSize_m, evSettings, evSocRows);
     deps.drawPricesStepLines(els.prices, rows, cfg.stepSize_m);
     deps.drawLoadPvGrouped(els.loadpv, rows, cfg.stepSize_m);
   }

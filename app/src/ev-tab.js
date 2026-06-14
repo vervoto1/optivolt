@@ -42,9 +42,16 @@ export async function updateEvModeBadge(els) {
   }
 }
 
-export function updateEvPanel(els, rows, summary, stepSize_m = 15) {
+export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = null) {
   // Live effective decision badge (fire-and-forget; tolerant of no plan / no HA).
   void updateEvModeBadge(els);
+
+  // Preview banner: the schedule is the "if connected now" projection, not the
+  // active plan. Shown only when the backend returned an evPreview.
+  if (els.evPreviewBanner) els.evPreviewBanner.classList.toggle('hidden', !preview);
+  if (preview && els.evPreviewSoc && preview.liveSoc_percent != null) {
+    els.evPreviewSoc.textContent = `${Math.round(preview.liveSoc_percent)}%`;
+  }
 
   const evTotal = summary?.evChargeTotal_kWh ?? 0;
   const hasEv = evTotal > 0;

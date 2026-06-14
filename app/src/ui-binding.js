@@ -188,6 +188,8 @@ export function getElements() {
     evTabTargetMet: $("#ev-tab-target-met"),
     evNoCharging: $("#ev-no-charging"),
     evChargingSummary: $("#ev-charging-summary"),
+    evPreviewBanner: $("#ev-preview-banner"),
+    evPreviewSoc: $("#ev-preview-soc"),
     evTabCurrentSocRow: $("#ev-tab-current-soc-row"),
     evTabCurrentSoc: $("#ev-tab-current-soc"),
     evTabPlugRow: $("#ev-tab-plug-row"),

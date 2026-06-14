@@ -4,7 +4,7 @@ import { get } from './helpers/express-test-client.js';
 
 vi.mock('../../api/services/planner-service.ts');
 
-import { getLastPlan } from '../../api/services/planner-service.ts';
+import { getLastPlan, getLastEvPreview } from '../../api/services/planner-service.ts';
 
 const START_MS = 1700000000000;
 
@@ -64,6 +64,54 @@ describe('GET /ev/schedule', () => {
     getLastPlan.mockReturnValue(mockPlan);
     const res = await get(app, '/ev/schedule');
     expect(res.body.slots[0].ev_soc_percent).toBe(55);
+  });
+
+  it('serves the EV preview when the real plan has no EV (car disconnected)', async () => {
+    // Real plan with no EV: flat zero SoC track, no charging.
+    const emptyPlan = {
+      timing: { startMs: START_MS, stepMin: 15 },
+      rows: [
+        makeRow(START_MS, 0), makeRow(START_MS + 900_000, 0),
+      ].map(r => ({ ...r, ev_soc_percent: 0 })),
+      summary: { evChargeTotal_kWh: 0, evChargeFromGrid_kWh: 0, evChargeFromPv_kWh: 0, evChargeFromBattery_kWh: 0 },
+    };
+    getLastPlan.mockReturnValue(emptyPlan);
+    getLastEvPreview.mockReturnValue({
+      timing: { startMs: START_MS, stepMin: 15 },
+      rows: [
+        { ...makeRow(START_MS, 3680), ic: 12, ev_soc_percent: 60 },
+        { ...makeRow(START_MS + 900_000, 0), ic: 12, ev_soc_percent: 80 },
+      ],
+      liveSoc_percent: 55,
+      hasSchedule: true,
+      summary: {
+        evChargeTotal_kWh: 3680 * 0.25 / 1000,
+        evChargeFromGrid_kWh: 3680 * 0.25 / 1000,
+        evChargeFromPv_kWh: 0,
+        evChargeFromBattery_kWh: 0,
+      },
+      computedAtMs: START_MS,
+    });
+
+    const res = await get(app, '/ev/schedule');
+
+    expect(res.status).toBe(200);
+    expect(res.body.preview).toBe(true);
+    expect(res.body.liveSoc_percent).toBe(55);
+    expect(res.body.slots[0].ev_charge_W).toBe(3680);
+    expect(res.body.slots[0].ev_soc_percent).toBe(60);
+    expect(res.body.summary.evChargeTotal_kWh).toBeCloseTo(3680 * 0.25 / 1000, 5);
+  });
+
+  it('uses the real plan (not preview) when the car is connected', async () => {
+    getLastPlan.mockReturnValue(mockPlan); // mockPlan has ev_soc_percent 55 > 0
+    getLastEvPreview.mockReturnValue({ rows: [], timing: mockPlan.timing, liveSoc_percent: 99, hasSchedule: false, computedAtMs: START_MS });
+
+    const res = await get(app, '/ev/schedule');
+
+    expect(res.body.preview).toBe(false);
+    expect(res.body.slots).toHaveLength(3);
+    expect(res.body.summary.evChargeTotal_kWh).toBe(0.207);
   });
 });
 

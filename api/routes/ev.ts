@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError } from '../http-errors.ts';
-import { getLastPlan } from '../services/planner-service.ts';
+import { getLastPlan, getLastEvPreview } from '../services/planner-service.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import { computeEvDecision } from '../services/ev-decision-service.ts';
 import { getLastActuation } from '../services/ev-actuator-service.ts';
@@ -21,7 +21,15 @@ router.get('/schedule', async (req: Request, res: Response, next: NextFunction) 
       && Number.isFinite(settings.evLowPriceChargingLevel_cents_per_kWh);
     const lowPriceLevel = settings.evLowPriceChargingLevel_cents_per_kWh ?? 0;
 
-    const slots = plan.rows.map(row => {
+    // When the real plan excludes the EV (car disconnected), fall back to the
+    // advisory preview: the schedule as it would be if plugged in now, seeded
+    // from the live SoC. This is display-only and never drives Victron.
+    const evActiveInPlan = plan.rows.some(r => (r.ev_charge ?? 0) > 0 || (r.ev_soc_percent ?? 0) > 0);
+    const preview = evActiveInPlan ? null : getLastEvPreview();
+    const sourceRows = preview?.rows ?? plan.rows;
+    const timing = preview?.timing ?? plan.timing;
+
+    const slots = sourceRows.map(row => {
       // Advisory: the mode this slot would take under the reactive overrides,
       // given the forecast price. The planned charge stays the LP result.
       let override_mode = row.ev_charge > 0 ? (row.ev_plan_mode ?? 'planned') : 'idle';
@@ -41,15 +49,23 @@ router.get('/schedule', async (req: Request, res: Response, next: NextFunction) 
       };
     });
 
+    const summary = preview
+      ? preview.summary
+      : {
+          evChargeTotal_kWh: plan.summary.evChargeTotal_kWh,
+          evChargeFromGrid_kWh: plan.summary.evChargeFromGrid_kWh,
+          evChargeFromPv_kWh: plan.summary.evChargeFromPv_kWh,
+          evChargeFromBattery_kWh: plan.summary.evChargeFromBattery_kWh,
+        };
+
     res.json({
-      planStart: new Date(plan.timing.startMs).toISOString(),
+      planStart: new Date(timing.startMs).toISOString(),
       slots,
-      summary: {
-        evChargeTotal_kWh: plan.summary.evChargeTotal_kWh,
-        evChargeFromGrid_kWh: plan.summary.evChargeFromGrid_kWh,
-        evChargeFromPv_kWh: plan.summary.evChargeFromPv_kWh,
-        evChargeFromBattery_kWh: plan.summary.evChargeFromBattery_kWh,
-      },
+      // true → this is the "if connected" preview, not the active plan; it is
+      // NOT applied to Victron. liveSoc_percent is the SoC the preview starts from.
+      preview: !!preview,
+      liveSoc_percent: preview?.liveSoc_percent ?? null,
+      summary,
     });
   } catch (err) {
     next(err);
