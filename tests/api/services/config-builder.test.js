@@ -759,6 +759,17 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     expect(cfg.ev.evChargePhases).toBe(1);
   });
 
+  it('defaults the departure deadline to the end of the horizon when "ready by" is unset', () => {
+    // No evDepartureTime → charge across the full known horizon, reaching target
+    // by the last slot. (Still gated on a connected EV via evState.pluggedIn.)
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evDepartureTime: '' }, makeData(), NOW_MS,
+      { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
+  });
+
   it('passes the REQUESTED target through unclamped (capacity-only; soft target carries feasibility)', () => {
     // The old achievable-charge clamp silently lowered the target before the LP
     // saw it, so the (now soft) target read as "met" while the car sat below the

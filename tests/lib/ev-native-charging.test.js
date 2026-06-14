@@ -56,6 +56,22 @@ describe('EV native charging — soft target', () => {
     expect(dep.ev_target_shortfall_Wh).toBeLessThan(2);
   });
 
+  it('anchors the SoC trajectory to the initial SoC for a small deficit (78% -> 80%)', () => {
+    // Regression for the "EV SoC graph shows 0% while the car is at 78%" report:
+    // when the EV is in the plan, the SoC series must START at the real initial
+    // SoC, never 0. (A 0 in production means the EV was excluded from the plan.)
+    const cfg = {
+      ...base,
+      ev: { ...evBase, evBatteryCapacity_Wh: 75000, evInitialSoc_percent: 78, evTargetSoc_percent: 80 },
+    };
+    const result = highs.solve(buildLP(cfg), GAPS);
+    expect(result.Status).toBe('Optimal');
+    const rows = parseSolution(result, cfg, OPTS);
+    expect(rows[0].ev_soc_percent).toBeGreaterThan(77.5); // starts at ~78, NOT 0
+    expect(rows[7].ev_soc_percent).toBeGreaterThan(79.5); // reaches the 80% target
+    expect(rows.some(r => r.ev_charge > 1)).toBe(true);   // a (small) charge is planned
+  });
+
   it('stays FEASIBLE with a shortfall when the price mask leaves too few slots', () => {
     // Only slots 0,1 are below the 10 c€ ceiling; the rest are masked. Two slots
     // cannot deliver the 18 kWh deficit, so the (soft) target is missed — but the
