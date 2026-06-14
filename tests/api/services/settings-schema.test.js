@@ -444,4 +444,77 @@ describe('settings-schema', () => {
       expect(merged.evChargePhases).toBe(3);
     });
   });
+
+  describe('battery controllers', () => {
+    function chargeCfg(over = {}) {
+      return {
+        enabled: true, dryRun: false, controlIntervalSeconds: 30,
+        emergencyVoltage: 3.65, reduceVoltage: 3.5, restoreVoltage: 3.4,
+        stabilizationSeconds: 30, currentLevels: [400, 180, 50, 0], ...over,
+      };
+    }
+    function balanceCfg(over = {}) {
+      return {
+        enabled: true, dryRun: true, controlIntervalSeconds: 300,
+        highCurrentThreshold_A: 50, tightTrigger: 0.005, looseTrigger: 0.02, step: 0.05,
+        topCap: 3.55, criticalHighVoltage: 3.549, topStart: 3.45, bottomTop: 3.4,
+        bottomFloor: 2.9, maxWarnVoltage: 3.6, ...over,
+      };
+    }
+
+    it('sorts currentLevels descending + dedupes and orders the voltages', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        batteryChargeControl: chargeCfg({
+          currentLevels: [50, 400, 50, 180, 0],
+          emergencyVoltage: 3.4, reduceVoltage: 3.65, restoreVoltage: 3.5, // intentionally jumbled
+          controlIntervalSeconds: 2, // below the 5s floor
+        }),
+      });
+      expect(r.batteryChargeControl.currentLevels).toEqual([400, 180, 50, 0]);
+      expect(r.batteryChargeControl.restoreVoltage).toBe(3.4);
+      expect(r.batteryChargeControl.reduceVoltage).toBe(3.5);
+      expect(r.batteryChargeControl.emergencyVoltage).toBe(3.65);
+      expect(r.batteryChargeControl.controlIntervalSeconds).toBe(5);
+    });
+
+    it('rejects an empty currentLevels array', () => {
+      expect(() => normalizeSettings({
+        ...validSettings(),
+        batteryChargeControl: chargeCfg({ currentLevels: [] }),
+      })).toThrow();
+    });
+
+    it('clamps balance-control numerics', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        batteryBalanceControl: balanceCfg({ controlIntervalSeconds: 1, highCurrentThreshold_A: -5, step: 0 }),
+      });
+      expect(r.batteryBalanceControl.controlIntervalSeconds).toBe(5);
+      expect(r.batteryBalanceControl.highCurrentThreshold_A).toBe(0);
+      expect(r.batteryBalanceControl.step).toBe(0.001);
+    });
+
+    it('preserves the per-battery balance write entities through essConfig normalization', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        essConfig: {
+          enabled: true, historyWindowHours: 24, historyPeriod: '5minute', refreshIntervalSeconds: 5,
+          batteries: [{
+            name: 'B0', maxCellVoltageEntity: 'sensor.v0', currentEntity: 'sensor.i0',
+            balanceStartVoltageEntity: 'number.s0', balanceTriggerVoltageEntity: 'number.t0',
+          }],
+        },
+      });
+      expect(r.essConfig.batteries[0].balanceStartVoltageEntity).toBe('number.s0');
+      expect(r.essConfig.batteries[0].balanceTriggerVoltageEntity).toBe('number.t0');
+    });
+
+    it('deep-merges a partial batteryChargeControl PATCH', () => {
+      const base = normalizeSettings({ ...validSettings(), batteryChargeControl: chargeCfg() });
+      const merged = mergeSettings(base, { batteryChargeControl: { enabled: true } });
+      expect(merged.batteryChargeControl.enabled).toBe(true);
+      expect(merged.batteryChargeControl.currentLevels).toEqual([400, 180, 50, 0]);
+    });
+  });
 });

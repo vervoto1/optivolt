@@ -1448,6 +1448,13 @@
           </svg>
           EV charging
         </button>
+        <button id="subtab-battery" role="tab" aria-selected="false" aria-controls="settings-battery"
+          class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400/50">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM13 18h-2v-2h2v2zm0-4h-2V9h2v5z"/>
+          </svg>
+          Battery
+        </button>
       </div>
     </div>
 
@@ -1524,35 +1531,7 @@
         </div>
       </section>
 
-        <!-- Constant Voltage Phase Tuning -->
-        <section class="card">
-          <div class="mb-4">
-            <h2 class="sidebar-label">CV Phase Tuning</h2>
-          </div>
-          <div class="space-y-3">
-            <label class="toggle">
-              <input type="checkbox" id="cv-enabled">
-              <span class="toggle-knob"></span>
-              <span class="text-sm text-slate-600 dark:text-slate-400">Reduce charge power at high SoC</span>
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: SoC (%)</span>
-              <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95" class="form-input">
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: Max charge power (W)</span>
-              <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360" class="form-input">
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: SoC (%)</span>
-              <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97" class="form-input">
-            </label>
-            <label class="block text-sm">
-              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: Max charge power (W)</span>
-              <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600" class="form-input">
-            </label>
-          </div>
-        </section>
+        <!-- CV Phase Tuning moved to the Battery sub-tab -->
 
 
         <!-- Auto-Calculate Card -->
@@ -2042,6 +2021,160 @@
           </section>
 
         </div>
+
+      </div>
+    </div>
+
+    <!-- Battery sub-panel -->
+    <div id="settings-battery" role="tabpanel" aria-labelledby="subtab-battery" class="hidden">
+      <div class="grid gap-6 lg:grid-cols-2 lg:items-start">
+
+        <!-- CV Phase Tuning (planner) -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">CV Phase Tuning (planner)</h2>
+          </div>
+          <p class="text-xs text-slate-400 dark:text-slate-500 mb-3">Planning only: caps the charge power the optimizer schedules at high SoC. Does not actuate the battery.</p>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input type="checkbox" id="cv-enabled" data-settings-input>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Reduce planned charge power at high SoC</span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 1: SoC (%)</span>
+                <input type="number" id="cv-threshold1-soc" min="50" max="100" step="1" value="95" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">T1: Max charge (W)</span>
+                <input type="number" id="cv-threshold1-power" min="0" step="100" value="9360" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Threshold 2: SoC (%)</span>
+                <input type="number" id="cv-threshold2-soc" min="50" max="100" step="1" value="97" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">T2: Max charge (W)</span>
+                <input type="number" id="cv-threshold2-power" min="0" step="100" value="2600" class="form-input" data-settings-input>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <!-- Charge-current limiter (live) -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Charge current (live)</h2>
+          </div>
+          <p class="text-xs text-slate-400 dark:text-slate-500 mb-3">Real-time: limits the Victron ESS max charge current from live max cell voltage (hysteresis + emergency stop). Replaces the HA charge-current automation. Leave dry-run on until you disable that automation.</p>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input type="checkbox" id="bcc-enabled" data-settings-input>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Enable charge-current limiter</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="bcc-dry-run" data-settings-input>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Dry-run (log only, no writes)</span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Emergency voltage (V)</span>
+                <input type="number" id="bcc-emergency" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Reduce voltage (V)</span>
+                <input type="number" id="bcc-reduce" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Restore voltage (V)</span>
+                <input type="number" id="bcc-restore" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Stabilization (s)</span>
+                <input type="number" id="bcc-stabilization" min="0" step="1" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Control interval (s)</span>
+                <input type="number" id="bcc-interval" min="5" step="1" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm col-span-2">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Current levels (A, high → low)</span>
+                <input type="text" id="bcc-levels" class="form-input" placeholder="400, 180, 50, 0" data-settings-input>
+              </label>
+            </div>
+            <div id="bcc-status" class="text-xs text-slate-400 dark:text-slate-500">Status: —</div>
+          </div>
+        </section>
+
+        <!-- Cell balancing tuner (live) -->
+        <section class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Cell balancing (live)</h2>
+          </div>
+          <p class="text-xs text-slate-400 dark:text-slate-500 mb-3">Per-BMS: tunes each JK BMS balance start + trigger voltage from live cell voltage &amp; current (top/bottom balancing). Replaces the HA balance automation. Leave dry-run on until you disable that automation.</p>
+          <div class="space-y-3">
+            <label class="toggle">
+              <input type="checkbox" id="bbc-enabled" data-settings-input>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Enable balance tuner</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="bbc-dry-run" data-settings-input>
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Dry-run (log only, no writes)</span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">High-current back-off (A)</span>
+                <input type="number" id="bbc-high-current" min="0" step="1" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Control interval (s)</span>
+                <input type="number" id="bbc-interval" min="5" step="1" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tight trigger (V)</span>
+                <input type="number" id="bbc-tight-trigger" min="0" step="0.001" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Loose trigger (V)</span>
+                <input type="number" id="bbc-loose-trigger" min="0" step="0.001" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Step (V)</span>
+                <input type="number" id="bbc-step" min="0.001" step="0.001" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Top cap (V)</span>
+                <input type="number" id="bbc-top-cap" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Critical-high (V)</span>
+                <input type="number" id="bbc-critical-high" min="2" max="4.5" step="0.001" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Top start (V)</span>
+                <input type="number" id="bbc-top-start" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Transition top (V)</span>
+                <input type="number" id="bbc-bottom-top" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Bottom floor (V)</span>
+                <input type="number" id="bbc-bottom-floor" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Warn above (V)</span>
+                <input type="number" id="bbc-max-warn" min="2" max="4.5" step="0.01" class="form-input" data-settings-input>
+              </label>
+            </div>
+            <div id="bbc-status" class="text-xs text-slate-400 dark:text-slate-500">Status: —</div>
+          </div>
+        </section>
 
       </div>
     </div>

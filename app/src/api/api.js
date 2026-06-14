@@ -54,6 +54,9 @@ export function getEssHistory({ hours, period } = {}) {
 // --- Shore Current Optimizer ---
 export const fetchShoreOptimizerStatus = () => getJson('/shore-optimizer/status');
 
+// --- Battery controllers (charge-current limiter + balance tuner) ---
+export const fetchBatteryStatus = () => getJson('/battery');
+
 // --- Predictions ---
 export const fetchPredictionConfig = () => getJson('/predictions/config');
 export const savePredictionConfig = (c) => postJson('/predictions/config', c);

@@ -14,6 +14,7 @@ import haRouter from './routes/ha.ts';
 import evRouter from './routes/ev.ts';
 import essRouter from './routes/ess.ts';
 import shoreOptimizerRouter from './routes/shore-optimizer.ts';
+import batteryRouter from './routes/battery.ts';
 
 const app = express();
 app.disable('x-powered-by');
@@ -33,6 +34,7 @@ app.use('/ha', haRouter);
 app.use('/ev', evRouter);
 app.use('/ess', essRouter);
 app.use('/shore-optimizer', shoreOptimizerRouter);
+app.use('/battery', batteryRouter);
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ message: 'Optivolt API is running.' });

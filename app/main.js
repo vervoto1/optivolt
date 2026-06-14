@@ -2,6 +2,7 @@ import { refreshVrmSettings } from "./src/api/api.js";
 import { loadInitialConfig } from "./src/config-store.js";
 import { initPredictionsTab } from "./src/predictions.js";
 import { initEssTab, deactivateEssTab } from "./src/ess-tab.js";
+import { initBatterySettings, deactivateBatterySettings } from "./src/battery-settings.js";
 import {
   initDepartureDatetimeMin,
   refreshEvSensorStates,
@@ -49,7 +50,10 @@ function setupTabSwitcher() {
     // polling on deactivation so the interval never leaks after a tab switch.
     { tab: document.getElementById('tab-ess'),         panel: document.getElementById('panel-ess'),
       onActivate: () => { void initEssTab(); }, onDeactivate: deactivateEssTab },
-    { tab: document.getElementById('tab-settings'),    panel: document.getElementById('panel-settings') },
+    // Settings tab polls battery-controller status (charge + balance) only while
+    // visible; the poll is stopped on deactivation so the interval never leaks.
+    { tab: document.getElementById('tab-settings'),    panel: document.getElementById('panel-settings'),
+      onActivate: () => { initBatterySettings(); }, onDeactivate: deactivateBatterySettings },
   ].filter(t => t.tab && t.panel);
 
   let activeIndex = 0;

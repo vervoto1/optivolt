@@ -57,15 +57,38 @@ describe('setupSettingsSubtabs', () => {
     expect(active[0]).toBe(els.evTab);
   });
 
-  it('is a no-op when fewer than two sub-tabs are present', () => {
+  it('is a no-op when no sub-tabs are present', () => {
+    document.body.innerHTML = `<div></div>`;
+    expect(() => setupSettingsSubtabs()).not.toThrow();
+  });
+
+  it('still activates the first sub-tab when only one is present', () => {
     document.body.innerHTML = `
       <button id="subtab-power"></button>
       <div id="settings-power"></div>
     `;
     const powerTab = document.getElementById('subtab-power');
 
-    expect(() => setupSettingsSubtabs()).not.toThrow();
-    // The early return means no activation styling is applied.
-    expect(powerTab.getAttribute('aria-selected')).toBe(null);
+    setupSettingsSubtabs();
+    expect(powerTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('supports the Battery sub-tab as a third section', () => {
+    document.body.innerHTML = `
+      <button id="subtab-power" role="tab" aria-selected="true"></button>
+      <button id="subtab-ev" role="tab" aria-selected="false"></button>
+      <button id="subtab-battery" role="tab" aria-selected="false"></button>
+      <div id="settings-power"></div>
+      <div id="settings-ev" class="hidden"></div>
+      <div id="settings-battery" class="hidden"></div>
+    `;
+    const batteryTab = document.getElementById('subtab-battery');
+    const batteryPanel = document.getElementById('settings-battery');
+    setupSettingsSubtabs();
+
+    batteryTab.click();
+    expect(batteryTab.getAttribute('aria-selected')).toBe('true');
+    expect(batteryPanel.classList.contains('hidden')).toBe(false);
+    expect(document.getElementById('settings-power').classList.contains('hidden')).toBe(true);
   });
 });
