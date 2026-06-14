@@ -9,6 +9,7 @@ import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
 import { getSolverInputs, buildSolverConfigFromSettings } from './config-builder.ts';
+import { resolveEvMode } from './ev-mode.ts';
 import { saveSettings, loadSettings } from './settings-store.ts';
 import { saveData } from './data-store.ts';
 import { applyPredictionAdjustmentsToData } from './prediction-adjustments.ts';
@@ -144,6 +145,54 @@ let lastPlan: ComputePlanResult | undefined;
 export function getLastPlan(): ComputePlanResult | undefined {
   // v8 ignore next — defensive return when no plan was computed yet
   return lastPlan;
+}
+
+/**
+ * Advisory EV preview: what the EV charge schedule WOULD look like if the car
+ * were plugged in right now (seeded from the live SoC), computed only when the
+ * real plan excludes the EV because the car is disconnected. Purely for display
+ * — it is never written to Victron and never drives actuation. `rows` is the
+ * solved EV schedule; when there is no valid charge window it falls back to a
+ * flat live-SoC track so the chart still shows the actual battery percentage.
+ */
+export interface EvPreviewSummary {
+  evChargeTotal_kWh: number;
+  evChargeFromGrid_kWh: number;
+  evChargeFromPv_kWh: number;
+  evChargeFromBattery_kWh: number;
+}
+
+export interface EvPreview {
+  rows: PlanRow[];
+  timing: { startMs: number; stepMin: number };
+  liveSoc_percent: number;
+  hasSchedule: boolean;
+  summary: EvPreviewSummary;
+  computedAtMs: number;
+}
+
+/** Sum per-slot EV power columns (W) into kWh totals for a preview row set. */
+function summarizeEvPreview(rows: PlanRow[], stepMin: number): EvPreviewSummary {
+  const stepH = stepMin / 60;
+  let ev = 0, grid = 0, pv = 0, bat = 0;
+  for (const r of rows) {
+    ev += r.ev_charge ?? 0;
+    grid += r.g2ev ?? 0;
+    pv += r.pv2ev ?? 0;
+    bat += r.b2ev ?? 0;
+  }
+  return {
+    evChargeTotal_kWh: ev * stepH / 1000,
+    evChargeFromGrid_kWh: grid * stepH / 1000,
+    evChargeFromPv_kWh: pv * stepH / 1000,
+    evChargeFromBattery_kWh: bat * stepH / 1000,
+  };
+}
+
+let lastEvPreview: EvPreview | null = null;
+
+export function getLastEvPreview(): EvPreview | null {
+  return lastEvPreview;
 }
 
 export function getCurrentSlotMode(nowMs = Date.now()): ShoreOptimizerSlotMode {
@@ -291,6 +340,48 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   lastPlan = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow, rebalanceNudge, computedAtMs: Date.now() };
   updatePvCurtailmentPlan({ cfg, rows: rowsWithDess });
+
+  // EV preview: when the real plan excludes the EV because the car is
+  // disconnected, separately solve what the schedule WOULD be if it were
+  // plugged in now (seeded from the live SoC). Display-only — never written to
+  // Victron, never cached as lastPlan, never used for actuation.
+  lastEvPreview = null;
+  if (!cfg.ev && resolveEvMode(settings) === 'native' && evState?.soc_percent != null) {
+    const liveSoc = evState.soc_percent;
+    try {
+      const previewCfg = buildSolverConfigFromSettings(
+        settings,
+        applyPredictionAdjustmentsToData(data),
+        timing.startMs,
+        { pluggedIn: true, soc_percent: liveSoc },
+      );
+      if (previewCfg.ev) {
+        const previewResult = highs.solve(buildLP(previewCfg), solveOptions);
+        const previewRows = parseSolution(previewResult, previewCfg, timing);
+        lastEvPreview = {
+          rows: previewRows,
+          timing,
+          liveSoc_percent: liveSoc,
+          hasSchedule: true,
+          summary: summarizeEvPreview(previewRows, timing.stepMin),
+          computedAtMs: Date.now(),
+        };
+      } else {
+        // No valid charge window (e.g. departure already elapsed): surface the
+        // live SoC as a flat track so the chart still shows the real battery %.
+        lastEvPreview = {
+          rows: rows.map(r => ({ ...r, ev_charge: 0, ev_charge_A: 0, ev_charge_mode: 'off', ev_soc_percent: liveSoc })),
+          timing,
+          liveSoc_percent: liveSoc,
+          hasSchedule: false,
+          summary: { evChargeTotal_kWh: 0, evChargeFromGrid_kWh: 0, evChargeFromPv_kWh: 0, evChargeFromBattery_kWh: 0 },
+          computedAtMs: Date.now(),
+        };
+      }
+    } catch (err) {
+      console.warn('[calculate] EV preview solve failed:', (err as Error).message);
+    }
+  }
 
   // Persist plan snapshot for adaptive learning (fire-and-forget)
   const snapshotCreatedAtMs = Date.now();

@@ -126,7 +126,7 @@ describe('optimizer controller', () => {
     expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, tableArgs.evSettings);
     expect(services.drawPricesStepLines).toHaveBeenCalledWith(els.prices, rows, 30);
     expect(services.drawLoadPvGrouped).toHaveBeenCalledWith(els.loadpv, rows, 30);
-    expect(services.updateEvPanel).toHaveBeenCalledWith(els, rows, summary, 30);
+    expect(services.updateEvPanel).toHaveBeenCalledWith(els, rows, summary, 30, null);
     expect(services.updateEvDepartureQuickSet).toHaveBeenCalledWith(els, rows);
     expect(els.status.textContent).toBe('Plan updated');
     expect(els.run.disabled).toBe(false);

@@ -85,8 +85,18 @@ export function createOptimizerController({ els, services = {} }) {
       renderScheduleTable();
 
       renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings);
-      deps.updateEvPanel(els, rows, result.summary, cfgForViz.stepSize_m);
-      deps.updateEvDepartureQuickSet(els, rows);
+      // When the car is disconnected the real plan has no EV; the backend then
+      // returns evPreview — the schedule as it would be if plugged in now. Use it
+      // for the EV panel/charts (display-only; never applied to Victron).
+      const evPreview = result.evPreview ?? null;
+      deps.updateEvPanel(
+        els,
+        evPreview?.rows ?? rows,
+        evPreview?.summary ?? result.summary,
+        cfgForViz.stepSize_m,
+        evPreview,
+      );
+      deps.updateEvDepartureQuickSet(els, evPreview?.rows ?? rows);
     } catch (err) {
       console.error(err);
       if (els.status) {

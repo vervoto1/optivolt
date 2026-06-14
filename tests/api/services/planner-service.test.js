@@ -14,7 +14,7 @@ import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refres
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
-import { computePlan, planAndMaybeWrite } from '../../../api/services/planner-service.ts';
+import { computePlan, planAndMaybeWrite, getLastEvPreview } from '../../../api/services/planner-service.ts';
 import { FeedIn } from '../../../lib/dess-mapper.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
@@ -334,6 +334,74 @@ describe('computePlan — MQTT SoC refresh', () => {
 
     expect(result.cfg.ev).toBeDefined();
     expect(result.cfg.ev.evInitialSoc_percent).toBe(40);
+  });
+});
+
+describe('computePlan — EV preview when car disconnected', () => {
+  const evBase = {
+    ...baseSettings,
+    evEnabled: true,
+    evSource: 'native',
+    evSocSensor: 'sensor.ev_soc',
+    evPlugSensor: 'binary_sensor.ev_plug',
+    evChargePhases: 1,
+    evMinChargeCurrent_A: 6,
+    evMaxChargeCurrent_A: 16,
+    evBatteryCapacity_kWh: 10,
+    evTargetSoc_percent: 80,
+    evChargeEfficiency_percent: 100,
+    evDepartureTime: '2024-01-01T04:00:00Z',
+    evStartTime: '',
+    evMinSoc_percent: 0,
+    evApplyPriceLimit: false,
+    evOpportunisticEnabled: false,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    // Car DISCONNECTED: plug 'off', but the SoC sensor still reads.
+    fetchHaEntityState.mockImplementation(async ({ entityId }) =>
+      entityId === 'binary_sensor.ev_plug' ? { state: 'off' } : { state: '55' });
+    loadSettings.mockResolvedValue({ ...evBase });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('excludes EV from the real plan but exposes an EV preview seeded from live SoC', async () => {
+    const result = await computePlan();
+
+    // Real plan (what drives Victron) must NOT contain the EV.
+    expect(result.cfg.ev).toBeUndefined();
+    expect(result.rows.every(r => (r.ev_soc_percent ?? 0) === 0)).toBe(true);
+
+    // Preview exists, starts from the live SoC, and schedules the deficit.
+    const preview = getLastEvPreview();
+    expect(preview).not.toBeNull();
+    expect(preview.hasSchedule).toBe(true);
+    expect(preview.liveSoc_percent).toBe(55);
+    expect(preview.rows.some(r => r.ev_charge > 0)).toBe(true);
+    // Reaches (within rounding) the 80% target by departure.
+    expect(Math.max(...preview.rows.map(r => r.ev_soc_percent))).toBeGreaterThanOrEqual(79);
+  });
+
+  it('does not produce a preview when the car is connected (real plan has the EV)', async () => {
+    fetchHaEntityState.mockImplementation(async ({ entityId }) =>
+      entityId === 'binary_sensor.ev_plug' ? { state: 'on' } : { state: '55' });
+
+    const result = await computePlan();
+
+    expect(result.cfg.ev).toBeTruthy();
+    expect(getLastEvPreview()).toBeNull();
   });
 });
 
