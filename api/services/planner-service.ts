@@ -201,11 +201,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     }
   }
 
-  let { cfg, timing, data, settings } = await getSolverInputs();
+  let { cfg, timing, data, settings, evState } = await getSolverInputs();
 
   if (settings.dataSources.soc === 'mqtt') {
     data = await refreshMqttSocForPlan(data, settings.shoreOptimizer?.batteryInstance);
-    cfg = buildSolverConfigFromSettings(settings, data, timing.startMs);
+    // Pass evState through — without it the rebuilt cfg drops the EV entirely.
+    cfg = buildSolverConfigFromSettings(settings, data, timing.startMs, evState);
   }
 
   // Pre-solve bookkeeping: if a rebalance cycle just completed, auto-disable
@@ -213,8 +214,8 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     data = { ...data, rebalanceState: { startMs: null } };
     settings = { ...settings, rebalanceEnabled: false };
     await Promise.all([saveSettings(settings), saveData(data)]);
-    // Rebuild cfg without rebalance constraints
-    cfg = buildSolverConfigFromSettings(settings, applyPredictionAdjustmentsToData(data), timing.startMs);
+    // Rebuild cfg without rebalance constraints (still preserving the EV).
+    cfg = buildSolverConfigFromSettings(settings, applyPredictionAdjustmentsToData(data), timing.startMs, evState);
   }
 
   const lpText = buildLP(cfg);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.34 - 2026-06-14
+
+- **Fix: native EV was dropped from every plan when the SoC source is Victron MQTT.** `getSolverInputs()` builds the solver config *with* the EV (from the live HA SoC/plug read), but the `dataSources.soc === 'mqtt'` path then **rebuilt the config without passing `evState`**, so the rebuilt config silently excluded the EV — the solver ran with `ev: null` every cycle, the schedule planned no EV charging, and the EV SoC chart read 0% even with the car connected at a known SoC. `getSolverInputs()` now returns `evState`, and both config rebuilds in `planner-service` (the MQTT-SoC refresh and the rebalance-reset paths) pass it through. Added a planner regression test that fails if either rebuild drops the EV. This is the real cause of the "EV SoC shows 0%" report; the 0.7.33 "Ready by" default was a separate, valid improvement.
+
 ## 0.7.33 - 2026-06-14
 
 - **Fix: plan EV charging when no "Ready by" deadline is set.** Native EV planning only runs when there is a valid charge window. With "Ready by" left empty, the window collapsed to zero slots and the EV was dropped from the plan entirely — so the schedule showed no EV charging and the EV SoC chart read 0% even with the car connected at a known SoC. An unset "Ready by" now defaults to the **end of the known price horizon** (reach target by the last slot we have prices for, charging in the cheapest hours along the way). The plug gate is unchanged: the EV is still only folded into the home-battery co-optimization when it is actually connected, so the home-battery plan never prepares for an EV draw that won't happen.
