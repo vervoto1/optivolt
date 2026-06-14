@@ -22,19 +22,11 @@ function makeEls() {
     sourceLoad: { value: 'vrm' },
     sourcePv: { value: 'vrm' },
     sourceSoc: { value: 'mqtt' },
-    sourceEvLoad: { value: 'api' },
     rebalanceEnabled: { checked: false },
     rebalanceHoldHours: { value: '3' },
     haUrl: { value: 'ws://homeassistant.local:8123/api/websocket' },
     haToken: { value: '' },
     evEnabled: { checked: false },
-    evSource: { value: 'native' },
-    evChargerPower: { value: '11000' },
-    evDisableDischarge: { checked: true },
-    evScheduleSensor: { value: '' },
-    evScheduleAttribute: { value: 'charging_schedule' },
-    evConnectedSwitch: { value: '' },
-    evAlwaysApply: { checked: false },
     cvEnabled: { checked: false },
     cvThreshold1Soc: { value: '95' },
     cvThreshold1Power: { value: '9360' },
@@ -124,25 +116,6 @@ describe('state.js', () => {
     const els = makeEls();
     hydrateUI(els, { isAddon: false });
     expect(els.haSettingsGroup.hidden).toBe(false);
-  });
-
-  it('hydrateUI sets legacy EV config values (master enable is decoupled)', () => {
-    const els = makeEls();
-    hydrateUI(els, {
-      evEnabled: true,
-      evSource: 'haSchedule',
-      evConfig: {
-        enabled: true, chargerPower_W: 22000,
-        disableDischargeWhileCharging: false,
-        scheduleSensor: 'sensor.ev', scheduleAttribute: 'schedule',
-        connectedSwitch: 'switch.ev', alwaysApplySchedule: true,
-      },
-    });
-    // Master switch comes from the flat evEnabled, not evConfig.enabled.
-    expect(els.evEnabled.checked).toBe(true);
-    expect(els.evSource.value).toBe('haSchedule');
-    expect(els.evChargerPower.value).toBe(22000);
-    expect(els.evAlwaysApply.checked).toBe(true);
   });
 
   it('hydrateUI sets CV phase thresholds', () => {
@@ -624,21 +597,10 @@ describe('updateSummaryUI', () => {
     expect(els.step.value).toBe('original');
   });
 
-  it('hydrateUI sets flat evEnabled from obj.evEnabled (not from evConfig)', () => {
+  it('hydrateUI sets the flat evEnabled master switch from obj.evEnabled', () => {
     const els = makeEls();
     els.evEnabled = { checked: false };
     hydrateUI(els, { evEnabled: true });
-    expect(els.evEnabled.checked).toBe(true);
-  });
-
-  it('hydrateUI flat evEnabled overrides evConfig enabled', () => {
-    const els = makeEls();
-    els.evEnabled = { checked: false };
-    hydrateUI(els, {
-      evConfig: { enabled: false },
-      evEnabled: true,
-    });
-    // Flat evEnabled should win
     expect(els.evEnabled.checked).toBe(true);
   });
 

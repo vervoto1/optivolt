@@ -182,7 +182,7 @@ export async function runActuatorTick(nowMs: number = Date.now()): Promise<Actua
     return record({ status: 'error', reason: 'settings load failed', error: msg(err), timestampMs: nowMs });
   }
 
-  // Actuation is a native-mode feature (haSchedule means an external owner).
+  // Actuation only runs when EV charging is enabled (native planning mode).
   if (resolveEvMode(settings) !== 'native' || !settings.evActuationEnabled) {
     return record({ status: 'disabled', reason: 'actuation disabled', timestampMs: nowMs });
   }

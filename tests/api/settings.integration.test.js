@@ -55,28 +55,24 @@ describe('Settings route integration', () => {
     await writeSettings({
       haUrl: 'ws://homeassistant.local:8123/api/websocket',
       haToken: 'old-token',
-      evConfig: {
+      autoCalculate: {
         enabled: false,
-        chargerPower_W: 11000,
-        disableDischargeWhileCharging: true,
-        scheduleSensor: 'sensor.old',
-        scheduleAttribute: 'charging_schedule',
-        connectedSwitch: 'switch.old',
-        alwaysApplySchedule: false,
+        intervalMinutes: 20,
+        updateData: true,
+        writeToVictron: true,
       },
     });
 
     const res = await post(settingsRouter, '/', {
-      evConfig: { enabled: true, scheduleSensor: 'sensor.new' },
+      autoCalculate: { enabled: true },
       haToken: 'new-token',
     });
 
     const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8'));
     expect(res.status).toBe(200);
     expect(saved.haToken).toBe('new-token');
-    expect(saved.evConfig.enabled).toBe(true);
-    expect(saved.evConfig.scheduleSensor).toBe('sensor.new');
-    expect(saved.evConfig.chargerPower_W).toBe(11000);
+    expect(saved.autoCalculate.enabled).toBe(true);
+    expect(saved.autoCalculate.intervalMinutes).toBe(20);
     expect(stopAutoCalculate).toHaveBeenCalled();
     expect(startAutoCalculate).toHaveBeenCalled();
     expect(stopDessPriceRefresh).toHaveBeenCalled();

@@ -22,7 +22,7 @@ const NOW = 1_700_000_000_000;
 
 function settings(over = {}) {
   return {
-    evEnabled: true, evSource: 'native', evActuationEnabled: true, evActuationPaused: false,
+    evEnabled: true, evActuationEnabled: true, evActuationPaused: false,
     evChargerSwitchEntity: 'switch.charger', evChargerCurrentEntity: '',
     evMinChargeCurrent_A: 6, evMaxChargeCurrent_A: 16, evChargePhases: 3,
     evMaxPlanAgeSeconds: 1800, evFailSafeMode: 'hold',

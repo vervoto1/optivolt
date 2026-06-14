@@ -98,7 +98,6 @@ export function buildLP({
 
   // EV charging
   evLoad_W,
-  disableDischargeWhileEvCharging = false,
 
   // CV phase
   cvPhaseThresholds,
@@ -658,10 +657,8 @@ export function buildLP({
     lines.push(` 0 <= ${pvCurtail(t)} <= ${toNum(pv_W[t])}`);
 
     // Battery → load/grid (DC W on bus). Discharge cap is DC; load/export caps are AC.
-    // evDischargeBlocked: when uncontrollable EV is charging, block battery discharge.
-    const evDischargeBlocked = disableDischargeWhileEvCharging && (evLoad_W?.[t] ?? 0) > 0;
-    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, effectiveLoad_W[t] * invScale))}`);
-    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(evDischargeBlocked ? 0 : Math.min(maxDischargePower_W, maxGridExport_W * invScale))}`);
+    lines.push(` 0 <= ${batteryToLoad(t)} <= ${toNum(Math.min(maxDischargePower_W, effectiveLoad_W[t] * invScale))}`);
+    lines.push(` 0 <= ${batteryToGrid(t)} <= ${toNum(Math.min(maxDischargePower_W, maxGridExport_W * invScale))}`);
 
     // SOC bounds
     // minSoc handled via soft constraint

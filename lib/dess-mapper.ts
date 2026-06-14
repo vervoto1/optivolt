@@ -464,16 +464,6 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
       restrictions = Restrictions.batteryToGrid;
     }
 
-    // EV discharge constraint: block battery discharge during EV charging
-    if (cfg.disableDischargeWhileEvCharging && (cfg.evLoad_W?.[t] ?? 0) > 0) {
-      if (restrictions === Restrictions.none) {
-        restrictions = Restrictions.batteryToGrid;
-      } else if (restrictions === Restrictions.gridToBattery) {
-        restrictions = Restrictions.both;
-      }
-      // Restrictions.batteryToGrid and Restrictions.both already block battery→grid
-    }
-
     perSlot[t] = {
       feedin,
       restrictions,

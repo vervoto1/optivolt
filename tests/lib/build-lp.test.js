@@ -336,16 +336,6 @@ describe('buildLP — EV charging', () => {
     expect(lp).toMatch(/c_load_0:.*= 500\b/);
   });
 
-  it('constrains battery discharge to 0 when EV is charging and disableDischargeWhileEvCharging is true', () => {
-    const lp = buildLP({ ...mockData, evLoad_W: [0, 0, 11000, 0], disableDischargeWhileEvCharging: true });
-    // Slot 2 (EV active): battery_to_load_2 and battery_to_grid_2 upper bound = 0
-    expect(lp).toMatch(/0 <= battery_to_load_2 <= 0\b/);
-    expect(lp).toMatch(/0 <= battery_to_grid_2 <= 0\b/);
-    // Slot 0 (no EV): battery_to_load_0 and battery_to_grid_0 should have non-zero upper bounds
-    expect(lp).toMatch(/0 <= battery_to_load_0 <= [1-9]/);
-    expect(lp).toMatch(/0 <= battery_to_grid_0 <= [1-9]/);
-  });
-
   it('produces identical LP when evLoad_W is undefined', () => {
     const baselineLP = buildLP(mockData);
     const withUndefinedLP = buildLP({ ...mockData, evLoad_W: undefined });

@@ -13,7 +13,6 @@ export function getElements() {
     sourceLoad: $("#source-load"),
     sourcePv: $("#source-pv"),
     sourceSoc: $("#source-soc"),
-    sourceEvLoad: $("#source-ev-load"),
     rebalanceToggleLabel: $("#rebalance-toggle-label"),
     rebalanceEnabled: $("#rebalance-enabled"),
     rebalanceNudge: $("#rebalance-nudge"),
@@ -79,14 +78,8 @@ export function getElements() {
     haToken: $("#pred-ha-token"),
     haSettingsGroup: $("#pred-ha-settings-group"),
 
-    // EV Charging (Settings tab) — evConfig style
+    // EV master switch (EV tab)
     evEnabled: document.getElementById('ev-enabled'),
-    evChargerPower: document.getElementById('ev-charger-power'),
-    evDisableDischarge: document.getElementById('ev-disable-discharge'),
-    evScheduleSensor: document.getElementById('ev-schedule-sensor'),
-    evScheduleAttribute: document.getElementById('ev-schedule-attribute'),
-    evConnectedSwitch: document.getElementById('ev-connected-switch'),
-    evAlwaysApply: document.getElementById('ev-always-apply'),
 
     // CV Phase Tuning (Settings tab)
     cvEnabled: document.getElementById('cv-enabled'),
@@ -165,7 +158,6 @@ export function getElements() {
     evPlugValue: $("#ev-plug-value"),
 
     // EV native-charging feature parity (EV tab)
-    evSource: $("#ev-source"),
     evStartTime: $("#ev-start-time"),
     evMinSoc: $("#ev-min-soc"),
     evChargingSpeedHint: $("#ev-charging-speed-hint"),
@@ -184,7 +176,9 @@ export function getElements() {
     evActuationEnabled: $("#ev-actuation-enabled"),
     evActuationPaused: $("#ev-actuation-paused"),
     evChargerSwitchEntity: $("#ev-charger-switch-entity"),
+    evChargerSwitchValue: $("#ev-charger-switch-value"),
     evChargerCurrentEntity: $("#ev-charger-current-entity"),
+    evChargerCurrentValue: $("#ev-charger-current-value"),
     evControlInterval: $("#ev-control-interval"),
     evFailSafeMode: $("#ev-fail-safe-mode"),
 

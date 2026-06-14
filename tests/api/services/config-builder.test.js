@@ -270,32 +270,18 @@ describe('buildSolverConfigFromSettings — EV', () => {
     const evValues = Array(96).fill(0);
     evValues[2] = 11000;
     const data = { ...makeData(), evLoad: { start: NOW_STRING, step: 15, values: evValues } };
-    const nativeSettings = { ...mockSettings, evEnabled: true, evSource: 'native' };
+    const nativeSettings = { ...mockSettings, evEnabled: true };
     const cfg = buildSolverConfigFromSettings(nativeSettings, data, NOW_MS);
     expect(cfg.evLoad_W.every(v => v === 0)).toBe(true);
   });
 
-  it('keeps data.evLoad injection in haSchedule mode', () => {
+  it('keeps data.evLoad injection in off mode (manual/API uncontrollable load)', () => {
     const evValues = Array(96).fill(0);
     evValues[2] = 11000;
     const data = { ...makeData(), evLoad: { start: NOW_STRING, step: 15, values: evValues } };
-    const legacySettings = { ...mockSettings, evEnabled: true, evSource: 'haSchedule' };
-    const cfg = buildSolverConfigFromSettings(legacySettings, data, NOW_MS);
+    const offSettings = { ...mockSettings, evEnabled: false };
+    const cfg = buildSolverConfigFromSettings(offSettings, data, NOW_MS);
     expect(cfg.evLoad_W[2]).toBe(11000);
-  });
-
-  it('passes disableDischargeWhileEvCharging from settings.evConfig', () => {
-    const settings = {
-      ...mockSettings,
-      evConfig: { enabled: true, disableDischargeWhileCharging: true },
-    };
-    const cfg = buildSolverConfigFromSettings(settings, makeData(), NOW_MS);
-    expect(cfg.disableDischargeWhileEvCharging).toBe(true);
-  });
-
-  it('defaults disableDischargeWhileEvCharging to false when evConfig is absent', () => {
-    const cfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
-    expect(cfg.disableDischargeWhileEvCharging).toBe(false);
   });
 });
 

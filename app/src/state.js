@@ -26,13 +26,14 @@ export function snapshotUI(els) {
     terminalSocCustomPrice_cents_per_kWh: num(els.terminalCustom?.value),
     optimizerQuickSettings: parseQuickSettingSelection(els.optimizerQuickSettingsSelection?.value),
 
-    // DATA
+    // DATA. evLoad has no UI source — the legacy "Home Assistant" reader was
+    // removed and manual injection (POST /data) is the only path, so it is not
+    // part of the client snapshot; the server keeps its persisted default.
     dataSources: {
       prices: els.sourcePrices?.value || "vrm",
       load: els.sourceLoad?.value || "vrm",
       pv: els.sourcePv?.value || "vrm",
       soc: els.sourceSoc?.value || "mqtt",
-      evLoad: els.sourceEvLoad?.value || "api",
     },
 
     // ALGORITHM
@@ -41,19 +42,6 @@ export function snapshotUI(els) {
 
     // HOME ASSISTANT
     haUrl: els.haUrl?.value ?? '',
-
-    // EV CHARGING
-    evConfig: {
-      // Legacy reader is active only in haSchedule mode, derived from the single
-      // master switch + source selector (never a second ev-enabled checkbox).
-      enabled: (els.evEnabled?.checked ?? false) && (els.evSource?.value === 'haSchedule'),
-      chargerPower_W: Number(els.evChargerPower?.value) || 11000,
-      disableDischargeWhileCharging: els.evDisableDischarge?.checked ?? true,
-      scheduleSensor: els.evScheduleSensor?.value ?? '',
-      scheduleAttribute: els.evScheduleAttribute?.value ?? 'charging_schedule',
-      connectedSwitch: els.evConnectedSwitch?.value ?? '',
-      alwaysApplySchedule: els.evAlwaysApply?.checked ?? false,
-    },
 
     // CV PHASE TUNING
     cvPhase: {
@@ -134,7 +122,6 @@ export function snapshotUI(els) {
     evPlugSensor: els.evPlugSensor?.value ?? '',
 
     // EV native-charging feature parity
-    evSource: els.evSource?.value || 'native',
     evStartTime: els.evStartTime?.value ?? '',
     evMinSoc_percent: num(els.evMinSoc?.value),
     evApplyPriceLimit: !!els.evApplyPriceLimit?.checked,
@@ -205,7 +192,6 @@ export function hydrateUI(els, obj = {}) {
   if (els.sourceLoad && obj.dataSources?.load) els.sourceLoad.value = obj.dataSources.load;
   if (els.sourcePv && obj.dataSources?.pv) els.sourcePv.value = obj.dataSources.pv;
   if (els.sourceSoc && obj.dataSources?.soc) els.sourceSoc.value = obj.dataSources.soc;
-  if (els.sourceEvLoad && obj.dataSources?.evLoad) els.sourceEvLoad.value = obj.dataSources.evLoad;
 
   // Algorithm
   if (els.rebalanceEnabled && obj.rebalanceEnabled != null) {
@@ -222,14 +208,6 @@ export function hydrateUI(els, obj = {}) {
     els.haSettingsGroup.hidden = !!obj.isAddon;
   }
 
-  // EV CHARGING (legacy evConfig fields; master enable is the flat evEnabled below)
-  if (els.evChargerPower) els.evChargerPower.value = obj.evConfig?.chargerPower_W ?? 11000;
-  if (els.evDisableDischarge) els.evDisableDischarge.checked = obj.evConfig?.disableDischargeWhileCharging ?? true;
-  if (els.evScheduleSensor) els.evScheduleSensor.value = obj.evConfig?.scheduleSensor ?? '';
-  if (els.evScheduleAttribute) els.evScheduleAttribute.value = obj.evConfig?.scheduleAttribute ?? 'charging_schedule';
-  if (els.evConnectedSwitch) els.evConnectedSwitch.value = obj.evConfig?.connectedSwitch ?? '';
-  if (els.evAlwaysApply) els.evAlwaysApply.checked = obj.evConfig?.alwaysApplySchedule ?? false;
-
   // Flat EV fields (upstream LP-based)
   if (els.evEnabled && obj.evEnabled != null) {
     els.evEnabled.checked = !!obj.evEnabled;
@@ -245,7 +223,6 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.evPlugSensor, obj.evPlugSensor);
 
   // EV native-charging feature parity
-  if (els.evSource && obj.evSource != null) els.evSource.value = String(obj.evSource);
   setIfDef(els.evStartTime, obj.evStartTime);
   setIfDef(els.evMinSoc, obj.evMinSoc_percent);
   if (els.evApplyPriceLimit) els.evApplyPriceLimit.checked = !!obj.evApplyPriceLimit;

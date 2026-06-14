@@ -59,15 +59,6 @@ const mockSettings = {
   haUrl: 'ws://homeassistant.local:8123/api/websocket',
   haToken: 'secret-token',
   dataSources: { load: 'vrm', pv: 'vrm', prices: 'vrm', soc: 'mqtt', evLoad: 'api' },
-  evConfig: {
-    enabled: false,
-    chargerPower_W: 11000,
-    disableDischargeWhileCharging: true,
-    scheduleSensor: '',
-    scheduleAttribute: '',
-    connectedSwitch: '',
-    alwaysApplySchedule: false,
-  },
   autoCalculate: {
     enabled: false,
     intervalMinutes: 60,
@@ -172,7 +163,7 @@ describe('Route contracts', () => {
     vi.useRealTimers();
 
     const res = await post(routes.settingsRouter, '/', {
-      evConfig: { enabled: true },
+      autoCalculate: { enabled: true },
       haToken: '',
     });
 
@@ -180,9 +171,9 @@ describe('Route contracts', () => {
     expect(saveSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         haToken: 'secret-token',
-        evConfig: expect.objectContaining({
+        autoCalculate: expect.objectContaining({
           enabled: true,
-          chargerPower_W: 11000,
+          intervalMinutes: 60,
         }),
       }),
     );
