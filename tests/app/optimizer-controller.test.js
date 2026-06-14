@@ -123,7 +123,7 @@ describe('optimizer controller', () => {
       tableArgs.evSettings,
       60,
     );
-    expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, tableArgs.evSettings);
+    expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, tableArgs.evSettings, null);
     expect(services.drawPricesStepLines).toHaveBeenCalledWith(els.prices, rows, 30);
     expect(services.drawLoadPvGrouped).toHaveBeenCalledWith(els.loadpv, rows, 30);
     expect(services.updateEvPanel).toHaveBeenCalledWith(els, rows, summary, 30, null);
@@ -131,6 +131,25 @@ describe('optimizer controller', () => {
     expect(els.status.textContent).toBe('Plan updated');
     expect(els.run.disabled).toBe(false);
     expect(els.run.classList.contains('loading')).toBe(false);
+  });
+
+  it('feeds the EV preview into the EV panel and SoC overlay when the result includes one', async () => {
+    const { controller, els, rows, services, summary } = setupController();
+    const previewRows = [{ timestampMs: 1, ev_soc_percent: 60, soc_percent: 50 }];
+    const previewSummary = { evChargeTotal_kWh: 1, evChargeFromGrid_kWh: 1, evChargeFromPv_kWh: 0, evChargeFromBattery_kWh: 0 };
+    const evPreview = { rows: previewRows, summary: previewSummary, liveSoc_percent: 55, hasSchedule: true };
+    services.requestRemoteSolve.mockResolvedValue({
+      initialSoc_percent: 42, rows, solverStatus: 'optimal', summary,
+      tsStart: '2026-05-01T12:00:00.000Z', evPreview,
+    });
+
+    await controller.onRun();
+
+    // Battery SoC keeps the real rows; the EV-SoC overlay uses the preview rows (5th arg).
+    expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, expect.anything(), previewRows);
+    // EV panel renders the preview schedule + summary and receives the preview object.
+    expect(services.updateEvPanel).toHaveBeenCalledWith(els, previewRows, previewSummary, 30, evPreview);
+    expect(services.updateEvDepartureQuickSet).toHaveBeenCalledWith(els, previewRows);
   });
 
   it('re-renders cached table rows when table display toggles change', async () => {
