@@ -539,10 +539,18 @@ function collectEvRatios(
     if (!prevSample.evPluggedIn || !curSample.evPluggedIn) continue;
     if (prevSample.actualEvSoc_percent == null || curSample.actualEvSoc_percent == null) continue;
 
+    // Clean-slot gate (mirrors the battery collector): skip slots where home
+    // load/PV diverged from the plan, since the EV's actual charge was then likely
+    // grid/throttling-limited, not BMS-tapered — learning that shortfall as
+    // "acceptance" would teach a falsely-aggressive taper.
+    if (!isCleanSlot(slot, curSample)) continue;
+
     const predictedChange = slot.predictedEvSoc_percent - prevSlot.predictedEvSoc_percent;
     const actualChange = curSample.actualEvSoc_percent - prevSample.actualEvSoc_percent;
 
-    if (Math.abs(predictedChange) < MIN_SOC_CHANGE_PERCENT) continue;
+    // Require a genuine predicted charge (positive, above the floor). The EV SoC
+    // only rises in-plan, so a non-positive predicted change is not a charge slot.
+    if (predictedChange < MIN_SOC_CHANGE_PERCENT) continue;
 
     const ratio = actualChange / predictedChange;
     // Discard non-positive (car not actually charging) and gross outliers.

@@ -292,18 +292,26 @@ export function applyEvCalibration(cfg: SolverConfig, evCal: EvCalibrationResult
 
   if (thresholds.length === 0) return cfg;
 
+  // Enforce a physically-monotonic taper: charge acceptance only ever DROPS as SoC
+  // rises (a BMS never accepts more current closer to full). A noisy/sparse learned
+  // curve can emit a higher power at a higher SoC band; project a running-min over
+  // the (ascending-SoC) thresholds so the plan can't model an acceptance "bump".
+  let cap = Infinity;
+  const monotonic = thresholds.map(t => {
+    const power_W = Math.min(t.power_W, cap);
+    cap = power_W;
+    return { soc_percent: t.soc_percent, maxChargePower_W: power_W };
+  });
+
   console.log(
-    `[config-builder] Applying EV charge taper: ${thresholds.length} thresholds (confidence=${evCal.confidence})`,
+    `[config-builder] Applying EV charge taper: ${monotonic.length} thresholds (confidence=${evCal.confidence})`,
   );
 
   return {
     ...cfg,
     ev: {
       ...cfg.ev,
-      evChargeThresholds: thresholds.map(t => ({
-        soc_percent: t.soc_percent,
-        maxChargePower_W: t.power_W,
-      })),
+      evChargeThresholds: monotonic,
     },
   };
 }

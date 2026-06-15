@@ -118,6 +118,21 @@ describe('EV charge-acceptance calibration', () => {
     expect(result).toBeNull(); // all ratios filtered out → no result
   });
 
+  it('excludes slots where home load/PV diverged from plan (clean-slot gate)', async () => {
+    // Same charging history, but every sample's actual load is far from the plan's
+    // predictedLoad_W (400) — a throttling/confound proxy. The EV shortfall must NOT
+    // be learned as acceptance, so all ratios are filtered → no result.
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      const samples = makeEvSamples(baseMs, [78, 81, 83, 84]).map(s => ({ ...s, actualLoad_W: 6000 }));
+      mockSamples.push(...samples);
+    }
+    const result = await calibrateEv(3);
+    expect(result).toBeNull();
+  });
+
   it('returns null with no snapshots', async () => {
     const result = await calibrateEv(3);
     expect(result).toBeNull();

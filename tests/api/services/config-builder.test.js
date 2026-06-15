@@ -444,6 +444,23 @@ describe('applyEvCalibration', () => {
     applyEvCalibration(cfg, cal);
     expect(cfg.ev.evChargeThresholds).toBeUndefined();
   });
+
+  it('forces a monotonic-decreasing taper from a non-monotonic learned curve', () => {
+    const cfg = makeEvCfg();
+    const cal = makeEvCal();
+    // Physically-impossible curve: deep taper mid-pack, SHALLOWER taper near full
+    // (acceptance rising with SoC). Raw thresholds would have power rising with SoC.
+    for (let i = 50; i < 75; i++) cal.evChargeCurve[i] = 0.25;
+    for (let i = 75; i < 100; i++) cal.evChargeCurve[i] = 0.65;
+    const result = applyEvCalibration(cfg, cal);
+    const th = result.ev.evChargeThresholds;
+    expect(th.length).toBeGreaterThanOrEqual(2);
+    // Ascending SoC → power must never increase (running-min projection).
+    for (let i = 1; i < th.length; i++) {
+      expect(th[i].soc_percent).toBeGreaterThan(th[i - 1].soc_percent);
+      expect(th[i].maxChargePower_W).toBeLessThanOrEqual(th[i - 1].maxChargePower_W);
+    }
+  });
 });
 
 describe('getSolverInputs — EV state fetching from HA', () => {
