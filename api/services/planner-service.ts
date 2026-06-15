@@ -390,9 +390,14 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     .map((row, index) => ({
       row,
       predictedSoc_percent: index === 0 ? cfg.initialSoc_percent : rowsWithDess[index - 1].soc_percent,
+      // Start-of-slot EV SoC, same shift as the battery. Only meaningful on
+      // EV-active solves; otherwise left undefined so the EV calibrator ignores it.
+      predictedEvSoc_percent: cfg.ev
+        ? (index === 0 ? cfg.ev.evInitialSoc_percent : rowsWithDess[index - 1].ev_soc_percent)
+        : undefined,
     }))
     .filter(({ row }) => row.timestampMs >= snapshotStartMs)
-    .map(({ row, predictedSoc_percent }) => ({
+    .map(({ row, predictedSoc_percent, predictedEvSoc_percent }) => ({
       timestampMs: row.timestampMs,
       // soc_percent from the solver is end-of-slot (after flows); shift back
       // so predictedSoc_percent represents start-of-slot (before flows),
@@ -403,6 +408,8 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
       predictedLoad_W: row.load,
       predictedPv_W: row.pv,
       strategy: row.dess.strategy,
+      predictedEvSoc_percent,
+      evChargePower_W: cfg.ev ? row.ev_charge : undefined,
     }));
 
   const snapshot: PlanSnapshot = {

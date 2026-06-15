@@ -217,6 +217,8 @@ export function buildLP({
   const evOppBand        = 'ev_opp_band';
   const evOppBand2       = 'ev_opp_band2';
   const evTrans          = (t: number) => `ev_trans_${t}`;
+  // EV charge-acceptance taper binary: 1 iff start-of-slot EV SoC >= threshold k.
+  const evCvBin          = (k: number, t: number) => `ev_cv_${k}_${t}`;
 
   // EV derived constants (only used when ev is defined)
   const evActive        = ev != null;
@@ -232,6 +234,25 @@ export function buildLP({
   // pv_to_ev and battery_to_ev are DC; AC arriving at the EV charger = η_inv * variable.
   // So storage gained per W of those flows = η_inv * evChargeWhPerW.
   const evChargeWhPerW_dc = evChargeWhPerW * eta_inv;
+
+  // EV charge-acceptance taper (forecast-only): SoC-dependent reductions of the EV
+  // charge cap, mirroring the home-battery CV taper but keyed on the EV SoC variable.
+  // Each threshold drops the effective max (and, symmetrically, the min) by a step,
+  // so a forced-rate charger keeps charging — just slower — near full rather than
+  // becoming infeasible. Sorted ascending SoC; steps are decremental from evMaxPow_W.
+  const evCvThresholds = (evActive ? (ev?.evChargeThresholds ?? []) : [])
+    .filter(th => th.soc_percent > 0 && th.maxChargePower_W > 0 && th.maxChargePower_W < evMaxPow_W)
+    .sort((a, b) => a.soc_percent - b.soc_percent);
+  const evCvK = evCvThresholds.length;
+  const evCvThresholdWh: number[] = evCvThresholds.map(th => (th.soc_percent / 100) * evCapacityWh);
+  const evCvPowerSteps: number[] = [];
+  for (let k = 0; k < evCvK; k++) {
+    const prevPower = k === 0 ? evMaxPow_W : evCvThresholds[k - 1].maxChargePower_W;
+    evCvPowerSteps.push(prevPower - evCvThresholds[k].maxChargePower_W);
+  }
+  // Per-slot taper reduction term `+ Σ step·ev_cv_k_t`, reused across the min/max/total caps.
+  const evCvTerms = (t: number) =>
+    evCvPowerSteps.map((step, k) => ` + ${toNum(step)} ${evCvBin(k, t)}`).join('');
 
   // ---- Feature-parity planning controls ----
   const evStartSlot       = Math.max(0, Math.trunc(ev?.evStartSlot ?? 0));
@@ -559,16 +580,39 @@ export function buildLP({
       : '';
 
     for (let t = 0; t < T; t++) {
-      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)} >= 0`);
+      // Min relaxes by the SAME taper step as the max (see c_ev_taper below). The
+      // term is additive on a >= constraint, so when ev_on=0 (flow pinned to 0) it
+      // only loosens the bound — never infeasible. When charging near full it lets
+      // a forced-rate charger draw below its nominal minimum as the BMS tapers.
+      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)}${evCvTerms(t)} >= 0`);
       lines.push(` c_ev_max_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMaxPow_W)} ${evOn(t)} <= 0`);
+      if (evCvK > 0) {
+        // Constant-RHS max cap carrying the taper. Unlike c_ev_max (gated by
+        // ev_on), the RHS here is evMaxPow_W minus the SoC-dependent reduction, so
+        // it stays >= 0 even when ev_on=0 (flow=0) — modelling a SLOWDOWN near full,
+        // not a cutoff. cv binaries are forced from the EV SoC just below.
+        lines.push(` c_ev_taper_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)}${evCvTerms(t)} <= ${toNum(evMaxPow_W)}`);
+        // ev_cv_k_t = 1 iff start-of-slot EV SoC >= threshold k (mirrors c_cv_*).
+        for (let k = 0; k < evCvK; k++) {
+          const tightM = evCapacityWh - evCvThresholdWh[k];
+          if (t === 0) {
+            lines.push(` c_ev_cv_${k}_${t}: ${toNum(evInitialWh)} - ${toNum(tightM)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k])}`);
+            lines.push(` c_ev_cv_rev_${k}_${t}: ${toNum(evCvThresholdWh[k])} ${evCvBin(k, t)} <= ${toNum(evInitialWh)}`);
+          } else {
+            lines.push(` c_ev_cv_${k}_${t}: ${evSocVar(t - 1)} - ${toNum(tightM)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k])}`);
+            lines.push(` c_ev_cv_rev_${k}_${t}: ${toNum(evCvThresholdWh[k])} ${evCvBin(k, t)} - ${evSocVar(t - 1)} <= 0`);
+          }
+        }
+      }
       if (evFloorActive) {
-        // Total charger AC power (normal + floor) is bounded by the charger max.
+        // Total charger AC power (normal + floor) is bounded by the charger max,
+        // reduced by the same taper so floor+normal together respect acceptance.
         // NOTE: floor flows have no minimum-power constraint (no ev_on binary), so
         // the final partial floor slot may plan a sub-minimum rate. That is a
         // fractional-slot artifact; the actuator clamps the commanded current to
         // evMinChargeCurrent_A (= evMinChargePower_W), so the real charger never
         // runs below its minimum — it just slightly overshoots the floor.
-        lines.push(` c_ev_charger_total_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} + ${gridToEvFloor(t)} + ${toNum(eta_inv)} ${pvToEvFloor(t)} + ${toNum(eta_inv)} ${batteryToEvFloor(t)} <= ${toNum(evMaxPow_W)}`);
+        lines.push(` c_ev_charger_total_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} + ${gridToEvFloor(t)} + ${toNum(eta_inv)} ${pvToEvFloor(t)} + ${toNum(eta_inv)} ${batteryToEvFloor(t)}${evCvTerms(t)} <= ${toNum(evMaxPow_W)}`);
       }
     }
 
@@ -725,6 +769,12 @@ export function buildLP({
     if (evActive) {
       for (let t = 0; t < T; t++) {
         lines.push(` ${evOn(t)}`);
+      }
+    }
+    // EV charge-acceptance taper binaries (only when learned thresholds are present)
+    for (let k = 0; k < evCvK; k++) {
+      for (let t = 0; t < T; t++) {
+        lines.push(` ${evCvBin(k, t)}`);
       }
     }
     lines.push("");

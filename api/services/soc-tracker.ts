@@ -3,6 +3,7 @@ import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { readVictronSocPercent } from './mqtt-service.ts';
 import { loadData } from './data-store.ts';
 import { loadSettings } from './settings-store.ts';
+import { fetchHaEntityState } from './ha-client.ts';
 import { getQuarterStart } from '../../lib/time-series-utils.ts';
 import type { SocSample, TimeSeries } from '../types.ts';
 
@@ -42,8 +43,11 @@ async function saveSocSamples(samples: SocSample[]): Promise<void> {
  */
 export async function sampleAndStoreSoc(): Promise<SocSample | null> {
   let soc_percent: number | null;
+  // Definite assignment: the catch below returns, so execution only continues past
+  // the try/catch when `settings` has been assigned.
+  let settings!: Awaited<ReturnType<typeof loadSettings>>;
   try {
-    const settings = await loadSettings();
+    settings = await loadSettings();
     const options: { timeoutMs: number; batteryInstance?: number } = { timeoutMs: 5000 };
     if (settings.shoreOptimizer?.batteryInstance !== undefined) {
       options.batteryInstance = settings.shoreOptimizer.batteryInstance;
@@ -71,11 +75,34 @@ export async function sampleAndStoreSoc(): Promise<SocSample | null> {
     // Non-critical: proceed without actual load/PV
   }
 
+  // EV SoC + plug state for charge-acceptance calibration (forecast-only). Best
+  // effort: a missing/unavailable sensor just omits the EV fields for this sample.
+  let actualEvSoc_percent: number | undefined;
+  let evPluggedIn: boolean | undefined;
+  if (settings.evSocSensor) {
+    try {
+      const socEntity = await fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evSocSensor });
+      const ev = parseFloat(socEntity.state);
+      if (Number.isFinite(ev)) actualEvSoc_percent = ev;
+      if (settings.evPlugSensor) {
+        const plugEntity = await fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evPlugSensor });
+        evPluggedIn = plugEntity.state !== 'disconnected'
+          && plugEntity.state !== 'unavailable'
+          && plugEntity.state !== 'unknown'
+          && plugEntity.state !== 'off';
+      }
+    } catch (err) {
+      console.warn('[soc-tracker] Failed to read EV state from HA:', (err as Error).message);
+    }
+  }
+
   const sample: SocSample = {
     timestampMs: measuredAtMs,
     soc_percent,
     actualLoad_W,
     actualPv_W,
+    actualEvSoc_percent,
+    evPluggedIn,
   };
 
   try {

@@ -21,7 +21,7 @@ vi.mock('../../../api/services/ha-client.ts', () => ({
   fetchHaEntityState: vi.fn(),
 }));
 
-import { buildSolverConfigFromSettings, applyCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
+import { buildSolverConfigFromSettings, applyCalibration, applyEvCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import { loadData } from '../../../api/services/data-store.ts';
 import { loadCalibration } from '../../../api/services/efficiency-calibrator.ts';
@@ -370,6 +370,96 @@ describe('applyCalibration', () => {
     applyCalibration(baseCfg, cal);
     expect(baseCfg.chargeEfficiency_percent).toBe(original.chargeEfficiency_percent);
     expect(baseCfg.cvPhaseThresholds).toBeUndefined();
+  });
+});
+
+describe('applyEvCalibration', () => {
+  function makeEvCfg() {
+    return {
+      ...buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS),
+      ev: {
+        evMinChargePower_W: 11040,
+        evMaxChargePower_W: 11040,
+        evBatteryCapacity_Wh: 60000,
+        evInitialSoc_percent: 70,
+        evTargetSoc_percent: 95,
+        evDepartureSlot: 16,
+        evChargeEfficiency_percent: 90,
+      },
+    };
+  }
+
+  function makeEvCal(overrides = {}) {
+    return {
+      evChargeCurve: new Array(100).fill(1.0),
+      evChargeSamples: new Array(100).fill(10),
+      effectiveChargeRate: 1.0,
+      sampleCount: 100,
+      confidence: 0.8,
+      lastCalibratedMs: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it('is a no-op when there is no EV in the plan', () => {
+    const cfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS); // no .ev
+    const cal = makeEvCal();
+    for (let i = 80; i < 100; i++) cal.evChargeCurve[i] = 0.3;
+    const result = applyEvCalibration(cfg, cal);
+    expect(result).toBe(cfg); // unchanged reference
+  });
+
+  it('does not modify the config when confidence is below threshold', () => {
+    const cfg = makeEvCfg();
+    const cal = makeEvCal({ confidence: 0.3 });
+    for (let i = 80; i < 100; i++) cal.evChargeCurve[i] = 0.3;
+    const result = applyEvCalibration(cfg, cal);
+    expect(result.ev.evChargeThresholds).toBeUndefined();
+  });
+
+  it('populates ev.evChargeThresholds when the acceptance curve tapers near full', () => {
+    const cfg = makeEvCfg();
+    const cal = makeEvCal();
+    for (let i = 80; i < 100; i++) cal.evChargeCurve[i] = 0.3;
+    const result = applyEvCalibration(cfg, cal);
+    expect(result.ev.evChargeThresholds).toBeDefined();
+    expect(result.ev.evChargeThresholds.length).toBeGreaterThan(0);
+    for (const t of result.ev.evChargeThresholds) {
+      expect(t).toHaveProperty('soc_percent');
+      expect(t).toHaveProperty('maxChargePower_W');
+      expect(t.maxChargePower_W).toBeLessThan(cfg.ev.evMaxChargePower_W);
+    }
+  });
+
+  it('does not set thresholds when acceptance stays high (>= 0.95)', () => {
+    const cfg = makeEvCfg();
+    const result = applyEvCalibration(cfg, makeEvCal());
+    expect(result.ev.evChargeThresholds).toBeUndefined();
+  });
+
+  it('does not mutate the original config.ev', () => {
+    const cfg = makeEvCfg();
+    const cal = makeEvCal();
+    for (let i = 80; i < 100; i++) cal.evChargeCurve[i] = 0.3;
+    applyEvCalibration(cfg, cal);
+    expect(cfg.ev.evChargeThresholds).toBeUndefined();
+  });
+
+  it('forces a monotonic-decreasing taper from a non-monotonic learned curve', () => {
+    const cfg = makeEvCfg();
+    const cal = makeEvCal();
+    // Physically-impossible curve: deep taper mid-pack, SHALLOWER taper near full
+    // (acceptance rising with SoC). Raw thresholds would have power rising with SoC.
+    for (let i = 50; i < 75; i++) cal.evChargeCurve[i] = 0.25;
+    for (let i = 75; i < 100; i++) cal.evChargeCurve[i] = 0.65;
+    const result = applyEvCalibration(cfg, cal);
+    const th = result.ev.evChargeThresholds;
+    expect(th.length).toBeGreaterThanOrEqual(2);
+    // Ascending SoC → power must never increase (running-min projection).
+    for (let i = 1; i < th.length; i++) {
+      expect(th[i].soc_percent).toBeGreaterThan(th[i - 1].soc_percent);
+      expect(th[i].maxChargePower_W).toBeLessThanOrEqual(th[i - 1].maxChargePower_W);
+    }
   });
 });
 

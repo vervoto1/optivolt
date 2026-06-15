@@ -39,6 +39,12 @@ vi.mock('../../../api/services/settings-store.ts', () => ({
   })),
 }));
 
+vi.mock('../../../api/services/ha-client.ts', () => ({
+  fetchHaEntityState: vi.fn(async ({ entityId }) => ({
+    state: entityId.includes('plug') ? 'connected' : '82',
+  })),
+}));
+
 import {
   loadSocSamples,
   findClosestSample,
@@ -92,6 +98,24 @@ describe('soc-tracker', () => {
     const stored = await loadSocSamples();
     expect(stored).toHaveLength(1);
     expect(stored[0].soc_percent).toBe(65);
+  });
+
+  it('omits EV fields when no EV SoC sensor is configured', async () => {
+    const sample = await sampleAndStoreSoc();
+    expect(sample.actualEvSoc_percent).toBeUndefined();
+    expect(sample.evPluggedIn).toBeUndefined();
+  });
+
+  it('records EV SoC + plug state when an EV SoC sensor is configured', async () => {
+    loadSettings.mockResolvedValue({
+      shoreOptimizer: { batteryInstance: 512 },
+      evSocSensor: 'sensor.tesla_battery_level',
+      evPlugSensor: 'binary_sensor.tesla_plug',
+      haUrl: 'http://ha', haToken: 'tok',
+    });
+    const sample = await sampleAndStoreSoc();
+    expect(sample.actualEvSoc_percent).toBe(82);
+    expect(sample.evPluggedIn).toBe(true);
   });
 
   it('stores the actual measurement timestamp instead of flooring to slot start', async () => {

@@ -85,6 +85,8 @@ async function renderSocAccuracy() {
       setEl('adaptive-status-text', 'Collecting data...');
     }
 
+    renderEvChargeCurveStatus(calibrationRes?.evCalibration);
+
     if (!report && !calibration) return;
 
     const emptyEl = document.getElementById('soc-accuracy-empty');
@@ -222,6 +224,21 @@ function renderPercentAccuracyCharts(overlayCanvasId, diffCanvasId, recentData) 
       },
     }),
   });
+}
+
+function renderEvChargeCurveStatus(evCal) {
+  const el = document.getElementById('ev-charge-curve-status');
+  if (!el) return;
+  if (!evCal) {
+    el.textContent = 'Learned taper: collecting EV charge history…';
+    return;
+  }
+  const conf = Math.round((evCal.confidence ?? 0) * 100);
+  const rate = ((evCal.effectiveChargeRate ?? 1) * 100).toFixed(0);
+  const applies = conf >= 50;
+  el.textContent =
+    `Learned taper: ${conf}% confidence, ~${rate}% avg acceptance, ${evCal.sampleCount} samples` +
+    (applies ? ' — applied when enabled.' : ' — needs ≥50% confidence to apply.');
 }
 
 function setEl(id, text) {

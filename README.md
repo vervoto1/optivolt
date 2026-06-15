@@ -17,7 +17,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 - EV charging integration: LP-optimized schedule with departure deadline, target SoC, and per-slot charge mode classification
 - Static, build-free web UI served by the same Express process
 - Persistent settings + time-series data under a configurable data directory
-- EV charging integration: reads EV Smart Charging schedule from Home Assistant, adds EV load as separate demand in the optimizer, optional battery discharge constraint during charging, visible as orange bar in charts
+- Native EV charging: OptiVolt plans (and optionally actuates) EV charging directly in the optimizer from the live SoC/plug state, co-optimised with the home battery and visible as an orange bar in charts. Optionally models the car's **learned charge-acceptance taper** near full SoC (forecast-only) so the plan stops assuming a flat rate to target
 - Auto-calculate timer: built-in periodic calculation (configurable interval), replaces external HA automation triggers
 - HA price sensor support: read electricity prices directly from Home Assistant sensors (e.g., GE Spot), supports hourly and 15-min price intervals
 - Constant Voltage phase tuning: configurable SoC thresholds with reduced charge power limits for realistic battery modeling (planner-side)
@@ -178,12 +178,11 @@ rest_command:
 ```
 
 ### 5. EV Charging
-OptiVolt integrates with the **EV Smart Charging** integration in Home Assistant to account for EV charging demand in the optimizer.
+OptiVolt plans EV charging **natively** in the optimizer (it is the EV charging authority — there is no separate HA scheduler), co-optimised with the home battery so the two never fight for the same cheap hours.
 
-- Configure in **Settings → EV Charging**: enable the feature, set the sensor entities (charging schedule, car connected state), and charger power.
-- When enabled, OptiVolt reads the EV charging schedule from HA and adds EV load as a separate demand signal in the LP, shown as an orange bar in the energy flow charts.
-- **Always apply schedule** toggle: plan for EV demand even when the car is not currently connected.
-- Battery discharge during EV charging can be optionally disabled to avoid double-conversion losses (grid → battery → EV is less efficient than grid → EV directly).
+- Configure in **Settings → EV Charging**: enable the feature, set the SoC/plug sensor entities, charger current/phases, battery capacity, target SoC and "ready by" time. The car is only folded into the home-battery co-optimisation when it is actually plugged in.
+- When `evActuationEnabled` is on, OptiVolt drives the charger directly (switch + charge-current entities); otherwise it plans the EV demand and shows it as an orange bar in the energy-flow charts.
+- **Charge taper (learned, forecast-only):** enable **Model charge taper (learned)** to forecast the car's charge-acceptance taper near full SoC. OptiVolt learns the acceptance curve from the car's own SoC history (the same adaptive-learning pipeline as the home battery) and caps the planned EV charge power per SoC band, so the plan stops assuming a flat rate up to target. It never *commands* a lower current — the car's BMS already tapers physically; this only makes the plan realistic. Requires adaptive learning in **auto** mode and accrues confidence over a few charging sessions before it applies.
 
 ### 5a. EV Charger Control via REST Sensor (Optional)
 
