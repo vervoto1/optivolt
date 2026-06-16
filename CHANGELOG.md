@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.39 - 2026-06-16
+
+- **Optimizer overview now reflects only the real plan — the disconnected-car EV preview is confined to the EV tab.** When the car is unplugged, the backend returns an "if plugged in now" EV preview; it was being overlaid on the overview SoC chart (EV-SoC line + EV target line), which made the overview show a charge that isn't actually planned. The overview now draws an EV-SoC line and EV target/departure markers only when the EV is genuinely in the plan (its SoC is in the solved rows); the preview still drives the EV tab.
+- **EV settings: explain the opportunistic top-up bands in the UI.** Added inline help to "Opportunistic level" and "Opportunistic level 2": top-up charges the car above the target SoC, up to the level, using only the cheapest slots in the plan (surplus solar or the lowest-priced grid hours) — and a note that setting the level equal to the target disables top-up. Band 2 is described as a second, lower-priority tier that only fills after band 1 and only when energy is even cheaper. No behaviour change.
+
 ## 0.7.38 - 2026-06-16
 
 - **EV "ready by" is now a time-of-day + Today/Tomorrow picker instead of a date+time picker.** The deadline used to be an *absolute* datetime, which had no business carrying a date for a daily charging routine and silently went stale: once it elapsed, the charge window collapsed to zero (`departureTimeToSlot` → 0) and EV planning switched off entirely — the forecast showed the car flat at its current SoC with no charge plan until the date was manually bumped, so charging stopped the morning after each deadline. It is now stored as a wall-clock time (`"HH:MM"`, empty = no deadline) plus a `today`/`tomorrow` selector, **resolved relative to "now" on every plan and live decision** (both the planner and the actuator share one resolver), so it can't drift into the past and can't point further out than tomorrow. A legacy stored datetime is migrated down to its time-of-day automatically. The "set to end of plan" quick-set button is gone (leaving the time empty is the equivalent "charge by end of horizon").

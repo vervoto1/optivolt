@@ -83,11 +83,13 @@ export function createOptimizerController({ els, services = {} }) {
       renderScheduleTable();
 
       // When the car is disconnected the real plan has no EV; the backend then
-      // returns evPreview — the schedule as it would be if plugged in now. Use it
-      // for the EV charts/panel (display-only; never applied to Victron). The main
-      // SoC chart keeps real battery data and overlays the preview EV-SoC line.
+      // returns evPreview — the schedule as it would be if plugged in now. It is
+      // display-only (never applied to Victron) and is confined to the EV tab. The
+      // optimizer overview reflects only the real plan, so the overview charts are
+      // NOT given the preview: the overview SoC chart shows an EV-SoC line only when
+      // the car is actually in the plan (its EV SoC lives in `rows`).
       const evPreview = result.evPreview ?? null;
-      renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings, evPreview?.rows ?? null);
+      renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings);
       deps.updateEvPanel(
         els,
         evPreview?.rows ?? rows,
