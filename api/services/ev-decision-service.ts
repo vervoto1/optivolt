@@ -165,6 +165,13 @@ export async function computeEvDecision(
     const planned: EvDecisionMode = row.ev_plan_mode === 'opportunistic'
       ? 'opportunistic'
       : row.ev_plan_mode === 'min_soc' ? 'min_soc' : 'planned';
+    // Switch off the moment the car reaches the target, mid-slot — don't run out the
+    // rest of a 15-min plan slot (a forced-rate charger would overshoot within it).
+    // Only a genuinely opportunistic slot (above target, scheduled when energy is
+    // cheap) may keep charging past the target.
+    if (planned !== 'opportunistic' && liveSoc != null && liveSoc >= targetSoc) {
+      return charge('idle', 0, 0, `Live SoC ${liveSoc}% at/above target ${targetSoc}%`);
+    }
     return charge(planned, row.ev_charge, row.ev_charge_A, 'Following day-ahead plan');
   }
 

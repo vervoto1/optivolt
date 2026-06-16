@@ -141,4 +141,30 @@ describe('computeEvDecision — priority + gating', () => {
     expect(d.plugConnected).toBe(null);
     expect(d.mode).toBe('planned'); // not forced idle by an uncertain plug
   });
+
+  it('stops a planned charge mid-slot once live SoC reaches the target', async () => {
+    // Plan slot still says charge, but the car already hit 80% — switch off rather
+    // than run out the 15-min slot (which a forced-rate charger would overshoot).
+    mockHa({ soc: '80', plug: 'on' });
+    const d = await computeEvDecision(makeSettings(), makePlan({ evCharge: 11040, planMode: 'planned' }), NOW);
+    expect(d.mode).toBe('idle');
+    expect(d.is_charging).toBe(false);
+    expect(d.reason).toMatch(/target/i);
+  });
+
+  it('keeps charging above target on a genuinely opportunistic slot', async () => {
+    // Above the target, but the LP scheduled this slot as opportunistic (cheap
+    // energy) — the target-reached guard must not block it.
+    mockHa({ soc: '82', plug: 'on' });
+    const d = await computeEvDecision(makeSettings(), makePlan({ evCharge: 11040, planMode: 'opportunistic' }), NOW);
+    expect(d.mode).toBe('opportunistic');
+    expect(d.is_charging).toBe(true);
+  });
+
+  it('charges a planned slot normally while live SoC is below target', async () => {
+    mockHa({ soc: '70', plug: 'on' });
+    const d = await computeEvDecision(makeSettings(), makePlan({ evCharge: 11040, planMode: 'planned' }), NOW);
+    expect(d.mode).toBe('planned');
+    expect(d.is_charging).toBe(true);
+  });
 });
