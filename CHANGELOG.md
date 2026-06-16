@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.38 - 2026-06-16
+
+- **Fix: a stale "ready by" deadline no longer silently disables EV planning.** `evDepartureTime` is stored as an *absolute* datetime, so once its deadline elapsed the charge window collapsed to zero (`departureTimeToSlot` → 0) and EV planning was switched off entirely — the forecast showed the car flat at its current SoC with no charge plan until the user manually bumped the date, i.e. daily home charging stopped the morning after each deadline. An elapsed (or unparseable) deadline is now treated as **"no deadline"**: it falls back to charging the car to target by the end of the known horizon, exactly as when no deadline is set. A future deadline still behaves as before. Forecast-only change; no actuation path affected.
+
 ## 0.7.37 - 2026-06-14
 
 - **Feature: learned EV charge-acceptance taper (forecast-only).** The planner modelled native EV charging as a flat power block (a constant `evMaxChargePower_W` cap) all the way to the target SoC. Real cars taper near full — the onboard BMS drops the accepted current well below the charger's rating above ~85–90% — so the plan reached target faster than reality (undershooting) and over-committed grid/battery routing to a draw the car won't accept. OptiVolt now **learns** the acceptance curve from the car's own SoC history and feeds it into the LP, exactly reusing the home-battery CV-taper machinery. It is **forecast-only**: OptiVolt does not command the taper (the car's BMS does that physically), it just stops *assuming* a flat rate.

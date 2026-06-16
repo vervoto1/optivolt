@@ -542,6 +542,45 @@ describe('getSolverInputs — EV state fetching from HA', () => {
     expect(cfg.ev.evDepartureSlot).toBe(8);
   });
 
+  it('falls back to end-of-horizon (keeps EV planning) when the ready-by deadline has elapsed', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      // Absolute deadline an hour BEFORE "now" → departureTimeToSlot returns 0.
+      // Previously this disabled EV planning entirely (cfg.ev undefined). It must
+      // now be treated as "no deadline" — charge to target by end of horizon — so a
+      // stale absolute deadline doesn't silently stop daily charging.
+      evDepartureTime: '2024-01-01T11:00:00Z',
+      evTargetSoc_percent: 80,
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'sensor.ev_soc') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_soc', state: '75',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      return Promise.resolve({
+        entity_id: 'sensor.ev_plug', state: 'connected',
+        attributes: {}, last_changed: '', last_updated: '',
+      });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeDefined();
+    // No deadline → reach target by the last slot we have prices for.
+    expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
+  });
+
   it('marks EV as not plugged when plug sensor returns "disconnected" (line 209)', async () => {
     loadSettings.mockResolvedValue({
       ...makeEvSettings(),
@@ -886,19 +925,24 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     expect(cfg.ev.evChargeEfficiency_percent).toBe(85);
   });
 
-  it('does not add ev when departure is in the past (D=0)', () => {
+  it('falls back to end-of-horizon when the departure is in the past (elapsed deadline keeps EV planning)', () => {
+    // An absolute deadline that has elapsed used to collapse the window to D=0 and
+    // disable EV planning. It must now be treated as "no deadline" so daily charging
+    // doesn't stop the morning after each deadline.
     const pastDeparture = { ...evSettings, evDepartureTime: '2024-01-01T11:00:00Z' };
     const cfg = buildSolverConfigFromSettings(
       pastDeparture, makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
     );
-    expect(cfg.ev).toBeUndefined();
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
   });
 
-  it('does not add ev when departure string is not a valid date', () => {
+  it('falls back to end-of-horizon when the departure string is not a valid date', () => {
     const badDeparture = { ...evSettings, evDepartureTime: '07:30' };
     const cfg = buildSolverConfigFromSettings(
       badDeparture, makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
     );
-    expect(cfg.ev).toBeUndefined();
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
   });
 });
