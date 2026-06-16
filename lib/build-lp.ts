@@ -640,6 +640,12 @@ export function buildLP({
         } else {
           lines.push(` c_ev_tgt_${t}: ${toNum(evTgtThresholdWh)} ${evTgtBin(t)} - ${evSocVar(t - 1)} <= 0`);
         }
+        // A relaxed slot must COMPLETE the charge to the target within that one slot
+        // (end-of-slot SoC >= target). This forces a single partial top-off slot —
+        // full forced rate until then — instead of dribbling a sub-rate charge across
+        // several slots, which would misrepresent what the charger actually does
+        // (16 A, then cut off). M = evTargetWh, so it's vacuous when ev_tgt_t = 0.
+        lines.push(` c_ev_tgt_reach_${t}: ${evSocVar(t)} - ${toNum(evTargetWh)} ${evTgtBin(t)} >= 0`);
       }
       if (evFloorActive) {
         // Total charger AC power (normal + floor) is bounded by the charger max,
