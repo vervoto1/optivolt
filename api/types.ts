@@ -64,7 +64,10 @@ export interface Settings {
   evBatteryCapacity_kWh: number;
   evSocSensor: string;
   evPlugSensor: string;
+  /** "Ready by" deadline as a wall-clock time-of-day ("HH:MM"); "" = no deadline. */
   evDepartureTime: string;
+  /** Which day the "ready by" time falls on, resolved relative to now. */
+  evDepartureDay?: 'today' | 'tomorrow';
   evTargetSoc_percent: number;
   evChargeEfficiency_percent: number;
 

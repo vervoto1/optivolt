@@ -3,6 +3,7 @@ import type { PlanRow } from '../../lib/types.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
+import { resolveDepartureMs } from './ev-departure.ts';
 
 /**
  * Effective live EV mode. Reactive overrides (low_soc/low_price/min_soc/keep_on)
@@ -85,7 +86,11 @@ export async function computeEvDecision(
   const maxW = maxA * wattsPerAmp;
   const minW = minA * wattsPerAmp;
   const targetSoc = settings.evTargetSoc_percent;
-  const readyBy = settings.evDepartureTime || null;
+  // Resolve the wall-clock "ready by" time-of-day + today/tomorrow selector to an
+  // absolute instant relative to now (null when unset). Surfaced as ISO metadata
+  // and used by the keep-on window check below.
+  const departureMs = resolveDepartureMs(settings.evDepartureTime, settings.evDepartureDay, nowMs);
+  const readyBy = departureMs != null ? new Date(departureMs).toISOString() : null;
   const isNative = resolveEvMode(settings) === 'native';
 
   const row = lastPlan ? currentRow(lastPlan.rows, nowMs) : null;
@@ -167,7 +172,7 @@ export async function computeEvDecision(
   // window, rather than pausing between cheap slots, until ready time / target.
   if (isNative && settings.evKeepOn && row && lastPlan) {
     const firstCharge = lastPlan.rows.find(r => r.ev_charge > 0);
-    const depMs = readyBy ? new Date(readyBy).getTime() : NaN;
+    const depMs = departureMs ?? NaN;
     const started = firstCharge != null && nowMs >= firstCharge.timestampMs;
     const beforeReady = Number.isFinite(depMs) ? nowMs < depMs : true;
     const notDone = targetMet !== true && (liveSoc == null || liveSoc < targetSoc);

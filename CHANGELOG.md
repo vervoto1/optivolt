@@ -2,7 +2,9 @@
 
 ## 0.7.38 - 2026-06-16
 
-- **Fix: a stale "ready by" deadline no longer silently disables EV planning.** `evDepartureTime` is stored as an *absolute* datetime, so once its deadline elapsed the charge window collapsed to zero (`departureTimeToSlot` → 0) and EV planning was switched off entirely — the forecast showed the car flat at its current SoC with no charge plan until the user manually bumped the date, i.e. daily home charging stopped the morning after each deadline. An elapsed (or unparseable) deadline is now treated as **"no deadline"**: it falls back to charging the car to target by the end of the known horizon, exactly as when no deadline is set. A future deadline still behaves as before. Forecast-only change; no actuation path affected.
+- **EV "ready by" is now a time-of-day + Today/Tomorrow picker instead of a date+time picker.** The deadline used to be an *absolute* datetime, which had no business carrying a date for a daily charging routine and silently went stale: once it elapsed, the charge window collapsed to zero (`departureTimeToSlot` → 0) and EV planning switched off entirely — the forecast showed the car flat at its current SoC with no charge plan until the date was manually bumped, so charging stopped the morning after each deadline. It is now stored as a wall-clock time (`"HH:MM"`, empty = no deadline) plus a `today`/`tomorrow` selector, **resolved relative to "now" on every plan and live decision** (both the planner and the actuator share one resolver), so it can't drift into the past and can't point further out than tomorrow. A legacy stored datetime is migrated down to its time-of-day automatically. The "set to end of plan" quick-set button is gone (leaving the time empty is the equivalent "charge by end of horizon").
+  - As a safety net, should a deadline still resolve to an elapsed instant (e.g. a `today` time already gone, or a legacy value), planning falls back to **"no deadline → charge to target by end of horizon"** rather than disabling EV charging.
+  - Forecast/scheduling change only; the EV actuation path is unchanged beyond reading the resolved deadline.
 
 ## 0.7.37 - 2026-06-14
 

@@ -1,6 +1,7 @@
 import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./charts.js";
 import { formatKWh, updateStackedBarContainer } from "./state.js";
 import { fetchEvStatus } from "./api/api.js";
+import { resolveDepartureMs } from "./utils.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
@@ -75,7 +76,7 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = nul
 
   const evSettings = {
     targetSoc_percent: parseFloat(els.evTargetSoc?.value) || null,
-    departureTime: els.evDepartureTime?.value || null,
+    departureTime: resolveDepartureMs(els.evDepartureTime?.value, els.evDepartureDay?.value),
   };
 
   const h = Math.max(0.000001, stepSize_m / 60);

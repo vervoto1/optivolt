@@ -1,18 +1,9 @@
 import { fetchHaEntityState } from "./api/api.js";
-import { toDatetimeLocal } from "./utils.js";
 
 const SENSOR_IND_BASE = "mt-1 block text-xs";
 const SENSOR_IND_NEUTRAL = `${SENSOR_IND_BASE} text-slate-500 dark:text-slate-400`;
 const SENSOR_IND_SUCCESS = `${SENSOR_IND_BASE} text-emerald-600 dark:text-emerald-400`;
 const SENSOR_IND_ERROR = `${SENSOR_IND_BASE} text-red-600 dark:text-red-400`;
-
-export function initDepartureDatetimeMin(els) {
-  const input = els.evDepartureTime;
-  if (!input) return;
-  // Round down to the last 15-min block
-  const blockMs = Math.floor(Date.now() / (15 * 60 * 1000)) * (15 * 60 * 1000);
-  input.min = toDatetimeLocal(new Date(blockMs));
-}
 
 // Every HA entity input that shows a live "Current value:" readout below it.
 // `afterUpdate` runs side effects tied to a specific reading (e.g. the EV SoC
@@ -40,26 +31,6 @@ export async function refreshEvSensorStates(els) {
     }
   }));
   updateEvSocQuickSet(els);
-}
-
-export function updateEvDepartureQuickSet(els, rows) {
-  const btn = els.evDepartureQuickSet;
-  if (!btn) return;
-  const lastRow = rows[rows.length - 1];
-  if (!lastRow) {
-    btn.disabled = true;
-    btn.title = "Run a plan first";
-    btn.onclick = null;
-    return;
-  }
-  const d = new Date(lastRow.timestampMs);
-  const dtLocal = toDatetimeLocal(d);
-  btn.disabled = false;
-  btn.title = `Set to end of current plan (${d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })})`;
-  btn.onclick = () => {
-    els.evDepartureTime.value = dtLocal;
-    els.evDepartureTime.dispatchEvent(new Event('input', { bubbles: true }));
-  };
 }
 
 function updateEvSocQuickSet(els) {

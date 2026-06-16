@@ -7,9 +7,7 @@ vi.mock('../../app/src/api/api.js', () => ({
 
 import { fetchHaEntityState } from '../../app/src/api/api.js';
 import {
-  initDepartureDatetimeMin,
   refreshEvSensorStates,
-  updateEvDepartureQuickSet,
   wireEvSensorInputs,
 } from '../../app/src/ev-settings.js';
 
@@ -56,27 +54,6 @@ describe('EV settings wiring', () => {
   afterEach(() => {
     vi.useRealTimers();
     document.body.innerHTML = '';
-  });
-
-  it('sets the departure minimum to the current 15-minute block', () => {
-    const els = setupEls();
-
-    initDepartureDatetimeMin(els);
-
-    expect(els.evDepartureTime.min).toBe('2099-01-01T10:00');
-  });
-
-  it('quick-sets departure to the end of the current plan', () => {
-    const els = setupEls();
-    const onInput = vi.fn();
-    els.evDepartureTime.addEventListener('input', onInput);
-
-    updateEvDepartureQuickSet(els, [{ timestampMs: new Date(2099, 0, 1, 12, 30).getTime() }]);
-    els.evDepartureQuickSet.click();
-
-    expect(els.evDepartureQuickSet.disabled).toBe(false);
-    expect(els.evDepartureTime.value).toBe('2099-01-01T12:30');
-    expect(onInput).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes HA sensor values and enables target SoC quick-set', async () => {

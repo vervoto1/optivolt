@@ -62,7 +62,6 @@ function setupController() {
     }),
     saveConfig: vi.fn().mockResolvedValue(undefined),
     snapshotUI: vi.fn(() => ({ tableShowKwh: els.tableKwh.checked })),
-    updateEvDepartureQuickSet: vi.fn(),
     updateEvPanel: vi.fn(),
     updatePlanMeta: vi.fn(),
     updateRebalanceNudgeUI: vi.fn(),
@@ -111,7 +110,8 @@ describe('optimizer controller', () => {
     expect(tableArgs.showDess).toBe(false);
     expect(tableArgs.rebalanceWindow).toBe(rebalanceWindow);
     expect(tableArgs.evSettings).toEqual({
-      departureTime: '2026-05-01T18:30',
+      // Legacy absolute datetime resolves to its own instant (ms).
+      departureTime: new Date('2026-05-01T18:30').getTime(),
       targetSoc_percent: 80,
     });
 
@@ -127,7 +127,6 @@ describe('optimizer controller', () => {
     expect(services.drawPricesStepLines).toHaveBeenCalledWith(els.prices, rows, 30);
     expect(services.drawLoadPvGrouped).toHaveBeenCalledWith(els.loadpv, rows, 30);
     expect(services.updateEvPanel).toHaveBeenCalledWith(els, rows, summary, 30, null);
-    expect(services.updateEvDepartureQuickSet).toHaveBeenCalledWith(els, rows);
     expect(els.status.textContent).toBe('Plan updated');
     expect(els.run.disabled).toBe(false);
     expect(els.run.classList.contains('loading')).toBe(false);
@@ -149,7 +148,6 @@ describe('optimizer controller', () => {
     expect(services.drawSocChart).toHaveBeenCalledWith(els.soc, rows, 30, expect.anything(), previewRows);
     // EV panel renders the preview schedule + summary and receives the preview object.
     expect(services.updateEvPanel).toHaveBeenCalledWith(els, previewRows, previewSummary, 30, evPreview);
-    expect(services.updateEvDepartureQuickSet).toHaveBeenCalledWith(els, previewRows);
   });
 
   it('re-renders cached table rows when table display toggles change', async () => {

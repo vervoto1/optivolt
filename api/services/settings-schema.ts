@@ -118,6 +118,29 @@ function normalizeSocPercent(value: number): number {
   return Math.round(Math.max(0, Math.min(100, value)));
 }
 
+/**
+ * Normalize the "ready by" deadline to a wall-clock time-of-day (`"HH:MM"`) or
+ * `""` (unset). A legacy absolute datetime (pre-0.7.38) is migrated down to its
+ * local time-of-day so an old stored deadline keeps working under the new
+ * time-of-day + today/tomorrow model. Invalid input → `""`.
+ */
+function normalizeDepartureTime(value: unknown): string {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  const hm = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (hm) {
+    const h = Number(hm[1]);
+    const min = Number(hm[2]);
+    if (h > 23 || min > 59) return '';
+    return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+  }
+  const d = new Date(s);
+  if (Number.isFinite(d.getTime())) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  return '';
+}
+
 function normalizeThresholds(thresholds: unknown): CvPhaseConfig['thresholds'] {
   if (!Array.isArray(thresholds)) {
     throw new HttpError(400, 'cvPhase.thresholds must be an array');
@@ -235,7 +258,8 @@ export function normalizeSettings(settings: Settings): Settings {
   );
   normalized.evSocSensor = String(normalized.evSocSensor ?? '').trim();
   normalized.evPlugSensor = String(normalized.evPlugSensor ?? '').trim();
-  normalized.evDepartureTime = String(normalized.evDepartureTime ?? '');
+  normalized.evDepartureTime = normalizeDepartureTime(normalized.evDepartureTime);
+  normalized.evDepartureDay = normalized.evDepartureDay === 'today' ? 'today' : 'tomorrow';
 
   normalizeEvNativeSettings(normalized);
 

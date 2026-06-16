@@ -7,17 +7,17 @@ import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
+import { resolveDepartureMs } from './ev-departure.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 function departureTimeToSlot(
-  departureTime: string,
+  departureMs: number,
   startMs: number,
   stepSize_m: number,
   T: number,
 ): number {
-  const departureMs = new Date(departureTime).getTime();
   if (!Number.isFinite(departureMs)) return 0;
 
   const slotsAvailable = Math.floor((departureMs - startMs) / (stepSize_m * 60_000));
@@ -150,14 +150,15 @@ export function buildSolverConfigFromSettings(
     // charging in the cheapest hours along the way. (Only reached when the EV is
     // connected, so the home-battery co-optimisation still ignores an absent EV.)
     //
-    // The stored deadline is an *absolute* datetime; once it elapses (or is
-    // unparseable) departureTimeToSlot returns 0. Falling through with D===0 would
-    // silently disable EV planning until the user manually bumps the date — so daily
-    // home charging stops the morning after each deadline. Treat an elapsed/invalid
-    // deadline as "no deadline" instead: fall back to the end of the horizon so the
-    // car keeps getting a charge-to-target plan.
-    const depSlot = settings.evDepartureTime?.trim()
-      ? departureTimeToSlot(settings.evDepartureTime, nowMs, settings.stepSize_m, T)
+    // The deadline is a wall-clock time-of-day + today/tomorrow selector resolved
+    // relative to now, so it can't drift into the past. Should it still resolve to
+    // an elapsed instant (e.g. "today" at a time already gone, or a legacy absolute
+    // datetime) departureTimeToSlot returns 0; rather than silently disabling EV
+    // planning until the user re-picks, treat that as "no deadline" and fall back to
+    // the end of the horizon so the car keeps getting a charge-to-target plan.
+    const departureMs = resolveDepartureMs(settings.evDepartureTime, settings.evDepartureDay, nowMs);
+    const depSlot = departureMs != null
+      ? departureTimeToSlot(departureMs, nowMs, settings.stepSize_m, T)
       : T;
     const D = depSlot > 0 ? depSlot : T;
     // Earliest-start window: slot index at/after which charging is allowed.

@@ -937,12 +937,26 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
   });
 
-  it('falls back to end-of-horizon when the departure string is not a valid date', () => {
-    const badDeparture = { ...evSettings, evDepartureTime: '07:30' };
+  it('falls back to end-of-horizon when the departure string is unparseable', () => {
+    const badDeparture = { ...evSettings, evDepartureTime: 'not-a-time' };
     const cfg = buildSolverConfigFromSettings(
       badDeparture, makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
     );
     expect(cfg.ev).toBeDefined();
     expect(cfg.ev.evDepartureSlot).toBe(cfg.load_W.length);
+  });
+
+  it('resolves a wall-clock time-of-day + today selector to the right slot', () => {
+    // Derive a local time exactly 1 h ahead of NOW_MS so the assertion is
+    // timezone-independent (the resolver and the expectation share the clock).
+    const t = new Date(NOW_MS);
+    t.setHours(t.getHours() + 1, t.getMinutes(), 0, 0);
+    const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evDepartureTime: hhmm, evDepartureDay: 'today' },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evDepartureSlot).toBe(4); // 1 h / 15 min
   });
 });
