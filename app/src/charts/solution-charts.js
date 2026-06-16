@@ -222,7 +222,10 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, 
     });
   }
 
-  const evTargetPlugin = evSettings
+  // Only annotate the EV target/departure on the overview when the EV is actually
+  // in the plan (real-plan EV SoC present). A disconnected-car preview is confined
+  // to the EV tab, so the overview shows neither the preview SoC line nor its target.
+  const evTargetPlugin = (evSettings && hasEvSoc)
     ? makeEvTargetPlugin(rows, evSettings.departureTime, evSettings.targetSoc_percent)
     : null;
 

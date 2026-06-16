@@ -1929,6 +1929,7 @@
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Opportunistic level (%)</span>
                 <input id="ev-opportunistic-level" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+                <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">Charges the car <strong>above</strong> the target SoC, up to this level, using only the cheapest slots in the plan (surplus solar, or the lowest-priced grid hours) — it never tops up during expensive hours, but it <em>can</em> use cheap grid, not just free solar. Set this equal to the target to never charge past it.</span>
               </label>
               <label class="toggle">
                 <input id="ev-opportunistic-type2-enabled" type="checkbox" data-settings-input>
@@ -1938,6 +1939,7 @@
               <label class="block text-sm">
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Opportunistic level 2 (%)</span>
                 <input id="ev-opportunistic-type2-level" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+                <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">An optional second tier, from the level above up to this one. It is rewarded slightly less, so it fills only after the first band and only when energy is even cheaper — the car reaches the very top (e.g. 100%) only on the cheapest days.</span>
               </label>
 
               <!-- Reactive overrides -->
