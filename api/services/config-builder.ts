@@ -7,17 +7,17 @@ import { recordFullSocObservation } from './rebalance-nudge.ts';
 import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
+import { resolveDepartureMs } from './ev-departure.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 function departureTimeToSlot(
-  departureTime: string,
+  departureMs: number,
   startMs: number,
   stepSize_m: number,
   T: number,
 ): number {
-  const departureMs = new Date(departureTime).getTime();
   if (!Number.isFinite(departureMs)) return 0;
 
   const slotsAvailable = Math.floor((departureMs - startMs) / (stepSize_m * 60_000));
@@ -149,16 +149,26 @@ export function buildSolverConfigFromSettings(
     // the known horizon — i.e. reach target by the last slot we have prices for,
     // charging in the cheapest hours along the way. (Only reached when the EV is
     // connected, so the home-battery co-optimisation still ignores an absent EV.)
-    const D = settings.evDepartureTime?.trim()
-      ? departureTimeToSlot(settings.evDepartureTime, nowMs, settings.stepSize_m, T)
+    //
+    // The deadline is a wall-clock time-of-day + today/tomorrow selector resolved
+    // relative to now, so it can't drift into the past. Should it still resolve to
+    // an elapsed instant (e.g. "today" at a time already gone, or a legacy absolute
+    // datetime) departureTimeToSlot returns 0; rather than silently disabling EV
+    // planning until the user re-picks, treat that as "no deadline" and fall back to
+    // the end of the horizon so the car keeps getting a charge-to-target plan.
+    const departureMs = resolveDepartureMs(settings.evDepartureTime, settings.evDepartureDay, nowMs);
+    const depSlot = departureMs != null
+      ? departureTimeToSlot(departureMs, nowMs, settings.stepSize_m, T)
       : T;
+    const D = depSlot > 0 ? depSlot : T;
     // Earliest-start window: slot index at/after which charging is allowed.
     const startSlot = startTimeToSlot(settings.evStartTime, nowMs, settings.stepSize_m);
 
-    // Guard the window: require startSlot < depSlot. An empty window (start at or
-    // past departure, or departure already elapsed → D===0) would otherwise emit
-    // masks that zero every slot and, combined with the cardinality bound, make
-    // the model infeasible. Disable EV planning for this solve instead.
+    // Guard the window: require startSlot < D. D is now always > 0 (an elapsed
+    // deadline falls back to the horizon above), so the only empty window left is an
+    // earliest-start time at/past the deadline/horizon, which would emit masks that
+    // zero every slot and, combined with the cardinality bound, make the model
+    // infeasible. Disable EV planning for this solve in that case.
     if (D > 0 && startSlot < D) {
       // Capacity-only clamp. The OLD achievable-charge clamp lowered the target
       // before the LP saw it, so the (now soft) target read as "met" while the

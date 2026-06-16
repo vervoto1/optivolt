@@ -140,15 +140,20 @@ describe('ev-tab.js', () => {
   });
 
   describe('updateEvPanel -- EV settings', () => {
-    it('reads targetSoc and departureTime from DOM inputs', () => {
+    it('reads targetSoc and resolves the departure deadline to an instant', () => {
       const els = makeEls();
       els.evTargetSoc = { value: '80' };
+      // Legacy absolute datetime resolves to its own instant (day selector ignored).
       els.evDepartureTime = { value: '2024-01-15T08:00:00Z' };
+      els.evDepartureDay = { value: 'tomorrow' };
       updateEvPanel(els, [], {});
       expect(drawEvSocChartTab).toHaveBeenCalledWith(
         els.evSocChartTab,
         [],
-        expect.objectContaining({ targetSoc_percent: 80, departureTime: '2024-01-15T08:00:00Z' })
+        expect.objectContaining({
+          targetSoc_percent: 80,
+          departureTime: new Date('2024-01-15T08:00:00Z').getTime(),
+        })
       );
     });
 

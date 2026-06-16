@@ -4,7 +4,6 @@ import { initPredictionsTab } from "./src/predictions.js";
 import { initEssTab, deactivateEssTab } from "./src/ess-tab.js";
 import { initBatterySettings, deactivateBatterySettings } from "./src/battery-settings.js";
 import {
-  initDepartureDatetimeMin,
   refreshEvSensorStates,
   wireEvSensorInputs,
 } from "./src/ev-settings.js";
@@ -155,7 +154,6 @@ async function boot() {
     persistConfigDebounced: optimizer.persistConfigDebounced,
     debounceRun: optimizer.debounceRun,
   });
-  initDepartureDatetimeMin(els);
 
   if (els.status) {
     els.status.textContent =

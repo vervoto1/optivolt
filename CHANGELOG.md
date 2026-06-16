@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.38 - 2026-06-16
+
+- **EV "ready by" is now a time-of-day + Today/Tomorrow picker instead of a date+time picker.** The deadline used to be an *absolute* datetime, which had no business carrying a date for a daily charging routine and silently went stale: once it elapsed, the charge window collapsed to zero (`departureTimeToSlot` → 0) and EV planning switched off entirely — the forecast showed the car flat at its current SoC with no charge plan until the date was manually bumped, so charging stopped the morning after each deadline. It is now stored as a wall-clock time (`"HH:MM"`, empty = no deadline) plus a `today`/`tomorrow` selector, **resolved relative to "now" on every plan and live decision** (both the planner and the actuator share one resolver), so it can't drift into the past and can't point further out than tomorrow. A legacy stored datetime is migrated down to its time-of-day automatically. The "set to end of plan" quick-set button is gone (leaving the time empty is the equivalent "charge by end of horizon").
+  - As a safety net, should a deadline still resolve to an elapsed instant (e.g. a `today` time already gone, or a legacy value), planning falls back to **"no deadline → charge to target by end of horizon"** rather than disabling EV charging.
+  - Forecast/scheduling change only; the EV actuation path is unchanged beyond reading the resolved deadline.
+
 ## 0.7.37 - 2026-06-14
 
 - **Feature: learned EV charge-acceptance taper (forecast-only).** The planner modelled native EV charging as a flat power block (a constant `evMaxChargePower_W` cap) all the way to the target SoC. Real cars taper near full — the onboard BMS drops the accepted current well below the charger's rating above ~85–90% — so the plan reached target faster than reality (undershooting) and over-committed grid/battery routing to a draw the car won't accept. OptiVolt now **learns** the acceptance curve from the car's own SoC history and feeds it into the LP, exactly reusing the home-battery CV-taper machinery. It is **forecast-only**: OptiVolt does not command the taper (the car's BMS does that physically), it just stops *assuming* a flat rate.

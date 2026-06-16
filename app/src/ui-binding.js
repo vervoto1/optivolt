@@ -176,7 +176,7 @@ export function getElements() {
     evBatteryCapacity: $("#ev-battery-capacity"),
     evChargeEfficiency: $("#ev-charge-efficiency"),
     evDepartureTime: $("#ev-departure-time"),
-    evDepartureQuickSet: $("#ev-departure-quick-set"),
+    evDepartureDay: $("#ev-departure-day"),
     evTargetSoc: $("#ev-target-soc"),
     evTargetSocQuickSet: $("#ev-target-soc-quick-set"),
     evSocSensor: $("#ev-soc-sensor"),

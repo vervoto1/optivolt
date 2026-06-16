@@ -185,6 +185,7 @@
   "evSocSensor": "",
   "evPlugSensor": "",
   "evDepartureTime": "",
+  "evDepartureDay": "tomorrow",
   "evTargetSoc_percent": 80,
   "evChargeEfficiency_percent": 90,
   "evStartTime": "",

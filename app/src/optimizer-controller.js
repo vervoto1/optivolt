@@ -5,11 +5,10 @@ import {
   drawLoadPvGrouped,
 } from "./charts.js";
 import { renderTable } from "./table.js";
-import { debounce } from "./utils.js";
+import { debounce, resolveDepartureMs } from "./utils.js";
 import { saveConfig } from "./config-store.js";
 import { requestRemoteSolve } from "./api/api.js";
 import { updateEvPanel } from "./ev-tab.js";
-import { updateEvDepartureQuickSet } from "./ev-settings.js";
 import {
   snapshotUI,
   updatePlanMeta,
@@ -28,7 +27,6 @@ export function createOptimizerController({ els, services = {} }) {
     requestRemoteSolve,
     saveConfig,
     snapshotUI,
-    updateEvDepartureQuickSet,
     updateEvPanel,
     updatePlanMeta,
     updateRebalanceNudgeUI,
@@ -97,7 +95,6 @@ export function createOptimizerController({ els, services = {} }) {
         cfgForViz.stepSize_m,
         evPreview,
       );
-      deps.updateEvDepartureQuickSet(els, evPreview?.rows ?? rows);
     } catch (err) {
       console.error(err);
       if (els.status) {
@@ -203,7 +200,7 @@ export function createOptimizerController({ els, services = {} }) {
 
   function getEvSettings() {
     return els.evEnabled?.checked ? {
-      departureTime: els.evDepartureTime?.value || null,
+      departureTime: resolveDepartureMs(els.evDepartureTime?.value, els.evDepartureDay?.value),
       targetSoc_percent: parseFloat(els.evTargetSoc?.value) || null,
     } : null;
   }
