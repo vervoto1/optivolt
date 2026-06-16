@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.40 - 2026-06-16
+
+- **EV charging now lands on the target SoC instead of overshooting a full slot.** A forced-rate charger (`evMinChargeCurrent_A == evMaxChargeCurrent_A`, e.g. a 16 A-only Tesla) can only move SoC in whole 15-minute slot chunks, so meeting the soft target floor forced a full slot that stepped *past* the target — e.g. planning the car to 82–83% for an 80% target (and over-committing grid energy to that overshoot). Two fixes:
+  - **Planner:** the single slot that crosses the target may now charge *partially* (a `ev_tgt_t` relaxation of the forced-rate minimum, gated to within one slot of the target), so the plan lands on the target. Skipped when the learned acceptance taper is active, which already relaxes the minimum near full. No effect below the target — earlier slots still charge at the full forced rate.
+  - **Actuator:** the live EV controller now switches the charger off the moment live SoC reaches the target, mid-slot, rather than running out the rest of the plan slot. A genuinely opportunistic slot (above target, scheduled only when energy is cheap) is exempt.
+
 ## 0.7.39 - 2026-06-16
 
 - **Optimizer overview now reflects only the real plan — the disconnected-car EV preview is confined to the EV tab.** When the car is unplugged, the backend returns an "if plugged in now" EV preview; it was being overlaid on the overview SoC chart (EV-SoC line + EV target line), which made the overview show a charge that isn't actually planned. The overview now draws an EV-SoC line and EV target/departure markers only when the EV is genuinely in the plan (its SoC is in the solved rows); the preview still drives the EV tab.

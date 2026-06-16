@@ -219,6 +219,10 @@ export function buildLP({
   const evTrans          = (t: number) => `ev_trans_${t}`;
   // EV charge-acceptance taper binary: 1 iff start-of-slot EV SoC >= threshold k.
   const evCvBin          = (k: number, t: number) => `ev_cv_${k}_${t}`;
+  // EV target-landing relaxation binary: may be 1 only when start-of-slot EV SoC is
+  // within one full slot of the target, letting that crossing slot charge partially
+  // so the plan lands ON the target instead of overshooting it (forced-rate chargers).
+  const evTgtBin         = (t: number) => `ev_tgt_${t}`;
 
   // EV derived constants (only used when ev is defined)
   const evActive        = ev != null;
@@ -271,6 +275,28 @@ export function buildLP({
   const evOppActive  = evHasDepConstraint && evOppCapWh  > evTargetWh + 1e-6;
   const evOppActive2 = evOppActive && evOppCap2Wh > evOppCapWh + 1e-6;
   const evContinuous = !!ev?.evContinuous && evActive;
+
+  // Target-landing relaxation. A forced-rate charger (evMin == evMax) can only move
+  // SoC in whole-slot chunks, so meeting the soft target floor forces a full slot
+  // that OVERSHOOTS the target. Let the single slot that crosses the target charge
+  // partially by relaxing its minimum-power floor (ev_tgt_t), so the plan lands on
+  // the target rather than stepping past it. ev_tgt_t may be 1 only when start-of-slot
+  // SoC is within one full slot of the target (constraint below). Cost minimisation
+  // then lands exactly on the target — no overshoot, no spurious above-target SoC.
+  const evOneSlotMaxChargeWh = evMaxPow_W * evChargeWhPerW;
+  const evTgtRelaxActive = evActive && evHasDepConstraint
+    && evMinPow_W > 1e-6
+    && evTargetWh > evInitialWh + 1e-6
+    && evTargetWh < evCapacityWh - 1e-6
+    && evOneSlotMaxChargeWh > 1e-6
+    // Skip when the learned acceptance taper is active: it already relaxes the min
+    // near full, and double-relaxing lets the solve land a slot-start exactly on a
+    // taper SoC threshold (where the taper binary isn't strictly forced). The taper
+    // is off by default, so production charging still gets target-landing.
+    && evCvK === 0;
+  const evTgtThresholdWh = Math.max(0, evTargetWh - evOneSlotMaxChargeWh);
+  const evTgtTerm = (t: number) =>
+    evTgtRelaxActive ? ` + ${toNum(evMinPow_W)} ${evTgtBin(t)}` : '';
 
   // A slot is masked (normal EV charge forced to 0) when it is before the
   // earliest-start window, at/after the departure slot, or — under a price
@@ -584,7 +610,7 @@ export function buildLP({
       // term is additive on a >= constraint, so when ev_on=0 (flow pinned to 0) it
       // only loosens the bound — never infeasible. When charging near full it lets
       // a forced-rate charger draw below its nominal minimum as the BMS tapers.
-      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)}${evCvTerms(t)} >= 0`);
+      lines.push(` c_ev_min_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMinPow_W)} ${evOn(t)}${evCvTerms(t)}${evTgtTerm(t)} >= 0`);
       lines.push(` c_ev_max_${t}: ${gridToEv(t)} + ${toNum(eta_inv)} ${pvToEv(t)} + ${toNum(eta_inv)} ${batteryToEv(t)} - ${toNum(evMaxPow_W)} ${evOn(t)} <= 0`);
       if (evCvK > 0) {
         // Constant-RHS max cap carrying the taper. Unlike c_ev_max (gated by
@@ -602,6 +628,17 @@ export function buildLP({
             lines.push(` c_ev_cv_${k}_${t}: ${evSocVar(t - 1)} - ${toNum(tightM)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k])}`);
             lines.push(` c_ev_cv_rev_${k}_${t}: ${toNum(evCvThresholdWh[k])} ${evCvBin(k, t)} - ${evSocVar(t - 1)} <= 0`);
           }
+        }
+      }
+      if (evTgtRelaxActive) {
+        // Allow the target-landing relaxation (ev_tgt_t = 1) only when start-of-slot
+        // EV SoC is at/above the threshold (within one full slot of the target).
+        // One-directional: the LP raises ev_tgt_t to relax the min when it wants a
+        // partial top-off slot; it can't raise it early to dodge the forced rate.
+        if (t === 0) {
+          lines.push(` c_ev_tgt_${t}: ${toNum(evTgtThresholdWh)} ${evTgtBin(t)} <= ${toNum(evInitialWh)}`);
+        } else {
+          lines.push(` c_ev_tgt_${t}: ${toNum(evTgtThresholdWh)} ${evTgtBin(t)} - ${evSocVar(t - 1)} <= 0`);
         }
       }
       if (evFloorActive) {
@@ -775,6 +812,12 @@ export function buildLP({
     for (let k = 0; k < evCvK; k++) {
       for (let t = 0; t < T; t++) {
         lines.push(` ${evCvBin(k, t)}`);
+      }
+    }
+    // EV target-landing relaxation binaries
+    if (evTgtRelaxActive) {
+      for (let t = 0; t < T; t++) {
+        lines.push(` ${evTgtBin(t)}`);
       }
     }
     lines.push("");
