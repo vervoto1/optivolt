@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.41 - 2026-06-16
+
+- **EV target top-off is now a single partial slot, not a sub-rate dribble.** The 0.7.40 target-landing fix could land on the target by smearing a low-rate charge across several slots near the top (e.g. 1.3 kW, 1.3, 2.3, 1.7) — which misrepresents what the charger does (it runs at the forced rate, then cuts off). A relaxed slot must now *complete* the charge to the target within that one slot (`c_ev_tgt_reach`), so the plan shows full forced-rate slots followed by a single partial top-off slot (the slot-average of "16 A, then cut off at the target"), then idle.
+
 ## 0.7.40 - 2026-06-16
 
 - **EV charging now lands on the target SoC instead of overshooting a full slot.** A forced-rate charger (`evMinChargeCurrent_A == evMaxChargeCurrent_A`, e.g. a 16 A-only Tesla) can only move SoC in whole 15-minute slot chunks, so meeting the soft target floor forced a full slot that stepped *past* the target — e.g. planning the car to 82–83% for an 80% target (and over-committing grid energy to that overshoot). Two fixes:

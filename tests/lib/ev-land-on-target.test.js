@@ -71,6 +71,21 @@ describe('EV target-landing (forced-rate charger)', () => {
     expect(finalSoc).toBeLessThanOrEqual(80.6);
   });
 
+  it('lands via full-rate slots + a SINGLE partial top-off (no sub-rate dribble)', () => {
+    const cfg = { ...base, ev: { ...evForced } };
+    const result = highs.solve(buildLP(cfg), GAPS);
+    const rows = parseSolution(result, cfg, OPTS);
+
+    const FULL = evForced.evMaxChargePower_W;
+    // Classify each charging slot: full (≈ forced rate), partial, or off.
+    const partial = rows.filter(r => r.ev_charge > 50 && r.ev_charge < FULL - 50);
+    const full = rows.filter(r => r.ev_charge >= FULL - 50);
+    // The charger runs at its forced rate, then takes at most ONE partial slot to
+    // top off onto the target — never a trickle smeared across several slots.
+    expect(partial.length).toBeLessThanOrEqual(1);
+    expect(full.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still charges at the full forced rate well below the target', () => {
     const cfg = { ...base, ev: { ...evForced } };
     const result = highs.solve(buildLP(cfg), GAPS);
