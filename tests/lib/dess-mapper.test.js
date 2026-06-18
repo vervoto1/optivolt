@@ -572,31 +572,44 @@ describe('mapRowsToDessV2', () => {
     expect(perSlot[1].restrictions).toBe(Restrictions.gridToBattery);
   });
 
-  it('applies -5% SoC boost when exporting and grid export is saturated', () => {
+  it('targets the END SoC of a contiguous high-price export run', () => {
+    // Slots 0..2 all export (b2g>0) at a non-rising price while SoC falls
+    // 30→20→10. Every slot should target the run's END SoC (10) so DESS dumps at
+    // max immediately instead of stair-stepping down the per-slot trajectory.
     const rows = [
-      makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
-      makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 4000, pv2g: 1000 }), // b2g+pv2g = 5000 = maxGridExport
+      makeRow({ b2g: 4000, ec: 25, ic: 100, soc_percent: 30 }),
+      makeRow({ b2g: 4000, ec: 25, ic: 100, soc_percent: 20 }),
+      makeRow({ b2g: 4000, ec: 22, ic: 100, soc_percent: 10 }),
     ];
-    const { perSlot } = mapRowsToDessV2(rows, { ...cfg, maxGridExport_W: 5000 });
-    expect(perSlot[1].socTarget_percent).toBe(45); // 50 - 5
+    const { perSlot } = mapRowsToDessV2(rows, cfg);
+    expect(perSlot[0].strategy).toBe(Strategy.proGrid);
+    expect(perSlot[0].socTarget_percent).toBe(10);
+    expect(perSlot[1].socTarget_percent).toBe(10);
+    expect(perSlot[2].socTarget_percent).toBe(10);
   });
 
-  it('does NOT boost SoC when exporting but grid export is not saturated', () => {
+  it('a lone export slot keeps its own planned SoC', () => {
     const rows = [
       makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
-      makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 500, pv2g: 0 }), // 500 < 5000
+      makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 500 }), // last slot, run = {itself}
     ];
-    const { perSlot } = mapRowsToDessV2(rows, { ...cfg, maxGridExport_W: 5000 });
-    expect(perSlot[1].socTarget_percent).toBe(50); // no boost
+    const { perSlot } = mapRowsToDessV2(rows, cfg);
+    expect(perSlot[1].strategy).toBe(Strategy.proGrid);
+    expect(perSlot[1].socTarget_percent).toBe(50);
   });
 
-  it('floors SoC boost at minSoc_percent + 1', () => {
+  it('does not front-load the export run across a higher future price', () => {
+    // Slot 1 has a HIGHER export price than slot 0, so slot 0 must NOT be pulled
+    // down to slot 1's SoC — that energy is worth more sold in slot 1. Slot 0
+    // keeps its own end SoC (30); slot 1 keeps its own (20).
     const rows = [
-      makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 13 }),
-      makeRow({ ic: 100, ec: 25, soc_percent: 13, b2g: 4000, pv2g: 1000 }), // saturated
+      makeRow({ b2g: 4000, ec: 25, ic: 100, soc_percent: 30 }),
+      makeRow({ b2g: 4000, ec: 40, ic: 100, soc_percent: 20 }),
     ];
-    const { perSlot } = mapRowsToDessV2(rows, { ...cfg, minSoc_percent: 10, maxGridExport_W: 5000 });
-    expect(perSlot[1].socTarget_percent).toBe(11); // floored at 10+1
+    const { perSlot } = mapRowsToDessV2(rows, cfg);
+    expect(perSlot[0].strategy).toBe(Strategy.proGrid);
+    expect(perSlot[0].socTarget_percent).toBe(30);
+    expect(perSlot[1].socTarget_percent).toBe(20);
   });
 
   it('defaults to selfConsumption when no tipping points match', () => {
@@ -883,41 +896,41 @@ describe('mapRowsToDessV2', () => {
 
   // v0.7.23 regression: dess-mapper's AC→DC saturation checks defaulted
   // η_inv to 100% when cfg.inverterEfficiency_percent was omitted, while
-  // buildLP / parseSolution default to 95%. A slot at the DC discharge
-  // cap (4000 W DC = 3800 W AC at η=0.95) was therefore mis-classified as
-  // unconstrained — the -5% socTarget boost never fired, and the DESS
-  // tipping-point helpers over-counted high-price grid usage. The shared
+  // buildLP / parseSolution default to 95%, so the DESS tipping-point
+  // helpers over-counted high-price grid usage. (The export-branch socTarget
+  // boost that originally tripped this was removed when the discharge taper /
+  // run-terminal targeting landed; the same η-default still governs
+  // findHighestGridUsageCost, so the guard moved there.) The shared
   // DEFAULT_INVERTER_EFFICIENCY_PERCENT constant in build-lp.ts pins all
   // three modules to the same default; this test fails on `?? 100` and
   // passes on `?? DEFAULT_INVERTER_EFFICIENCY_PERCENT`.
   describe('inverter efficiency default (saturation check)', () => {
-    it('detects DC discharge saturation when inverterEfficiency_percent is omitted', () => {
-      // Row 0 establishes batteryExportTp = 20 via b2g flow.
-      // Row 1 exports at ec=25 (>= 20 → proGrid branch). b2g=3800 W AC,
-      // pv2g=0, so gridExport = 3800 < maxGridExport_W=5000 — the grid
-      // saturation gate is OPEN. The only path that can pull socTarget
-      // down is the DC discharge cap: with η=0.95, b2g/η = 4000 W DC ≥
-      // maxDischargePower_W (4000) - epsilon → saturated → socTarget
-      // drops to 45. With the legacy η=1.0 default the conversion stays
-      // at 3800 W < cap, no boost fires, socTarget stays at 50.
+    it('pins η default in the gridBatteryTp DC-saturation check', () => {
+      // Slot 1 is a grid-to-load slot whose battery discharge sits exactly at the
+      // DC cap under the correct η=95 default (3800 / 0.95 = 4000 W DC). It must
+      // be treated as SATURATED and excluded from gridBatteryTp; otherwise its
+      // ic=100 lifts the tipping point and (mis)classifies slot 2 as proBattery
+      // instead of exporting. With the legacy η=100 default (3800 < 4000) the
+      // slot leaks in and slot 2 flips to proBattery.
       const rows = [
-        makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
-        makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 3800 }),
+        makeRow({ b2g: 100, ec: 20, ic: 5, soc_percent: 50 }),               // batteryExportTp = 20
+        makeRow({ g2l: 1000, b2l: 3800, ic: 100, ec: 5, soc_percent: 50 }),  // DC-saturated under η=95
+        makeRow({ ic: 50, ec: 25, soc_percent: 50 }),                        // test slot
       ];
       // cfg deliberately omits inverterEfficiency_percent.
       const { perSlot } = mapRowsToDessV2(rows, cfg);
-      expect(perSlot[1].strategy).toBe(Strategy.proGrid);
-      expect(perSlot[1].socTarget_percent).toBe(45);
+      expect(perSlot[2].strategy).toBe(Strategy.proGrid);
     });
 
     it('matches the explicit η=95 path when the field is omitted', () => {
       const rows = [
-        makeRow({ b2g: 100, ec: 20, ic: 100, soc_percent: 50 }),
-        makeRow({ ic: 100, ec: 25, soc_percent: 50, b2g: 3800 }),
+        makeRow({ b2g: 100, ec: 20, ic: 5, soc_percent: 50 }),
+        makeRow({ g2l: 1000, b2l: 3800, ic: 100, ec: 5, soc_percent: 50 }),
+        makeRow({ ic: 50, ec: 25, soc_percent: 50 }),
       ];
-      const omitted = mapRowsToDessV2(rows, cfg).perSlot[1];
-      const explicit = mapRowsToDessV2(rows, { ...cfg, inverterEfficiency_percent: 95 }).perSlot[1];
-      expect(omitted.socTarget_percent).toBe(explicit.socTarget_percent);
+      const omitted = mapRowsToDessV2(rows, cfg).perSlot[2];
+      const explicit = mapRowsToDessV2(rows, { ...cfg, inverterEfficiency_percent: 95 }).perSlot[2];
+      expect(omitted.strategy).toBe(explicit.strategy);
     });
   });
 });

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.42 - 2026-06-18
+
+- **Draining the battery to grid no longer stalls near low SoC and defers export from an expensive hour into the next cheaper one.** During a high-price evening drain the battery would empty to each 15-minute slot's target, then idle covering only house load for the rest of the slot — a stair-step that pushed the last few kWh out of the high-price hour and into the next, cheaper hour (measured ~€0.8 lost on a 70c→47c step-down, and worse the bigger the price gap). Root cause and fixes:
+  - **Optimizer: dropped the learned low-SoC discharge-power taper.** Adaptive learning was deriving a `dischargePhaseThresholds` ceiling from the `actual / predicted` SoC-change curve. But near a slot's target SoC, DESS stops discharging and just covers load, so "throttled because the target was already reached" was mislearned as "the battery can't discharge fast at low SoC" — and fed back as a hard LP ceiling that made the plan drain too gently and defer export, which produced still more throttled slots (a self-reinforcing loop). The discharge curve is still computed for duration predictions; it no longer constrains the optimizer. The charge/CV taper (a real BMS limit near full) is unchanged.
+  - **Controller: DESS now targets the end SoC of the whole high-price export run, not the per-slot interpolated SoC.** So the inverter dumps at max for the entire expensive window instead of racing each gentle per-slot target and idling. The run stops at any higher future price, so it never front-loads across a price increase it should wait for.
+  - **Planner: added a `preferEarlierDischarge` tiebreak.** Mirrors the existing `preferEarlierCharging`; within an equal-price window the plan now front-loads battery→grid export instead of smearing it arbitrarily across slots. Only breaks ties — a real price difference still dominates.
+- **Battery cell-voltage trend axis pinned to the LiFePO4 2.75–3.75 V window** (was 2.8–3.8 V) so normal cell variation stays visible.
+
 ## 0.7.41 - 2026-06-16
 
 - **EV target top-off is now a single partial slot, not a sub-rate dribble.** The 0.7.40 target-landing fix could land on the target by smearing a low-rate charge across several slots near the top (e.g. 1.3 kW, 1.3, 2.3, 1.7) — which misrepresents what the charger does (it runs at the forced rate, then cuts off). A relaxed slot must now *complete* the charge to the target within that one slot (`c_ev_tgt_reach`), so the plan shows full forced-rate slots followed by a single partial top-off slot (the slot-average of "16 A, then cut off at the target"), then idle.

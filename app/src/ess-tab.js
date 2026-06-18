@@ -233,7 +233,7 @@ function renderHistory(state, history) {
     if (!view) return;
 
     // Cell voltage trends — one thin line per cell, legend hidden. Pin the axis
-    // to the LiFePO4 operating window (~2.8–3.8 V) so normal cell variation is
+    // to the LiFePO4 operating window (~2.75–3.75 V) so normal cell variation is
     // visible instead of being flattened against a 0–4 V auto-range.
     const cells = battery.cells ?? [];
     const cellEntries = cells.map((cell, idx) => ({
@@ -241,7 +241,7 @@ function renderHistory(state, history) {
       color: cellColor(idx, cells.length),
       points: pointsFor(history, cell.entity),
     }));
-    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, { yTitle: "V", yMin: 2.8, yMax: 3.8, showLegend: false });
+    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, { yTitle: "V", yMin: 2.75, yMax: 3.75, showLegend: false });
     if (!cellsDrawn) setChartMessage(view.trendCanvas, "No trend data");
 
     // Temperature trends — legend shown, y pinned to the 20–80 °C operating band.

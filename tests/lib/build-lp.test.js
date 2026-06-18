@@ -112,6 +112,21 @@ describe('buildLP', () => {
     // (if the tiebreak were absent, gridToLoad would have coeff 0 and be omitted)
     expect(lp).toMatch(/\+ 0\.0000005\d* grid_to_load_0/);
   });
+
+  it('battery_to_grid coefficient escalates with t (preferEarlierDischarge tiebreak)', () => {
+    // With exportPrice=0 and batteryCost=0 the battery→grid coefficient is purely
+    // t * 5e-7, so it grows with the slot index — biasing the solver to export
+    // earlier within an equal-price drain window. t=0 has coeff 0 (omitted from
+    // the objective); t=1 and t=2 carry the escalating tiebreak.
+    const lp = buildLP({
+      ...mockData,
+      importPrice: Array(T).fill(0),
+      exportPrice: Array(T).fill(0),
+      batteryCost_cent_per_kWh: 0,
+    });
+    expect(lp).toMatch(/\+ 0\.0000005\d* battery_to_grid_1\b/);
+    expect(lp).toMatch(/\+ 0\.000001\d* battery_to_grid_2\b/);
+  });
 });
 
 describe('buildLP — Victron executable battery/PV behavior', () => {
@@ -119,6 +134,30 @@ describe('buildLP — Victron executable battery/PV behavior', () => {
 
   beforeAll(async () => {
     highs = await highsFactory({});
+  });
+
+  it('front-loads battery export within an equal, profitable price window (preferEarlierDischarge)', () => {
+    // No load/PV, flat profitable export price, ~1 slot worth of energy, terminal
+    // SoC unvalued. Draining slot 0 vs slot 1 earns identical revenue, so the
+    // preferEarlierDischarge tiebreak must break the tie toward the earlier slot
+    // instead of leaving the discharge to land in an arbitrary (e.g. later) slot.
+    const cfg = {
+      load_W: [0, 0],
+      pv_W: [0, 0],
+      importPrice: [30, 30],
+      exportPrice: [30, 30],
+      batteryCapacity_Wh: 10000,
+      initialSoc_percent: 10, // 1000 Wh available
+      minSoc_percent: 0,
+      maxDischargePower_W: 4000,
+      idleDrain_W: 0,
+      batteryCost_cent_per_kWh: 0,
+      terminalSocValuation: 'zero',
+    };
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    const rows = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
+    expect(rows[0].b2g).toBeGreaterThan(rows[1].b2g);
+    expect(rows[1].b2g).toBeLessThan(1); // essentially all export happened in slot 0
   });
 
   it('emits PV curtailment and battery direction constraints for each slot', () => {

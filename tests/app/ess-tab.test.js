@@ -76,7 +76,7 @@ describe('initEssTab — rendering', () => {
     expect(document.getElementById('ess-empty').classList.contains('hidden')).toBe(true);
   });
 
-  it('pins the cell-voltage trend axis to the LiFePO4 range (2.8–3.8 V)', async () => {
+  it('pins the cell-voltage trend axis to the LiFePO4 range (2.75–3.75 V)', async () => {
     getEssState.mockResolvedValue({
       batteries: [battery('B0')],
       system: null,
@@ -89,7 +89,7 @@ describe('initEssTab — rendering', () => {
 
     const cellTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === 'V');
     expect(cellTrendCall).toBeDefined();
-    expect(cellTrendCall[2]).toMatchObject({ yMin: 2.8, yMax: 3.8, showLegend: false });
+    expect(cellTrendCall[2]).toMatchObject({ yMin: 2.75, yMax: 3.75, showLegend: false });
   });
 
   it('pins the temperature trend axis to the 20–80 °C band', async () => {
