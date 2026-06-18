@@ -235,7 +235,9 @@ export function buildSolverConfigFromSettings(
 export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): SolverConfig {
   if (cal.confidence < 0.5) return cfg;
 
-  // Generate charge thresholds from calibration curve
+  // Generate charge thresholds from calibration curve. The charge/CV taper is a
+  // real physical limit (a BMS accepts less current as it approaches full), so
+  // modelling it in the LP is correct.
   const chargeThresholds = generateThresholdsFromCurve(
     cal.chargeCurve,
     // v8 ignore next — null path of ?? is untestable with real calibration results
@@ -244,18 +246,23 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
     'charge',
   );
 
-  // Generate discharge thresholds from calibration curve
-  const dischargeThresholds = generateThresholdsFromCurve(
-    cal.dischargeCurve,
-    // v8 ignore next — null path of ?? is untestable with real calibration results
-    cal.dischargeSamples ?? [],
-    cfg.maxDischargePower_W,
-    'discharge',
-  );
+  // NOTE: we deliberately do NOT derive a discharge-power taper from the
+  // calibration curve any more. Unlike charging, the battery has no real
+  // low-SoC discharge limit here (the inverter was measured delivering ~15 kW at
+  // 5% SoC). The discharge curve is `actual / predicted` SoC change per band, and
+  // near a slot's target SoC DESS stops discharging and just covers house load —
+  // so "throttled because the target was already reached" was being mislearned as
+  // "the battery can't discharge fast at low SoC". Feeding that back as a hard LP
+  // discharge-power ceiling made the optimizer plan a too-gentle drain and defer
+  // export from a high-price hour into the next cheaper hour, which in turn
+  // produced more throttled slots — a self-reinforcing loop. The discharge curve
+  // is still computed/persisted by the calibrator for duration predictions; it
+  // just no longer constrains the optimizer. See dischargePhaseThresholds in
+  // build-lp.ts (still supported for a genuine, statically-configured taper).
 
   console.log(
-    `[config-builder] Applying calibration: ${chargeThresholds.length} charge thresholds, ` +
-    `${dischargeThresholds.length} discharge thresholds (confidence=${cal.confidence})`,
+    `[config-builder] Applying calibration: ${chargeThresholds.length} charge thresholds ` +
+    `(discharge taper not applied) (confidence=${cal.confidence})`,
   );
 
   // Map to the SolverConfig threshold format
@@ -265,13 +272,6 @@ export function applyCalibration(cfg: SolverConfig, cal: CalibrationResult): Sol
     result.cvPhaseThresholds = chargeThresholds.map(t => ({
       soc_percent: t.soc_percent,
       maxChargePower_W: t.power_W,
-    }));
-  }
-
-  if (dischargeThresholds.length > 0) {
-    result.dischargePhaseThresholds = dischargeThresholds.map(t => ({
-      soc_percent: t.soc_percent,
-      maxDischargePower_W: t.power_W,
     }));
   }
 

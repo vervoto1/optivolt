@@ -340,19 +340,20 @@ describe('applyCalibration', () => {
     }
   });
 
-  it('populates dischargePhaseThresholds when discharge curve has reductions', () => {
+  it('does NOT derive a discharge taper from the calibration curve', () => {
+    // Even with a strong low-SoC reduction in the discharge curve, we no longer
+    // feed it into the LP: the battery has no real low-SoC discharge limit, and
+    // the curve mostly reflects DESS throttling near a reached target SoC.
+    // Constraining the optimizer with it makes it defer export from a high-price
+    // hour into a cheaper one (a self-reinforcing loop). The charge taper is
+    // unaffected.
     const cal = makeCal();
-    // Set a segment of the discharge curve to show significant reduction
-    // Bands 0-12 are segment 0
-    for (let i = 0; i < 13; i++) cal.dischargeCurve[i] = 0.6;
+    for (let i = 0; i < 13; i++) cal.dischargeCurve[i] = 0.6;  // bands 0-12 = discharge segment 0
+    for (let i = 78; i < 91; i++) cal.chargeCurve[i] = 0.7;    // bands 78-90 = charge segment 6
     const result = applyCalibration(baseCfg, cal);
-    expect(result.dischargePhaseThresholds).toBeDefined();
-    expect(result.dischargePhaseThresholds.length).toBeGreaterThan(0);
-    for (const t of result.dischargePhaseThresholds) {
-      expect(t).toHaveProperty('soc_percent');
-      expect(t).toHaveProperty('maxDischargePower_W');
-      expect(t.maxDischargePower_W).toBeLessThan(baseCfg.maxDischargePower_W);
-    }
+    expect(result.dischargePhaseThresholds).toBeUndefined();
+    expect(result.cvPhaseThresholds).toBeDefined();
+    expect(result.cvPhaseThresholds.length).toBeGreaterThan(0);
   });
 
   it('does not set thresholds when all curve values are >= 0.95', () => {
@@ -732,11 +733,11 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     // Efficiencies should NOT be modified
     expect(cfg.chargeEfficiency_percent).toBe(mockSettings.chargeEfficiency_percent);
     expect(cfg.dischargeEfficiency_percent).toBe(mockSettings.dischargeEfficiency_percent);
-    // With curve values < 0.95, thresholds should be generated
+    // With curve values < 0.95, the charge taper is generated; the discharge
+    // taper is intentionally NOT fed into the optimizer.
     expect(cfg.cvPhaseThresholds).toBeDefined();
     expect(cfg.cvPhaseThresholds.length).toBeGreaterThan(0);
-    expect(cfg.dischargePhaseThresholds).toBeDefined();
-    expect(cfg.dischargePhaseThresholds.length).toBeGreaterThan(0);
+    expect(cfg.dischargePhaseThresholds).toBeUndefined();
   });
 
   it('skips calibration when mode is suggest', async () => {
