@@ -137,6 +137,7 @@ export function buildLP({
     rebalanceStartPerSlot: 1e-6, // escalating per-window penalty on start_balance_k: breaks symmetry between equivalent rebalance windows
     avoidGridRoundTrip: 5e-7, // prefer battery→load over grid→load when battery is already discharging (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierCharging: 5e-7, // per-slot increasing penalty on g2b to prefer continuous charging from start of price block
+    preferEarlierDischarge: 5e-7, // per-slot increasing penalty on battery→grid to front-load export within an equal-price block (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     allowCurtailAtNegativePrice: 1e-8, // permit PV curtailment when import/export prices make PV economically harmful
     avoidCurtail: 1e-4, // otherwise prefer using/storing/exporting PV over curtailment
   }
@@ -370,7 +371,7 @@ export function buildLP({
     const gridToLoadCoeff = importCoeff_cents + TIEBREAK.avoidGridRoundTrip; // import cost + tiny nudge to prefer battery→load when prices are equal
     const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + TIEBREAK.gridToBattery + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + prefer DC PV charging + slight preference for earlier charging
     const pvToGridCoeff = -acExportCoeff_cents + TIEBREAK.avoidExport; // export revenue (post-inverter) + slight penalty to prefer using PV locally
-    const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents; // export revenue (post-inverter) + battery cost
+    const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents + t * TIEBREAK.preferEarlierDischarge; // export revenue (post-inverter) + battery cost + slight preference for earlier export (symmetry-break for equal-price drain windows)
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
     const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery; // battery cost + tiny routing tiebreak
     const socShortfallCoeff = softMinSocPenalty_cents_per_Wh; // penalty for being below minSoc
