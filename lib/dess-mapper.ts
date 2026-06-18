@@ -399,15 +399,13 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
     // Expected PV/load for PV surplus check
     const pvSurplus = row.pv > row.load + row.ev_charge + FLOW_EPSILON_W;
 
-    // Precompute flow totals for saturation checks. Caps:
-    //   maxGridImport_W / maxGridExport_W are AC (utility connection limits).
-    //   maxChargePower_W / maxDischargePower_W are DC (battery limits).
+    // Precompute flow totals for the grid-charge saturation check. Caps:
+    //   maxGridImport_W is AC (utility connection limit).
+    //   maxChargePower_W is DC (battery limit).
     // PlanRow flows: g2* are AC; pv2b is DC; pv2g/pv2l/b2l/b2g/b2ev/pv2ev are AC after parseSolution conversion.
     const eta_inv_v2 = (cfg.inverterEfficiency_percent ?? DEFAULT_INVERTER_EFFICIENCY_PERCENT) / 100;
     const gridImport = row.g2l + row.g2b + (row.g2ev ?? 0);
-    const gridExport = row.b2g + row.pv2g;
     const chargePower_DC = row.pv2b + eta_inv_v2 * row.g2b;
-    const dischargePower_DC = eta_inv_v2 > 0 ? (row.b2g + row.b2l + (row.b2ev ?? 0)) / eta_inv_v2 : 0;
 
     // O(1) tipping-point lookup for this slot's segment
     const seg = getSegmentForIndex(segments, t);
@@ -444,9 +442,24 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
       // Export price is high enough to dump battery to grid
       strategy = Strategy.proGrid;
       restrictions = Restrictions.gridToBattery; // allow battery→grid
-      if (gridExport >= cfg.maxGridExport_W - FLOW_EPSILON_W || dischargePower_DC >= cfg.maxDischargePower_W - FLOW_EPSILON_W) {
-        socTarget_percent = Math.max(socTarget_percent - 5, cfg.minSoc_percent + 1);
+      // Target the END SoC of the contiguous battery-export run that starts here,
+      // rather than this slot's interpolated SoC. The LP's per-slot SoC trajectory
+      // can be gentle; DESS then races each per-slot target at max power, reaches
+      // it within the slot, and idles covering only house load for the remainder —
+      // leaving export on the table during a high-price window and deferring it to
+      // a later, cheaper slot. Pulling the target to the run's end SoC tells DESS
+      // to dump at max now. We extend the run only while it keeps draining
+      // (b2g > 0) AND the export price never rises above this slot's, so we never
+      // front-load across a price increase we'd rather wait for. SoC falls
+      // monotonically during a drain, so the run-end SoC is its minimum and the
+      // target only ever moves down.
+      let runEnd = t;
+      for (let j = t + 1; j < rows.length; j++) {
+        if (rows[j].b2g <= FLOW_EPSILON_W) break;        // run stopped draining
+        if (rows[j].ec > exportPrice + 1e-6) break;      // higher price ahead — wait for it
+        runEnd = j;
       }
+      socTarget_percent = rows[runEnd].soc_percent;
     } else if (feedinAllowed && pvSurplus && exportPrice >= pvExportTp) {
       // PV surplus goes to grid (battery likely full)
       // Only applies when we actually expect PV to exceed load
