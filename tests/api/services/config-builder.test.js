@@ -6,6 +6,7 @@ vi.mock('../../../api/services/settings-store.ts', () => ({
 
 vi.mock('../../../api/services/data-store.ts', () => ({
   loadData: vi.fn(),
+  saveData: vi.fn(),
 }));
 
 vi.mock('../../../api/services/efficiency-calibrator.ts', async (importOriginal) => {
@@ -13,6 +14,7 @@ vi.mock('../../../api/services/efficiency-calibrator.ts', async (importOriginal)
   return {
     ...actual,
     loadCalibration: vi.fn(),
+    loadEvCalibration: vi.fn(),
   };
 });
 
@@ -23,8 +25,8 @@ vi.mock('../../../api/services/ha-client.ts', () => ({
 
 import { buildSolverConfigFromSettings, applyCalibration, applyEvCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
-import { loadData } from '../../../api/services/data-store.ts';
-import { loadCalibration } from '../../../api/services/efficiency-calibrator.ts';
+import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadCalibration, loadEvCalibration } from '../../../api/services/efficiency-calibrator.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 
 const NOW_STRING = '2024-01-01T12:00:00Z';
@@ -806,6 +808,34 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     expect(result.timing.stepMin).toBe(mockSettings.stepSize_m);
   });
 
+  it('records a full-SoC observation and persists data when SoC reaches 100%', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings });
+    const fullSocData = {
+      ...makeData(),
+      soc: { timestamp: NOW_STRING, value: 100 },
+    };
+    loadData.mockResolvedValue(fullSocData);
+    loadCalibration.mockResolvedValue(null);
+
+    const { data } = await getSolverInputs();
+
+    // recordFullSocObservation returned new data → saveData was called with it,
+    // and the returned data carries the recorded lastFullSocAt timestamp.
+    expect(saveData).toHaveBeenCalledTimes(1);
+    expect(data.lastFullSocAt).toBe(new Date(NOW_STRING).toISOString());
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ lastFullSocAt: data.lastFullSocAt }));
+  });
+
+  it('does not persist data when SoC is below 100% (no full-SoC observation)', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings });
+    loadData.mockResolvedValue(makeData()); // soc 50
+    loadCalibration.mockResolvedValue(null);
+
+    await getSolverInputs();
+
+    expect(saveData).not.toHaveBeenCalled();
+  });
+
   it('starts live planning at the current slot boundary when called mid-slot', async () => {
     vi.setSystemTime(new Date(MID_SLOT_NOW_STRING));
     loadSettings.mockResolvedValue(makeSettingsWithAdaptive('auto'));
@@ -823,6 +853,145 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     expect(new Date(result.timing.startMs).toISOString()).toBe('2024-01-01T14:15:00.000Z');
     expect(result.cfg.load_W.slice(0, 3)).toEqual([20, 30, 40]);
     expect(result.cfg.importPrice.slice(0, 3)).toEqual([2, 3, 4]);
+  });
+});
+
+describe('getSolverInputs — EV charge-acceptance taper (adaptive learning)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeEvNativeSettings(over = {}) {
+    return {
+      ...mockSettings,
+      evEnabled: true,
+      evSocSensor: 'sensor.ev_soc',
+      evPlugSensor: 'sensor.ev_plug',
+      haUrl: 'http://ha.local:8123',
+      haToken: 'my-token',
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evChargePhases: 1,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evChargeEfficiency_percent: 100,
+      adaptiveLearning: { enabled: true, mode: 'auto' },
+      ...over,
+    };
+  }
+
+  function mockPluggedInEv() {
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'sensor.ev_soc') {
+        return Promise.resolve({
+          entity_id: 'sensor.ev_soc', state: '50',
+          attributes: {}, last_changed: '', last_updated: '',
+        });
+      }
+      return Promise.resolve({
+        entity_id: 'sensor.ev_plug', state: 'connected',
+        attributes: {}, last_changed: '', last_updated: '',
+      });
+    });
+  }
+
+  function makeEvCalibration() {
+    const evChargeCurve = new Array(100).fill(1.0);
+    for (let i = 80; i < 100; i++) evChargeCurve[i] = 0.3; // strong taper near full
+    return {
+      evChargeCurve,
+      evChargeSamples: new Array(100).fill(10),
+      effectiveChargeRate: 1.0,
+      sampleCount: 100,
+      confidence: 0.8,
+      lastCalibratedMs: Date.now(),
+    };
+  }
+
+  it('applies the EV charge taper when evChargeCurveEnabled and an EV is in the plan', async () => {
+    loadSettings.mockResolvedValue(makeEvNativeSettings({ evChargeCurveEnabled: true }));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+    loadEvCalibration.mockResolvedValue(makeEvCalibration());
+    mockPluggedInEv();
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evChargeThresholds).toBeDefined();
+    expect(cfg.ev.evChargeThresholds.length).toBeGreaterThan(0);
+    expect(loadEvCalibration).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the EV taper when evChargeCurveEnabled is off (even with an EV in the plan)', async () => {
+    loadSettings.mockResolvedValue(makeEvNativeSettings({ evChargeCurveEnabled: false }));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+    loadEvCalibration.mockResolvedValue(makeEvCalibration());
+    mockPluggedInEv();
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evChargeThresholds).toBeUndefined();
+    expect(loadEvCalibration).not.toHaveBeenCalled();
+  });
+
+  it('does not load EV calibration when there is no EV in the plan', async () => {
+    // evChargeCurveEnabled but EV not plugged in → cfg.ev is undefined → skip load.
+    loadSettings.mockResolvedValue(makeEvNativeSettings({ evChargeCurveEnabled: true }));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+    loadEvCalibration.mockResolvedValue(makeEvCalibration());
+    fetchHaEntityState.mockImplementation(() => Promise.resolve({
+      entity_id: 'sensor.ev_plug', state: 'disconnected',
+      attributes: {}, last_changed: '', last_updated: '',
+    }));
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeUndefined();
+    expect(loadEvCalibration).not.toHaveBeenCalled();
+  });
+
+  it('leaves the flat cap when EV calibration returns null', async () => {
+    loadSettings.mockResolvedValue(makeEvNativeSettings({ evChargeCurveEnabled: true }));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+    loadEvCalibration.mockResolvedValue(null);
+    mockPluggedInEv();
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evChargeThresholds).toBeUndefined();
+    expect(loadEvCalibration).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs a warning and keeps the plan when loadEvCalibration throws', async () => {
+    loadSettings.mockResolvedValue(makeEvNativeSettings({ evChargeCurveEnabled: true }));
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+    loadEvCalibration.mockRejectedValueOnce(new Error('ev cal disk error'));
+    mockPluggedInEv();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { cfg } = await getSolverInputs();
+
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evChargeThresholds).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[config-builder] Failed to load EV calibration:'),
+      'ev cal disk error',
+    );
+    warnSpy.mockRestore();
   });
 });
 
@@ -959,5 +1128,173 @@ describe('buildSolverConfigFromSettings — EV config', () => {
     );
     expect(cfg.ev).toBeDefined();
     expect(cfg.ev.evDepartureSlot).toBe(4); // 1 h / 15 min
+  });
+
+  it('sets evStartSlot when an earliest-start time falls inside the window', () => {
+    // evStartTime 30 min after now → ceil(30min / 15min) = slot 2.
+    const startTime = new Date(NOW_MS + 30 * 60_000).toISOString();
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evStartTime: startTime },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evStartSlot).toBe(2);
+  });
+
+  it('omits evStartSlot when the earliest-start time has already elapsed', () => {
+    // A start time before now resolves to slot 0 → no earliest-start restriction.
+    const startTime = new Date(NOW_MS - 60 * 60_000).toISOString();
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evStartTime: startTime },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evStartSlot).toBeUndefined();
+  });
+
+  it('omits evStartSlot when the earliest-start time is unparseable', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evStartTime: 'garbage' },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeDefined();
+    expect(cfg.ev.evStartSlot).toBeUndefined();
+  });
+
+  it('disables EV planning when the earliest-start time is at/past the deadline (empty window)', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Deadline at slot 8 (14:00). Earliest start at 14:30 → startSlot (10) >= D (8):
+    // empty window → EV planning disabled for this solve.
+    const startTime = new Date(NOW_MS + 150 * 60_000).toISOString(); // 2.5 h ahead
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evStartTime: startTime },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev).toBeUndefined();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('EV planning disabled: empty charge window'),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('applies a hard price limit when evApplyPriceLimit is set and the max price is finite', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evApplyPriceLimit: true, evMaxPrice_cents_per_kWh: 12 },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evApplyPriceLimit).toBe(true);
+    expect(cfg.ev.evMaxPrice_cents_per_kWh).toBe(12);
+  });
+
+  it('does not apply a price limit when evMaxPrice is not finite even if the flag is on', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evApplyPriceLimit: true, evMaxPrice_cents_per_kWh: Infinity },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evApplyPriceLimit).toBeUndefined();
+    expect(cfg.ev.evMaxPrice_cents_per_kWh).toBeUndefined();
+  });
+
+  it('sets evMinSocFloor clamped to the target when evMinSoc_percent > 0', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evMinSoc_percent: 40 }, // below target 80 → kept as 40
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evMinSocFloor_percent).toBe(40);
+  });
+
+  it('clamps evMinSocFloor down to the target when the floor exceeds the target', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evMinSoc_percent: 95 }, // above target 80 → clamped to 80
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evMinSocFloor_percent).toBe(80);
+  });
+
+  it('omits evMinSocFloor when evMinSoc_percent is 0', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evMinSoc_percent: 0 },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evMinSocFloor_percent).toBeUndefined();
+  });
+
+  it('sets evOpportunisticCap above the target when the type-1 band is enabled and above target', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evOpportunisticEnabled: true, evOpportunisticLevel_percent: 90 },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBe(90);
+  });
+
+  it('clamps the type-1 opportunistic cap to 100%', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evOpportunisticEnabled: true, evOpportunisticLevel_percent: 120 },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBe(100);
+  });
+
+  it('omits the type-1 opportunistic cap when its level is at/below the target', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evOpportunisticEnabled: true, evOpportunisticLevel_percent: 70 }, // < target 80
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBeUndefined();
+  });
+
+  it('stacks a type-2 opportunistic cap above the type-1 cap', () => {
+    const cfg = buildSolverConfigFromSettings(
+      {
+        ...evSettings,
+        evOpportunisticEnabled: true, evOpportunisticLevel_percent: 88,
+        evOpportunisticType2Enabled: true, evOpportunisticType2Level_percent: 96,
+      },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBe(88);
+    expect(cfg.ev.evOpportunisticType2Cap_percent).toBe(96);
+  });
+
+  it('uses the target as the type-2 baseline when no type-1 cap was set', () => {
+    // No type-1 band → base1 falls back to the target (80); type-2 at 92 > 80 → set.
+    const cfg = buildSolverConfigFromSettings(
+      {
+        ...evSettings,
+        evOpportunisticType2Enabled: true, evOpportunisticType2Level_percent: 92,
+      },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBeUndefined();
+    expect(cfg.ev.evOpportunisticType2Cap_percent).toBe(92);
+  });
+
+  it('omits the type-2 opportunistic cap when it is at/below the type-1 cap', () => {
+    const cfg = buildSolverConfigFromSettings(
+      {
+        ...evSettings,
+        evOpportunisticEnabled: true, evOpportunisticLevel_percent: 90,
+        evOpportunisticType2Enabled: true, evOpportunisticType2Level_percent: 85, // <= 90
+      },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evOpportunisticCap_percent).toBe(90);
+    expect(cfg.ev.evOpportunisticType2Cap_percent).toBeUndefined();
+  });
+
+  it('sets evContinuous when the setting is on', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evContinuous: true },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evContinuous).toBe(true);
+  });
+
+  it('omits evContinuous when the setting is off', () => {
+    const cfg = buildSolverConfigFromSettings(
+      { ...evSettings, evContinuous: false },
+      makeData(), NOW_MS, { pluggedIn: true, soc_percent: 50 },
+    );
+    expect(cfg.ev.evContinuous).toBeUndefined();
   });
 });

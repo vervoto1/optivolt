@@ -49,6 +49,7 @@ export function drawEvPowerChart(canvas, rows, _stepSize_m = 15, evSettings = {}
 
       let html = ttHeader(time);
       if (sources.length) {
+        /* v8 ignore next — the `|| 0` arm is unreachable: this block only renders when sources exist, which requires ev_charge_A > 0 (truthy) */
         html += ttSection(`Charging — ${(row.ev_charge_A || 0).toFixed(1)} A total`);
         for (const s of sources) {
           html += ttRow(s.color, s.label, `${toSourceAmps(row, s.key).toFixed(1)} A`);

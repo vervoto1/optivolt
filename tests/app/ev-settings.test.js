@@ -134,4 +134,153 @@ describe('EV settings wiring', () => {
     expect(els.evSocValue.textContent).toBe('');
     expect(els.evSocValue.dataset.haState).toBeUndefined();
   });
+
+  it('clears the readout and skips validation when the entity is blanked on blur', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocValue.textContent = 'Current value: stale';
+    els.evSocSensor.value = '   ';
+    els.evSocSensor.dispatchEvent(new Event('blur'));
+    await flushPromises();
+
+    expect(els.evSocValue.textContent).toBe('');
+    expect(persistConfig).not.toHaveBeenCalled();
+    expect(fetchHaEntityState).not.toHaveBeenCalled();
+  });
+
+  it('renders the error and clears haState when validation fails on blur', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+    fetchHaEntityState.mockRejectedValue(new Error('entity not found'));
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocValue.dataset.haState = '50';
+    els.evTargetSocQuickSet.disabled = false;
+    els.evSocSensor.value = 'sensor.missing';
+    els.evSocSensor.dispatchEvent(new Event('blur'));
+    await flushPromises();
+
+    expect(persistConfig).toHaveBeenCalledTimes(1);
+    expect(els.evSocValue.textContent).toBe('Error: entity not found');
+    expect(els.evSocValue.className).toContain('text-red-600');
+    expect(els.evSocValue.dataset.haState).toBeUndefined();
+    // afterUpdate ran on the error path: SoC quick-set is disabled again.
+    expect(els.evTargetSocQuickSet.disabled).toBe(true);
+  });
+
+  it('discards a stale blur whose fetch resolves after a newer blur started', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+
+    // First blur's fetch is held open; second blur resolves first and bumps seq.
+    let releaseStale;
+    const stalePromise = new Promise((resolve) => { releaseStale = resolve; });
+    fetchHaEntityState
+      .mockImplementationOnce(() => stalePromise)
+      .mockResolvedValueOnce({ state: '88' });
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocSensor.value = 'sensor.ev_soc';
+
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=1, fetch pending
+    await flushPromises();
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=2, resolves to 88
+    await flushPromises();
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+
+    releaseStale({ state: '11' }); // stale id=1 now resolves; must be ignored
+    await flushPromises();
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+  });
+
+  it('discards a stale blur whose fetch rejects after a newer blur started', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+
+    let rejectStale;
+    const stalePromise = new Promise((_resolve, reject) => { rejectStale = reject; });
+    fetchHaEntityState
+      .mockImplementationOnce(() => stalePromise)
+      .mockResolvedValueOnce({ state: '88' });
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocSensor.value = 'sensor.ev_soc';
+
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=1, fetch pending
+    await flushPromises();
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=2, resolves to 88
+    await flushPromises();
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+
+    rejectStale(new Error('stale failure')); // stale id=1 rejects; must be ignored
+    await flushPromises();
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+  });
+
+  it('aborts a stale blur at the persist step when a newer blur supersedes it', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    // Hold the first blur open inside `await persistConfig()`.
+    let releasePersist;
+    const persistConfig = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { releasePersist = resolve; }))
+      .mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+    fetchHaEntityState.mockResolvedValue({ state: '88' });
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocSensor.value = 'sensor.ev_soc';
+
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=1, paused at persistConfig
+    await flushPromises();
+    els.evSocSensor.dispatchEvent(new Event('blur')); // id=2, bumps seq, resolves to 88
+    await flushPromises();
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+
+    releasePersist(); // id=1 resumes; id !== seq → returns before fetching.
+    await flushPromises();
+    // Stale blur never issued a third fetch (only the live blur fetched once).
+    expect(fetchHaEntityState).toHaveBeenCalledTimes(1);
+    expect(els.evSocValue.textContent).toBe('Current value: 88');
+  });
+
+  it('does nothing in the SoC quick-set when the button element is absent', async () => {
+    const els = setupEls();
+    els.evTargetSocQuickSet = null; // updateEvSocQuickSet must early-return safely.
+    els.evSocSensor.value = 'sensor.ev_soc';
+    fetchHaEntityState.mockResolvedValue({ state: '50' });
+
+    // Should not throw despite the missing button.
+    await expect(refreshEvSensorStates(els)).resolves.toBeUndefined();
+    expect(els.evSocValue.textContent).toBe('Current value: 50');
+  });
+
+  it('skips wiring a sensor entry whose indicator element is missing', () => {
+    const els = setupEls();
+    els.evSocValue = null; // first entry has no indicator → continue past it.
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+
+    // No throw, and the entry with no indicator gets no listeners.
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evSocSensor.value = 'sensor.ev_soc';
+    els.evSocSensor.dispatchEvent(new Event('input'));
+    expect(fetchHaEntityState).not.toHaveBeenCalled();
+  });
 });
