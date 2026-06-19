@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.7.43 - 2026-06-19
+## 0.7.44 - 2026-06-19
+
+- **Manual charging override (Auto / Charge / Stop) on the EV tab.** New segmented control in the EV settings card lets you force-charge or force-stop the car directly, held until you set it back to Auto. The override is the highest-priority EV decision — it beats the plan and every reactive trigger (low-SoC, low-price, min-SoC) — so a forced charge runs at max current regardless of price/target, and a forced stop keeps the charger off no matter what the plan wants. `Charge` on a disconnected car stays idle (nothing to charge); the actuator's plug-uncertain fail-safe is unchanged. Persisted in settings (`evOverrideMode`) so it survives restarts, exposed via `GET/POST /ev/override`, and applied immediately (one actuator tick) without restarting the control loop or re-planning DESS. The live mode badge shows `Force charge` / `Stopped` while an override is active.
 
 - **EV charging front-loads within an equal-price window.** Mirrors the existing battery `preferEarlierDischarge`/`preferEarlierCharging` tiebreak for the EV plan: when several slots share the same price, the car now charges in the earliest ones instead of the optimizer smearing it arbitrarily across the window. Tie-only — any real price difference still dominates.
 - **Fixed the EV "Ready by" control squashing the time field.** The Today/Tomorrow selector inherited `width:100%` and refused to shrink, so it ate the whole row and shrank the time input to a sliver. The selector now sizes to its content and the time field fills the rest.

@@ -117,9 +117,19 @@ export interface Settings {
   evFailSafeMode?: EvFailSafeMode;
   /** User kill-switch to suspend OptiVolt charger control. */
   evActuationPaused?: boolean;
+  /**
+   * Manual charging override, held until the user clears it back to 'auto'.
+   * 'auto'   — follow the optimizer/plan (default).
+   * 'charge' — force-charge now at max current, regardless of plan/price/target.
+   * 'stop'   — force-stop charging, regardless of plan.
+   * Takes priority over every reactive override (low_soc/low_price/min_soc).
+   */
+  evOverrideMode?: EvOverrideMode;
 }
 
 export type EvFailSafeMode = 'hold' | 'stop';
+
+export type EvOverrideMode = 'auto' | 'charge' | 'stop';
 
 export interface CvPhaseConfig {
   enabled: boolean;

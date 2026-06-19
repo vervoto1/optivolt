@@ -7,6 +7,7 @@ import {
   refreshEvSensorStates,
   wireEvSensorInputs,
 } from "./src/ev-settings.js";
+import { wireEvOverrideControls, refreshEvOverrideState } from "./src/ev-tab.js";
 import { initOptimizerQuickSettings } from "./src/optimizer-quick-settings.js";
 import { createOptimizerController } from "./src/optimizer-controller.js";
 import {
@@ -44,7 +45,8 @@ function setupTabSwitcher() {
   const tabs = [
     { tab: document.getElementById('tab-optimizer'),   panel: document.getElementById('panel-optimizer') },
     { tab: document.getElementById('tab-predictions'), panel: document.getElementById('panel-predictions') },
-    { tab: document.getElementById('tab-ev'),          panel: document.getElementById('panel-ev') },
+    { tab: document.getElementById('tab-ev'),          panel: document.getElementById('panel-ev'),
+      onActivate: () => { void refreshEvOverrideState(els); } },
     // ESS tab is lazy: it does no HA traffic until first activated, and stops
     // polling on deactivation so the interval never leaks after a tab switch.
     { tab: document.getElementById('tab-ess'),         panel: document.getElementById('panel-ess'),
@@ -163,6 +165,9 @@ async function boot() {
   // Fire-and-forget: fetch HA sensor states so the EV Status card shows current values.
   // Not awaited — HA may be slow or unconfigured; the initial solve should not wait for it.
   void refreshEvSensorStates(els);
+
+  // Wire the manual charging override (Auto/Charge/Stop) and seed its active state.
+  wireEvOverrideControls(els);
 
   // Initial compute
   await optimizer.onRun();

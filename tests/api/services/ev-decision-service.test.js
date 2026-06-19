@@ -168,3 +168,41 @@ describe('computeEvDecision — priority + gating', () => {
     expect(d.is_charging).toBe(true);
   });
 });
+
+describe('computeEvDecision — manual override', () => {
+  beforeEach(() => { vi.clearAllMocks(); delete process.env.SUPERVISOR_TOKEN; });
+
+  it('force-charge overrides an idle plan, even above target', async () => {
+    mockHa({ soc: '90', plug: 'on' }); // above the 80% target, plan idle
+    const d = await computeEvDecision(makeSettings({ evOverrideMode: 'charge' }), makePlan({ evCharge: 0 }), NOW);
+    expect(d.mode).toBe('manual_charge');
+    expect(d.is_charging).toBe(true);
+    expect(d.ev_charge_A).toBe(16);
+  });
+
+  it('force-stop overrides low_soc (the strongest reactive override)', async () => {
+    mockHa({ soc: '10', plug: 'on' });
+    const settings = makeSettings({
+      evOverrideMode: 'stop',
+      evLowSocChargingEnabled: true, evLowSocChargingLevel_percent: 30,
+    });
+    const d = await computeEvDecision(settings, makePlan({ evCharge: 11040 }), NOW);
+    expect(d.mode).toBe('manual_stop');
+    expect(d.is_charging).toBe(false);
+    expect(d.ev_charge_W).toBe(0);
+  });
+
+  it('force-charge on a disconnected car stays idle (cannot charge)', async () => {
+    mockHa({ soc: '50', plug: 'off' });
+    const d = await computeEvDecision(makeSettings({ evOverrideMode: 'charge' }), makePlan({ evCharge: 0 }), NOW);
+    expect(d.mode).toBe('idle');
+    expect(d.is_charging).toBe(false);
+  });
+
+  it("'auto' follows the plan (no override applied)", async () => {
+    mockHa({ soc: '70', plug: 'on' });
+    const d = await computeEvDecision(makeSettings({ evOverrideMode: 'auto' }), makePlan({ evCharge: 11040, planMode: 'planned' }), NOW);
+    expect(d.mode).toBe('planned');
+    expect(d.is_charging).toBe(true);
+  });
+});

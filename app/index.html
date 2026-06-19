@@ -2238,6 +2238,24 @@
           </label>
         </div>
 
+        <!-- Manual charging override: held until cleared back to Auto -->
+        <div class="mt-4">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 tracking-wide">Charging control</span>
+            <span id="ev-override-hint" class="text-[10px] text-slate-400 dark:text-slate-500"></span>
+          </div>
+          <div id="ev-override-controls" role="group" aria-label="EV charging control"
+            class="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 dark:bg-slate-800 p-1">
+            <button id="ev-override-auto" type="button" data-override="auto"
+              class="rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/50">Auto</button>
+            <button id="ev-override-charge" type="button" data-override="charge"
+              class="rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/50">Charge</button>
+            <button id="ev-override-stop" type="button" data-override="stop"
+              class="rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/50">Stop</button>
+          </div>
+          <span class="mt-1 block text-[10px] text-slate-400 dark:text-slate-500">Charge / Stop hold until you set it back to Auto. Auto hands control to the optimizer.</span>
+        </div>
+
         <!-- Plan summary -->
         <div class="mt-4 summary-panel">
           <div id="ev-tab-mode-row" class="hidden flex items-center justify-between px-3 py-2.5 border-b border-slate-100 dark:border-white/5">

@@ -11,6 +11,8 @@ import { resolveDepartureMs } from './ev-departure.ts';
  * through. Separate from the LP's EvPlanMode and the hardware EvChargeMode.
  */
 export type EvDecisionMode =
+  | 'manual_charge'
+  | 'manual_stop'
   | 'low_soc'
   | 'low_price'
   | 'min_soc'
@@ -141,6 +143,17 @@ export async function computeEvDecision(
   }
 
   if (isNative) {
+    // 0. Manual override (highest priority): a user-pinned Charge/Stop held until
+    // cleared back to 'auto'. Beats every reactive override and the plan. A
+    // definitely-not-connected car already returned idle above, so 'charge' here
+    // only fires when the plug is connected or uncertain (the actuator's own
+    // plug-uncertain fail-safe then withholds the write).
+    if (settings.evOverrideMode === 'stop') {
+      return charge('manual_stop', 0, 0, 'Manual override: charging stopped');
+    }
+    if (settings.evOverrideMode === 'charge') {
+      return charge('manual_charge', maxW, maxA, 'Manual override: force charge at max current');
+    }
     // 1. Low-SoC override (highest priority): charge now regardless of price.
     if (settings.evLowSocChargingEnabled
         && Number.isFinite(settings.evLowSocChargingLevel_percent)
