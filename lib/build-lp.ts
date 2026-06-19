@@ -138,6 +138,7 @@ export function buildLP({
     avoidGridRoundTrip: 5e-7, // prefer battery→load over grid→load when battery is already discharging (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierCharging: 5e-7, // per-slot increasing penalty on g2b to prefer continuous charging from start of price block
     preferEarlierDischarge: 5e-7, // per-slot increasing penalty on battery→grid to front-load export within an equal-price block (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
+    preferEarlierEvCharging: 5e-7, // per-slot increasing penalty on the EV charge flows to front-load EV charging within an equal-price window (mirrors preferEarlierCharging; the binary ev_on penalty alone is too small to survive the production MIP gap)
     allowCurtailAtNegativePrice: 1e-8, // permit PV curtailment when import/export prices make PV economically harmful
     avoidCurtail: 1e-4, // otherwise prefer using/storing/exporting PV over curtailment
   }
@@ -391,12 +392,22 @@ export function buildLP({
     objTerms.push(` + ${toNum(pvCurtailCoeff)} ${pvCurtail(t)}`);
     /* v8 ignore end */
     if (evActive) {
+      // Per-slot escalating tiebreak added equally to every EV charge flow so it
+      // front-loads charging within an equal-price window WITHOUT disturbing the
+      // grid/pv/battery routing preferences (those are constant offsets, preserved
+      // because the same t-term is added to all three). The binary ev_on penalty
+      // below is too small to survive the production MIP gap; this rides on the
+      // continuous flow variables, which the simplex resolves to dual-feasibility
+      // precision — so it actually biases placement earlier.
+      const evEarlier = t * TIEBREAK.preferEarlierEvCharging;
       /* v8 ignore next — v8 statement counter artifact inside covered if-block */
-      const gridToEvCoeff = importCoeff_cents + TIEBREAK.preferPvForEv;
+      const gridToEvCoeff = importCoeff_cents + TIEBREAK.preferPvForEv + evEarlier;
+      const pvToEvCoeff = TIEBREAK.preferPvForEv + TIEBREAK.pvLoadOverEv + evEarlier;
+      const batteryToEvCoeff = batteryCost_cents + evEarlier;
       // v8 ignore next — loop body push (covered by tests that exercise evActive)
       objTerms.push(` + ${toNum(gridToEvCoeff)} ${gridToEv(t)}`);
-      objTerms.push(` + ${toNum(TIEBREAK.preferPvForEv + TIEBREAK.pvLoadOverEv)} ${pvToEv(t)}`);
-      if (batteryCost_cents !== 0) objTerms.push(` + ${toNum(batteryCost_cents)} ${batteryToEv(t)}`);
+      objTerms.push(` + ${toNum(pvToEvCoeff)} ${pvToEv(t)}`);
+      if (batteryToEvCoeff !== 0) objTerms.push(` + ${toNum(batteryToEvCoeff)} ${batteryToEv(t)}`);
       // Symmetry-breaking: escalating penalty prefers earlier charging when slots are cost-equivalent.
       objTerms.push(` + ${toNum(TIEBREAK.evOnPerSlot * (t + 1))} ${evOn(t)}`);
       if (evFloorActive) {
