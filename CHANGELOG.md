@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.43 - 2026-06-19
+
+- **EV charging front-loads within an equal-price window.** Mirrors the existing battery `preferEarlierDischarge`/`preferEarlierCharging` tiebreak for the EV plan: when several slots share the same price, the car now charges in the earliest ones instead of the optimizer smearing it arbitrarily across the window. Tie-only — any real price difference still dominates.
+- **Fixed the EV "Ready by" control squashing the time field.** The Today/Tomorrow selector inherited `width:100%` and refused to shrink, so it ate the whole row and shrank the time input to a sliver. The selector now sizes to its content and the time field fills the rest.
+- **Security: bumped undici 7.25.0 → 7.28.0**, clearing the open advisories (TLS cert-validation bypass, shared-cache whitespace bypass, Set-Cookie header injection, WebSocket DoS, and others). undici is a dev-only transitive dependency via the test tooling, so the running add-on was never exposed.
+- **Internal: the test suite no longer fails when run inside Home Assistant OS.** The platform's `SUPERVISOR_TOKEN` was leaking into tests and flipping the HA client into add-on mode; the suite now clears it by default so local runs match CI.
+
 ## 0.7.42 - 2026-06-18
 
 - **Draining the battery to grid no longer stalls near low SoC and defers export from an expensive hour into the next cheaper one.** During a high-price evening drain the battery would empty to each 15-minute slot's target, then idle covering only house load for the rest of the slot — a stair-step that pushed the last few kWh out of the high-price hour and into the next, cheaper hour (measured ~€0.8 lost on a 70c→47c step-down, and worse the bigger the price gap). Root cause and fixes:
