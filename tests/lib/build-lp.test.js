@@ -127,6 +127,31 @@ describe('buildLP', () => {
     expect(lp).toMatch(/\+ 0\.0000005\d* battery_to_grid_1\b/);
     expect(lp).toMatch(/\+ 0\.000001\d* battery_to_grid_2\b/);
   });
+
+  it('grid_to_ev coefficient escalates with t (preferEarlierEvCharging tiebreak)', () => {
+    // With importPrice=0 the grid→ev coefficient is preferPvForEv (1e-6) plus the
+    // escalating t * 5e-7 earlier-charging tiebreak, so it grows with the slot
+    // index — biasing the solver to charge the EV earlier within an equal-price
+    // window. t=1 → 1e-6 + 5e-7 = 1.5e-6; t=2 → 1e-6 + 1e-6 = 2e-6.
+    const lp = buildLP({
+      ...mockData,
+      importPrice: Array(T).fill(0),
+      exportPrice: Array(T).fill(0),
+      batteryCost_cent_per_kWh: 0,
+      ev: {
+        evMinChargePower_W: 11040,
+        evMaxChargePower_W: 11040,
+        evBatteryCapacity_Wh: 75000,
+        evInitialSoc_percent: 50,
+        evTargetSoc_percent: 80,
+        evDepartureSlot: T,
+        evChargeEfficiency_percent: 90,
+        evChargePhases: 3,
+      },
+    });
+    expect(lp).toMatch(/\+ 0\.0000015\d* grid_to_ev_1\b/);
+    expect(lp).toMatch(/\+ 0\.000002\d* grid_to_ev_2\b/);
+  });
 });
 
 describe('buildLP — Victron executable battery/PV behavior', () => {
@@ -158,6 +183,54 @@ describe('buildLP — Victron executable battery/PV behavior', () => {
     const rows = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
     expect(rows[0].b2g).toBeGreaterThan(rows[1].b2g);
     expect(rows[1].b2g).toBeLessThan(1); // essentially all export happened in slot 0
+  });
+
+  it('front-loads EV charging within an equal-price window (preferEarlierEvCharging)', () => {
+    // FLAT equal price across the whole horizon, so which slots the EV charges in
+    // is a pure symmetry (every slot costs the same). A 16 A-only charger needs
+    // ~3 slots (72% → 80% on a 75 kWh pack). The preferEarlierEvCharging tiebreak
+    // must pack them into the FIRST slots; without it the optimum is a tie and the
+    // solver can leave charging in arbitrary (e.g. later) slots — the reported bug.
+    const T2 = 8;
+    const cfg = {
+      load_W: Array(T2).fill(400),
+      pv_W: Array(T2).fill(0),
+      importPrice: Array(T2).fill(12),   // flat — no price reason to prefer any slot
+      exportPrice: Array(T2).fill(1),
+      stepSize_m: 15,
+      batteryCapacity_Wh: 20000,
+      minSoc_percent: 10,
+      maxSoc_percent: 100,
+      maxChargePower_W: 4000,
+      maxDischargePower_W: 4000,
+      maxGridImport_W: 30000,
+      maxGridExport_W: 5000,
+      chargeEfficiency_percent: 95,
+      dischargeEfficiency_percent: 95,
+      inverterEfficiency_percent: 95,
+      batteryCost_cent_per_kWh: 1,
+      idleDrain_W: 0,
+      terminalSocValuation: 'zero',
+      initialSoc_percent: 50,
+      ev: {
+        evMinChargePower_W: 11040,
+        evMaxChargePower_W: 11040,
+        evBatteryCapacity_Wh: 75000,
+        evInitialSoc_percent: 72,
+        evTargetSoc_percent: 80,
+        evDepartureSlot: T2,
+        evChargeEfficiency_percent: 90,
+        evChargePhases: 3,
+      },
+    };
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    const rows = parseSolution(result, cfg, { startMs: 0, stepMin: 15 });
+    const onSlots = rows.map((r, t) => (r.ev_charge_A > 0.01 ? t : -1)).filter((t) => t >= 0);
+    // Charging is packed into the earliest slots (contiguous from slot 0), so the
+    // first slot charges and the back half of the window stays idle.
+    expect(onSlots[0]).toBe(0);
+    expect(onSlots[onSlots.length - 1]).toBeLessThan(T2 - 1);
+    expect(rows[T2 - 1].ev_charge_A).toBeLessThan(0.01);
   });
 
   it('emits PV curtailment and battery direction constraints for each slot', () => {
