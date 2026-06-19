@@ -353,6 +353,9 @@ function normalizeEvNativeSettings(s: Settings): void {
   s.evMaxPlanAgeSeconds = clampInt(s.evMaxPlanAgeSeconds, 60, 86_400, 1800);
   s.evFailSafeMode = s.evFailSafeMode === 'stop' ? 'stop' : 'hold';
   s.evActuationPaused = s.evActuationPaused === true;
+  s.evOverrideMode = (s.evOverrideMode === 'charge' || s.evOverrideMode === 'stop')
+    ? s.evOverrideMode
+    : 'auto';
 }
 
 function normalizeDataSources(dataSources: DataSources): DataSources {

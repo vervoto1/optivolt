@@ -40,6 +40,8 @@ export const fetchEvSchedule = () => getJson('/ev/schedule');
 export const fetchEvCurrent = () => getJson('/ev/current');
 export const fetchEvStatus = () => getJson('/ev/status');
 export const fetchEvActuation = () => getJson('/ev/actuation');
+export const fetchEvOverride = () => getJson('/ev/override');
+export const setEvOverride = (mode) => postJson('/ev/override', { mode });
 
 // --- ESS dashboard ---
 export const getEssState = () => getJson('/ess/state');

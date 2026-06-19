@@ -1,10 +1,12 @@
 import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./charts.js";
 import { formatKWh, updateStackedBarContainer } from "./state.js";
-import { fetchEvStatus } from "./api/api.js";
+import { fetchEvStatus, fetchEvOverride, setEvOverride } from "./api/api.js";
 import { resolveDepartureMs } from "./utils.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
+  manual_charge: { label: 'Force charge', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  manual_stop:   { label: 'Stopped',      cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400' },
   low_soc:       { label: 'Low SoC',       cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' },
   low_price:     { label: 'Low price',     cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-400' },
   min_soc:       { label: 'Min SoC',       cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400' },
@@ -13,6 +15,58 @@ const DECISION_BADGE = {
   keep_on:       { label: 'Keep on',       cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400' },
   idle:          { label: 'Idle',          cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' },
 };
+
+// ---- Manual charging override (Auto / Charge / Stop) ----------------------
+const OVERRIDE_BASE_CLS = 'rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/50';
+const OVERRIDE_ACTIVE_CLS = {
+  auto:   'bg-white text-ink shadow-sm dark:bg-slate-600 dark:text-slate-100',
+  charge: 'bg-emerald-500 text-white shadow-sm',
+  stop:   'bg-rose-500 text-white shadow-sm',
+};
+const OVERRIDE_INACTIVE_CLS = 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200';
+const OVERRIDE_HINT = { auto: '', charge: 'forcing charge', stop: 'charging blocked' };
+
+function applyOverrideHighlight(els, mode) {
+  const active = (mode === 'charge' || mode === 'stop') ? mode : 'auto';
+  const buttons = { auto: els.evOverrideAuto, charge: els.evOverrideCharge, stop: els.evOverrideStop };
+  for (const [m, btn] of Object.entries(buttons)) {
+    if (!btn) continue;
+    const on = m === active;
+    btn.className = `${OVERRIDE_BASE_CLS} ${on ? OVERRIDE_ACTIVE_CLS[m] : OVERRIDE_INACTIVE_CLS}`;
+    btn.setAttribute('aria-pressed', String(on));
+  }
+  if (els.evOverrideHint) els.evOverrideHint.textContent = OVERRIDE_HINT[active];
+}
+
+// Fetch the persisted override and highlight the active segment. Tolerant of a
+// missing endpoint / element (older backends or before boot wiring).
+export async function refreshEvOverrideState(els) {
+  if (!els || !els.evOverrideControls) return;
+  try {
+    const res = await fetchEvOverride();
+    applyOverrideHighlight(els, res?.mode ?? 'auto');
+  } catch { /* leave current highlight as-is */ }
+}
+
+// Wire the Auto/Charge/Stop buttons (once, at boot) and seed the active state.
+export function wireEvOverrideControls(els) {
+  if (!els || !els.evOverrideControls) return;
+  for (const btn of [els.evOverrideAuto, els.evOverrideCharge, els.evOverrideStop]) {
+    if (!btn) continue;
+    btn.addEventListener('click', async () => {
+      const mode = btn.dataset.override;
+      applyOverrideHighlight(els, mode); // optimistic
+      try {
+        const res = await setEvOverride(mode);
+        applyOverrideHighlight(els, res?.mode ?? mode);
+      } catch {
+        void refreshEvOverrideState(els); // revert to server truth on failure
+      }
+      void updateEvModeBadge(els); // reflect the override in the live mode badge
+    });
+  }
+  void refreshEvOverrideState(els);
+}
 
 // Fetch the effective live decision and update the EV-tab mode badge +
 // target-met indicator. Tolerant of missing plan / HA (hides the row).

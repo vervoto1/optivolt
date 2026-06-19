@@ -206,5 +206,6 @@
   "evControlIntervalSeconds": 60,
   "evMaxPlanAgeSeconds": 1800,
   "evFailSafeMode": "hold",
-  "evActuationPaused": false
+  "evActuationPaused": false,
+  "evOverrideMode": "auto"
 }
