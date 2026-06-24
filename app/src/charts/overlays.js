@@ -64,6 +64,7 @@ function getNegativeInjectionRanges(rows, h) {
     for (let i = startIdx; i <= endIdx; i++) {
       const row = rows[i];
       const export_kWh = exportedPower_W(row) * h / 1000;
+      /* v8 ignore next — the `|| 0` arm is unreachable: rows in a detected range already passed isNegativePriceInjection, which requires a finite negative Number(row.ec) */
       const sellPrice = Number(row?.ec) || 0;
       totalExport_kWh += export_kWh;
       totalCost_cents += Math.max(0, -sellPrice * export_kWh);

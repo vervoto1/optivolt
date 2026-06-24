@@ -18,6 +18,7 @@ export const BATTERY_COLORS = [
 ];
 
 export function batteryColor(index) {
+  /* v8 ignore next — the `?? cellColor` fallback is unreachable: index % length is always a valid in-range index, so the array access never yields undefined */
   return BATTERY_COLORS[index % BATTERY_COLORS.length] ?? cellColor(index, BATTERY_COLORS.length);
 }
 
@@ -44,6 +45,7 @@ export function buildUnifiedSeries(entries) {
     const data = new Array(timestamps.length).fill(null);
     for (const point of entry.points ?? []) {
       const i = indexByT.get(point.t);
+      /* v8 ignore next — i is never null: every point.t was added to the timestamp set, so indexByT always resolves it */
       if (i != null) data[i] = point.v;
     }
     return { label: entry.label, color: entry.color, data };

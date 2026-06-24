@@ -24,6 +24,8 @@ vi.mock('../../app/src/api/api.js', () => ({
   fetchStoredSettings: vi.fn(),
   saveStoredSettings: vi.fn(),
   triggerCalibration: vi.fn(),
+  fetchStoredData: vi.fn(),
+  fetchPredictionAdjustments: vi.fn(),
 }));
 
 vi.mock('../../app/src/predictions-validation.js', () => ({
@@ -42,6 +44,8 @@ import {
   fetchStoredSettings,
   saveStoredSettings,
   triggerCalibration,
+  fetchStoredData,
+  fetchPredictionAdjustments,
 } from '../../app/src/api/api.js';
 
 function setupDOM() {
@@ -578,6 +582,273 @@ describe('predictions.js', () => {
       await vi.advanceTimersByTimeAsync(700); // debounce delay is 600ms
       expect(savePredictionConfig).toHaveBeenCalled();
     }
+  });
+
+  it('hydrates forecasts from stored data and fills load/pv metrics', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchPredictionAdjustments.mockResolvedValue({ adjustments: [] });
+
+    // Forecast window starting slightly before "now" so futureForecastSeries keeps slots.
+    const start = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    fetchStoredData.mockResolvedValue({
+      load: { start, step: 15, values: Array(96).fill(800) },
+      pv: { start, step: 15, values: Array(96).fill(400) },
+    });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(fetchStoredData).toHaveBeenCalled();
+    // updateStoredForecastMetrics -> updateStatus 'Stored data loaded' (then onForecastAll overwrites
+    // with the null/'skipped' status). The error cell is set to '--'.
+    expect(document.getElementById('load-summary-error').textContent).toBe('--');
+    expect(document.getElementById('pv-summary-error').textContent).toBe('--');
+    // Load gets a min metric (load-only branch); both get totals/peaks.
+    expect(document.getElementById('load-summary-min').textContent).not.toBe('');
+    expect(document.getElementById('load-summary-total').textContent).not.toBe('');
+    expect(document.getElementById('pv-summary-total').textContent).not.toBe('');
+  });
+
+  it('hydrates only load when stored pv data is absent', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchPredictionAdjustments.mockResolvedValue({ adjustments: [] });
+
+    const start = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    fetchStoredData.mockResolvedValue({
+      load: { start, step: 15, values: Array(96).fill(800) },
+      // no pv
+    });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(document.getElementById('load-summary-error').textContent).toBe('--');
+    // pv-summary-error untouched by stored hydration (pv absent).
+    expect(document.getElementById('load-summary-min').textContent).not.toBe('');
+  });
+
+  it('hydrates only pv when stored load data is absent', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchPredictionAdjustments.mockResolvedValue({ adjustments: [] });
+
+    const start = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    fetchStoredData.mockResolvedValue({
+      // no load
+      pv: { start, step: 15, values: Array(96).fill(400) },
+    });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // pv hydrated (error cell '--'); load left untouched by stored hydration.
+    expect(document.getElementById('pv-summary-error').textContent).toBe('--');
+    expect(document.getElementById('pv-summary-total').textContent).not.toBe('');
+  });
+
+  it('setEl no-ops when a metrics element is missing', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({
+      load: { forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(500) }, recent: [], metrics: { mae: 10 } },
+      pv: null,
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    // Remove a metrics target so setEl hits its `if (el)` guard's else arm.
+    document.getElementById('load-summary-total').remove();
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Other metrics still written despite the missing total element.
+    expect(document.getElementById('load-summary-peak').textContent).not.toBe('');
+    expect(document.getElementById('load-summary-total')).toBeNull();
+  });
+
+  it('handles stored forecast data load failure', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockRejectedValue(new Error('stored fail'));
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(console.error).toHaveBeenCalledWith(
+      'Failed to load stored forecast data:',
+      expect.any(Error),
+    );
+  });
+
+  it('updateForecastUI uses rawForecast when present and forecast otherwise', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    // load result has rawForecast (distinct from forecast); pv result has only forecast.
+    runCombinedForecast.mockResolvedValue({
+      load: {
+        rawForecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(900) },
+        forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(850) },
+        recent: [],
+        metrics: { mae: 30 },
+      },
+      pv: {
+        forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(300) },
+        recent: [],
+        metrics: { mae: 12 },
+      },
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Both load and pv statuses report updated.
+    expect(document.getElementById('load-summary-status').textContent).toContain('updated');
+    expect(document.getElementById('pv-summary-status').textContent).toContain('updated');
+    // Avg error from metrics.mae rounded.
+    expect(document.getElementById('load-summary-error').textContent).toBe('30');
+    expect(document.getElementById('pv-summary-error').textContent).toBe('12');
+  });
+
+  it('updateForecastUI nulls forecasts and skips metrics when result lacks a forecast', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    // load result is truthy but has neither rawForecast nor forecast.
+    runCombinedForecast.mockResolvedValue({
+      load: { recent: [], metrics: {} },
+      pv: { forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(300) }, recent: [], metrics: { mae: 9 } },
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // load forecast had no forecast -> metrics skipped, status still 'updated'.
+    expect(document.getElementById('load-summary-status').textContent).toContain('updated');
+    // load-summary-total left untouched (no metrics written) -> empty.
+    expect(document.getElementById('load-summary-total').textContent).toBe('');
+    // pv metrics written.
+    expect(document.getElementById('pv-summary-total').textContent).not.toBe('');
+  });
+
+  it('updateMetrics handles an empty-values load forecast (min/peak default to 0)', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({
+      load: { forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: [] }, recent: [], metrics: { mae: 0 } },
+      pv: null,
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(document.getElementById('load-summary-total').textContent).toBe('0.0');
+    expect(document.getElementById('load-summary-peak').textContent).toBe('0');
+    expect(document.getElementById('load-summary-min').textContent).toBe('0');
+  });
+
+  it('handles a pv result with no forecast and a load forecast missing values', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({
+      // load forecast object without a `values` key -> `values || []` fallback.
+      load: { forecast: { start: '2024-01-15T00:00:00Z', step: 15 }, recent: [], metrics: { mae: 0 } },
+      // pv result truthy but no rawForecast and no forecast -> `?? null` tails.
+      pv: { recent: [], metrics: {} },
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // load metrics computed from an empty values fallback.
+    expect(document.getElementById('load-summary-total').textContent).toBe('0.0');
+    // pv had no forecast -> metrics skipped, status still updated.
+    expect(document.getElementById('pv-summary-status').textContent).toContain('updated');
+  });
+
+  it('updateStatus no-ops when the status element is missing', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    savePredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+    fetchStoredData.mockResolvedValue(null);
+
+    // Remove the status elements so updateStatus hits the `if (!el) return` guard.
+    document.getElementById('load-summary-status').remove();
+    document.getElementById('pv-summary-status').remove();
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // No throw; missing elements stay missing.
+    expect(document.getElementById('load-summary-status')).toBeNull();
   });
 
   it('saveFormToServer logs error when savePredictionConfig rejects', async () => {

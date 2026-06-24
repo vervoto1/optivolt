@@ -18,6 +18,7 @@ function departureTimeToSlot(
   stepSize_m: number,
   T: number,
 ): number {
+  /* v8 ignore next — unreachable: the only caller guards departureMs != null and resolveDepartureMs only ever yields null or a finite number */
   if (!Number.isFinite(departureMs)) return 0;
 
   const slotsAvailable = Math.floor((departureMs - startMs) / (stepSize_m * 60_000));
@@ -196,6 +197,7 @@ export function buildSolverConfigFromSettings(
 
       // Minimum-SoC safety floor (soft, mask-exempt, sourced). Only meaningful
       // above the initial SoC — otherwise it is already satisfied.
+      /* v8 ignore next — the `?? 0` arm is unreachable: Number.isFinite() short-circuits the && for any nullish evMinSoc_percent, so the nullish-coalesce never falls back */
       if (Number.isFinite(settings.evMinSoc_percent) && (settings.evMinSoc_percent ?? 0) > 0) {
         ev.evMinSocFloor_percent = Math.min(settings.evMinSoc_percent!, settings.evTargetSoc_percent);
       }
