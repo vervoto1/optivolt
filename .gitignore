@@ -10,3 +10,5 @@ coverage/
 data/plan-history.json
 .superpowers/
 docs/superpowers/
+.codex
+*.log
