@@ -106,4 +106,102 @@ describe('battery settings — live status rendering', () => {
     expect(document.getElementById('bcc-status').textContent).toContain('disabled');
     expect(document.getElementById('bbc-status').textContent).toContain('disabled');
   });
+
+  it('shows "no BMS data yet" when balance is enabled but has no batteries', async () => {
+    fetchBatteryStatus.mockResolvedValue({
+      // commandedLevel null, no reason → exercises the "—" fallbacks in renderCharge.
+      charge: { enabled: true, dryRun: false, status: 'idle', commandedLevel: null, maxCellVoltage: 'n/a' },
+      // batteries missing entirely → rows defaults to [] → "no BMS data yet".
+      balance: { enabled: true, dryRun: true },
+    });
+    initBatterySettings();
+    await flush();
+
+    const bcc = document.getElementById('bcc-status').textContent;
+    expect(bcc).toContain('(live)');
+    expect(bcc).toContain('level —');
+    expect(bcc).toContain('maxV —');
+
+    const bbc = document.getElementById('bbc-status').textContent;
+    expect(bbc).toContain('no BMS data yet');
+    expect(bbc).toContain('(dry-run)');
+  });
+
+  it('renders a per-BMS warning marker and falls back when reason is missing', async () => {
+    fetchBatteryStatus.mockResolvedValue({
+      charge: { enabled: true, dryRun: false, status: 'ok', commandedLevel: 100, maxCellVoltage: 3.5, reason: null, warning: false },
+      balance: { enabled: true, dryRun: false, batteries: [
+        { name: 'B1', status: 'warn', startVoltage: 3.4, triggerVoltage: 0.01, reason: null, warning: true },
+      ] },
+    });
+    initBatterySettings();
+    await flush();
+
+    // reason null → renderCharge uses status as the trailing fallback.
+    const bcc = document.getElementById('bcc-status').textContent;
+    expect(bcc.endsWith('ok')).toBe(true);
+
+    const bbc = document.getElementById('bbc-status').textContent;
+    expect(bbc).toContain('⚠');
+    expect(bbc).toContain('B1: warn');
+  });
+
+  it('leaves the last status in place when the fetch rejects', async () => {
+    document.getElementById('bcc-status').textContent = 'Status: previous';
+    fetchBatteryStatus.mockRejectedValue(new Error('HA hiccup'));
+    initBatterySettings();
+    await flush();
+    expect(document.getElementById('bcc-status').textContent).toBe('Status: previous');
+  });
+
+  it('does nothing when neither status placeholder is present', async () => {
+    document.body.innerHTML = '';
+    initBatterySettings();
+    await flush();
+    expect(fetchBatteryStatus).not.toHaveBeenCalled();
+  });
+
+  it('renders only balance when the charge placeholder is absent', async () => {
+    document.getElementById('bcc-status').remove();
+    fetchBatteryStatus.mockResolvedValue({
+      charge: { enabled: true, dryRun: false, status: 'ok' },
+      balance: { enabled: false },
+    });
+    initBatterySettings();
+    await flush();
+    // renderCharge(null, ...) early-returns; balance still renders.
+    expect(document.getElementById('bcc-status')).toBeNull();
+    expect(document.getElementById('bbc-status').textContent).toContain('disabled');
+  });
+
+  it('renders only charge when the balance placeholder is absent', async () => {
+    document.getElementById('bbc-status').remove();
+    fetchBatteryStatus.mockResolvedValue({
+      // Both reason and status falsy → renderCharge uses the "—" fallback.
+      charge: { enabled: true, dryRun: false, status: '', commandedLevel: 50, maxCellVoltage: 3.4, reason: '' },
+      balance: { enabled: true, dryRun: false, batteries: [] },
+    });
+    initBatterySettings();
+    await flush();
+    expect(document.getElementById('bbc-status')).toBeNull();
+    const bcc = document.getElementById('bcc-status').textContent;
+    expect(bcc).toContain('50A');
+    expect(bcc.endsWith('· —')).toBe(true);
+  });
+
+  it('keeps polling on the interval', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchBatteryStatus.mockResolvedValue({ charge: { enabled: false }, balance: { enabled: false } });
+      initBatterySettings();
+      expect(fetchBatteryStatus).toHaveBeenCalledTimes(1); // immediate poll
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(fetchBatteryStatus).toHaveBeenCalledTimes(2); // interval-driven poll
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(fetchBatteryStatus).toHaveBeenCalledTimes(3);
+    } finally {
+      deactivateBatterySettings();
+      vi.useRealTimers();
+    }
+  });
 });

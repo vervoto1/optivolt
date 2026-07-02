@@ -178,6 +178,45 @@ describe('predict', () => {
 
     expect(results).toHaveLength(history.length);
   });
+
+  it('skips past entries whose bucket differs (non-same filter)', () => {
+    // weekday-weekend filter: a weekday target must ignore weekend history
+    // even when it falls within the lookback window. This exercises the
+    // `entryBucket !== pastBucket → continue` branch (line 92).
+    // BASE_TIME is a Monday. Build daily history for one week including a weekend.
+    const dailyHistory = [];
+    for (let day = 0; day < 7; day++) {
+      // day 0 = Mon(2026-01-05) ... day 5 = Sat, day 6 = Sun.
+      // Weekdays get value 1000, weekend days a wildly different 9999.
+      const dow = new Date(BASE_TIME + day * 24 * 60 * 60 * 1000).getUTCDay();
+      const isWeekend = dow === 0 || dow === 6;
+      dailyHistory.push(makeEntry(0, day, isWeekend ? 9999 : 1000));
+    }
+
+    // Target: the following Saturday (a weekend day) at the same hour.
+    const satTs = BASE_TIME + 5 * 24 * 60 * 60 * 1000 + 7 * 24 * 60 * 60 * 1000;
+    const satDate = new Date(satTs);
+    const satTarget = {
+      date: satDate.toISOString(),
+      time: satTs,
+      hour: 10,
+      dayOfWeek: satDate.getUTCDay(), // 6 = Saturday
+      value: null,
+    };
+
+    const results = predict(dailyHistory, {
+      sensor: 'Load',
+      lookbackWeeks: 2,
+      dayFilter: 'weekday-weekend',
+      aggregation: 'mean',
+    }, [satTarget]);
+
+    expect(results).toHaveLength(1);
+    // The Saturday target buckets as 'weekend'. Within the 14-day lookback the
+    // only weekend days are the prior Sat(9999) and Sun(9999); all weekday
+    // history (value 1000) is skipped at the bucket-mismatch branch.
+    expect(results[0].predicted).toBeCloseTo(9999);
+  });
 });
 
 // ---------------------------------------------------------------------------

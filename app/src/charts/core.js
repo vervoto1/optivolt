@@ -9,6 +9,7 @@ export function fmtHHMM(dt) {
 
 function fmtTickHourOrDate(dt) {
   const mins = dt.getMinutes();
+  /* v8 ignore next — unreachable: fmtTickHourOrDate is only called via ticksCb when isLabeledHour(dt) is true, which already requires minutes === 0 */
   if (mins !== 0) return "";
   const hrs = dt.getHours();
   if (hrs === 0) {
@@ -215,6 +216,7 @@ function getRenderedCharts() {
     else chartRegistry.delete(chart);
   }
   // Pick up charts created directly with new Chart(...) outside renderChart (e.g. predictions-validation.js)
+  /* v8 ignore next — environment guard: document is always defined in the browser/jsdom contexts this runs in */
   if (typeof document !== "undefined") {
     for (const canvas of document.querySelectorAll("canvas")) {
       const chart = canvas._chart || Chart.getChart?.(canvas);

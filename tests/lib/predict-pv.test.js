@@ -778,4 +778,204 @@ describe('robust linear PV model', () => {
 
     expect(points[0].predicted).toBe(1234);
   });
+
+  it('fits per-hour (24-bucket) coefficients indexed by rec.hour', () => {
+    // bucketCount = 24 exercises the `rec.hour` arm of the index selector
+    // (vs slotOfDay for 96). Same data as the per-slot fit → same coeffs.
+    const rows = [
+      sample(10, 500, 100, 1500),
+      sample(11, 400, 200, 1800),
+      sample(12, 300, 300, 2100),
+      sample(13, 200, 400, 2400),
+    ];
+
+    const models = estimateRobustLinearPvModels(
+      rows.map(r => r.production),
+      rows.map(r => r.irradiance),
+      24,
+    );
+
+    expect(models).toHaveLength(24);
+    expect(models[hour].fallback).toBe(false);
+    expect(models[hour].directCoeff).toBeCloseTo(2, 1);
+    expect(models[hour].diffuseCoeff).toBeCloseTo(5, 1);
+  });
+
+  it('skips irradiance records with missing or non-finite radiation features', () => {
+    // A record with a missing direct value and one with NaN both fail
+    // getRadiationFeatures → excluded from the bucket samples (lines 405, 639).
+    const valid = [
+      sample(10, 500, 100, 1500),
+      sample(11, 400, 200, 1800),
+      sample(12, 300, 300, 2100),
+      sample(13, 200, 400, 2400),
+    ];
+    const noDirect = {
+      production: { time: Date.UTC(2024, 5, 14, hour), hour, slot, production_Wh: 500 },
+      irradiance: {
+        time: Date.UTC(2024, 5, 14, hour), hour, ghi_W_per_m2: 200,
+        diffuseRadiation_W_per_m2: 200, intervalMinutes: 15, // no directRadiation
+      },
+    };
+    const nanDirect = {
+      production: { time: Date.UTC(2024, 5, 15, hour), hour, slot, production_Wh: 600 },
+      irradiance: {
+        time: Date.UTC(2024, 5, 15, hour), hour, ghi_W_per_m2: 600,
+        directRadiation_W_per_m2: NaN, diffuseRadiation_W_per_m2: 200, intervalMinutes: 15,
+      },
+    };
+    const rows = [...valid, noDirect, nanDirect];
+
+    const models = estimateRobustLinearPvModels(
+      rows.map(r => r.production),
+      rows.map(r => r.irradiance),
+      96,
+    );
+
+    // Only the 4 well-formed rows became training samples.
+    expect(models[slot].sampleCount).toBe(4);
+    expect(models[slot].directCoeff).toBeCloseTo(2, 1);
+  });
+
+  it('skips records whose total radiation is at or below the 5 W/m² floor', () => {
+    // direct + diffuse <= 5 → excluded (line 640).
+    const rows = [
+      sample(10, 500, 100, 1500),
+      sample(11, 400, 200, 1800),
+      sample(12, 300, 300, 2100),
+      sample(13, 200, 400, 2400),
+      sample(14, 2, 1, 400), // total 3 W/m² → dropped
+    ];
+
+    const models = estimateRobustLinearPvModels(
+      rows.map(r => r.production),
+      rows.map(r => r.irradiance),
+      96,
+    );
+
+    expect(models[slot].sampleCount).toBe(4);
+  });
+
+  it('handles low-radiation samples below the strong threshold (no outlier pass)', () => {
+    // All totals are between 5 and 120 W/m², so the strong-radiation threshold
+    // (max(120, maxTotal*0.35) = 120) excludes every sample from the outlier
+    // check: strongRatios is empty → median([]) returns 0 (line 466), and each
+    // sample short-circuits at `total < strongThreshold` (line 511). No
+    // exclusions, and the fit still succeeds with positive coefficients.
+    const rows = [
+      sample(10, 80, 20, 180),
+      sample(11, 70, 30, 200),
+      sample(12, 60, 40, 220),
+      sample(13, 50, 50, 240),
+    ];
+
+    const models = estimateRobustLinearPvModels(
+      rows.map(r => r.production),
+      rows.map(r => r.irradiance),
+      96,
+    );
+
+    expect(models[slot].excludedCount).toBe(0);
+    expect(models[slot].sampleCount).toBe(4);
+    expect(models[slot].fallback).toBe(false);
+    expect(models[slot].directCoeff).toBeCloseTo(1.401, 2);
+    expect(models[slot].diffuseCoeff).toBeCloseTo(3.398, 2);
+  });
+
+  it('cross-validates using only the samples that carry a fallback value', () => {
+    // 4 rows carry a clear-sky fallback (enough to cross-validate), 2 do not.
+    // The fallback-less rows are skipped inside the CV loop (line 542) while
+    // still contributing to the fit. The robust model wins over the fallback.
+    const cvRows = [
+      sample(10, 500, 100, 1500),
+      sample(11, 400, 200, 1800),
+      sample(12, 300, 300, 2100),
+      sample(13, 200, 400, 2400),
+    ];
+    const extraRows = [
+      sample(14, 450, 150, 1650),
+      sample(15, 350, 250, 1950),
+    ];
+    const rows = [...cvRows, ...extraRows];
+    // Deliberately bad fallback predictions so the linear model clearly wins.
+    const fallbackPoints = new Map(cvRows.map(row => [row.irradiance.time, {
+      time: row.irradiance.time,
+      hour,
+      ghiClear_W_per_m2: 800,
+      ghiForecast_W_per_m2: row.irradiance.ghi_W_per_m2,
+      forecastRatio: 0.75,
+      predicted: 1000,
+      actual: row.production.production_Wh,
+    }]));
+
+    const models = estimateRobustLinearPvModels(
+      rows.map(r => r.production),
+      rows.map(r => r.irradiance),
+      96,
+      fallbackPoints,
+    );
+
+    expect(models[slot].sampleCount).toBe(6);
+    expect(models[slot].fallback).toBe(false);
+    expect(models[slot].directCoeff).toBeCloseTo(2, 1);
+  });
+
+  it('predicts linearly from a non-fallback per-slot model and handles night/missing-feature slots', () => {
+    // 96 models exercises the slotOfDay index arm (line 785). One real model at
+    // slot 48 (hour 12), the rest fallback. No fallbackPoints supplied, so
+    // ghiClear comes from the Bird model (line 791 right arm) and missing
+    // predictions default to 0 (line 794 right arm).
+    const models = new Array(96).fill(null).map((_, index) => ({
+      index, directCoeff: 0, diffuseCoeff: 0, sampleCount: 0, excludedCount: 0, fallback: true,
+    }));
+    models[slot] = { index: slot, directCoeff: 2, diffuseCoeff: 5, sampleCount: 4, excludedCount: 0, fallback: false };
+
+    const tDay = Date.UTC(2024, 5, 20, 12);   // slot 48, daytime, model present
+    const tNight = Date.UTC(2024, 5, 20, 1);  // slot 4, night, ghiClear ~ 0
+    const tNoFeat = Date.UTC(2024, 5, 20, 13); // slot 52, fallback model + no radiation features
+
+    const irr = [
+      { time: tDay, hour: 12, ghi_W_per_m2: 500, directRadiation_W_per_m2: 300, diffuseRadiation_W_per_m2: 200, intervalMinutes: 60 },
+      { time: tNight, hour: 1, ghi_W_per_m2: 0, directRadiation_W_per_m2: 0, diffuseRadiation_W_per_m2: 0, intervalMinutes: 60 },
+      { time: tNoFeat, hour: 13, ghi_W_per_m2: 400, intervalMinutes: 60 }, // no direct/diffuse
+    ];
+
+    const points = forecastPvLinear(models, irr, 51.05, 3.71);
+
+    // Daytime: linear prediction 2*300 + 5*200 = 1600 (lines 795-796).
+    expect(points[0].predicted).toBeCloseTo(1600);
+    expect(points[0].directRadiation_W_per_m2).toBe(300);
+    expect(points[0].ghiClear_W_per_m2).toBeGreaterThan(5);
+
+    // Night: ghiClear <= 5 → forecastRatio pinned to 0 (line 792 right arm),
+    // and with no fallback the prediction defaults to 0 (line 794 right arm).
+    expect(points[1].ghiClear_W_per_m2).toBe(0);
+    expect(points[1].forecastRatio).toBe(0);
+    expect(points[1].predicted).toBe(0);
+
+    // No radiation features → features is null, fallback model → predicted 0.
+    expect(points[2].directRadiation_W_per_m2).toBeUndefined();
+    expect(points[2].predicted).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forecastPvSlot — night branch
+// ---------------------------------------------------------------------------
+
+describe('forecastPvSlot — clear-sky guard', () => {
+  it('pins forecastRatio to 0 when the slot is at night (ghiClear <= 5)', () => {
+    // 01:00 UTC in June over Ghent — sun is below the horizon, so the Bird
+    // clear-sky GHI is ~0 and the ghiClear > 5 guard (line 682) is false.
+    const t = new Date('2024-06-20T01:00:00Z').getTime();
+    const capacity = new Array(96).fill(null).map((_, s) => ({
+      slot: s, maxProduction_Wh: 1000, maxRatio: 1, trueCapacity_Wh: 1000,
+    }));
+    const irr = [{ time: t, hour: 1, ghi_W_per_m2: 100, intervalMinutes: 15 }];
+
+    const points = forecastPvSlot(capacity, irr, 51.05, 3.71);
+    expect(points[0].ghiClear_W_per_m2).toBeLessThanOrEqual(5);
+    expect(points[0].forecastRatio).toBe(0);
+    expect(points[0].predicted).toBe(0);
+  });
 });

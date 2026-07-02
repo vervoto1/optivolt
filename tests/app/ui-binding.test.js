@@ -122,6 +122,53 @@ describe('ui-binding', () => {
       expect(run.focus).toHaveBeenCalled();
     });
 
+    it('skips quick-mirror inputs and routes data-no-autosolve inputs to onSave', () => {
+      // Normal autosolve input -> onInput.
+      const normal = createEl('input', 'norm', { 'data-settings-input': '' });
+      // Mirror input -> skipped entirely (no listeners wired).
+      const mirror = createEl('input', 'mirror', { 'data-settings-input': '' });
+      mirror.dataset.optimizerQuickMirror = 'true';
+      // Save-only input -> onSave, never onInput.
+      const saveOnly = createEl('input', 'save-only', {
+        'data-settings-input': '', 'data-no-autosolve': '',
+      });
+
+      const onInput = vi.fn();
+      const onSave = vi.fn();
+
+      wireGlobalInputs(
+        { run: null, tableKwh: null, updateDataBeforeRun: null, pushToVictron: null, terminal: null },
+        { onInput, onSave, onRun: vi.fn(), updateTerminalCustomUI: vi.fn() },
+      );
+
+      normal.dispatchEvent(new Event('input'));
+      expect(onInput).toHaveBeenCalledTimes(1);
+
+      // Mirror input fires events but has no wired listeners.
+      mirror.dispatchEvent(new Event('input'));
+      mirror.dispatchEvent(new Event('change'));
+      expect(onInput).toHaveBeenCalledTimes(1);
+      expect(onSave).not.toHaveBeenCalled();
+
+      // Save-only input routes to onSave, not onInput.
+      saveOnly.dispatchEvent(new Event('change'));
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(onInput).toHaveBeenCalledTimes(1);
+    });
+
+    it('wires the flows aggregation change handler when provided', () => {
+      const flows15m = createEl('input', 'flows-15m');
+      const onFlowsAggregationChange = vi.fn();
+
+      wireGlobalInputs(
+        { run: null, tableKwh: null, updateDataBeforeRun: null, pushToVictron: null, terminal: null, flows15m },
+        { onInput: vi.fn(), onRun: vi.fn(), updateTerminalCustomUI: vi.fn(), onFlowsAggregationChange },
+      );
+
+      flows15m.dispatchEvent(new Event('change'));
+      expect(onFlowsAggregationChange).toHaveBeenCalledTimes(1);
+    });
+
     it('ignores Enter without modifier', () => {
       const run = createEl('button', 'run3');
       run.click = vi.fn();

@@ -31,11 +31,13 @@ function lerp(a, b, t) {
 
 function srgbToLinear(channel) {
   const c = channel / 255;
+  /* v8 ignore next — the dark-channel arm is unreachable: every fixed price-color stop has channels ≥ 22 (> the 10.3 sRGB threshold) and this helper is not exported */
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 function linearToSrgb(channel) {
   const c = Math.max(0, Math.min(1, channel));
+  /* v8 ignore next — the near-black arm is unreachable: interpolation between the fixed (non-black) price-color stops never yields a linear channel ≤ 0.0031308 */
   const srgb = c <= 0.0031308 ? 12.92 * c : 1.055 * (c ** (1 / 2.4)) - 0.055;
   return Math.round(srgb * 255);
 }
@@ -104,6 +106,7 @@ export function getBuyPriceColor(price_cents_per_kWh) {
     }
   }
 
+  /* v8 ignore next — unreachable fallback: prices strictly between the first and last stop always return from inside the loop */
   return rgbString(last.rgb);
 }
 

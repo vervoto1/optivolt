@@ -1,0 +1,44 @@
+# Codecov configuration — lock coverage at 100%.
+#
+# Coverage is produced by `npm run test:coverage` (vitest v8) and uploaded by
+# the Tests workflow. The lcov report is already scoped to api/**, lib/**, and
+# app/src/** via the `coverage.include`/`exclude` settings in vitest.config.js,
+# so Codecov only ever sees the instrumented source files.
+
+coverage:
+  precision: 2
+  round: down
+  range: "100...100"
+  status:
+    # Overall project coverage must stay at 100% — no drop tolerated.
+    project:
+      default:
+        target: 100%
+        threshold: 0%
+        if_ci_failed: error
+        if_not_found: failure
+    # Every line of new/changed code in a PR must be covered.
+    patch:
+      default:
+        target: 100%
+        threshold: 0%
+        if_ci_failed: error
+        if_not_found: failure
+
+# Tests and generated assets never appear in the lcov report, but list them
+# explicitly so coverage scope stays unambiguous if the report ever widens.
+ignore:
+  - "tests/**"
+  - "app/lib/**"
+  - "app/vendor/**"
+  - "vendor/**"
+  - "**/*.test.js"
+  - "api/index.ts"
+  - "api/defaults/**"
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: false
+
+github_checks:
+  annotations: true

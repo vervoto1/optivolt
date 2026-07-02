@@ -12,6 +12,7 @@ vi.mock('../../../api/services/soc-tracker.ts', () => ({
 }));
 vi.mock('../../../api/services/efficiency-calibrator.ts', () => ({
   calibrate: vi.fn().mockResolvedValue(null),
+  calibrateEv: vi.fn().mockResolvedValue(null),
 }));
 
 const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await import(
@@ -19,7 +20,7 @@ const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await 
 );
 const { planAndMaybeWrite } = await import('../../../api/services/planner-service.ts');
 const { loadSettings } = await import('../../../api/services/settings-store.ts');
-const { calibrate } = await import('../../../api/services/efficiency-calibrator.ts');
+const { calibrate, calibrateEv } = await import('../../../api/services/efficiency-calibrator.ts');
 const { HttpError } = await import('../../../api/http-errors.ts');
 
 const BASE_TIME = '2024-01-01T12:03:00.000Z';
@@ -310,6 +311,51 @@ describe('auto-calculate', () => {
     expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
 
     warnSpy.mockRestore();
+  });
+
+  it('runs EV calibration alongside efficiency calibration when adaptive learning is enabled', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true, minDataDays: 4 } });
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(calibrate).toHaveBeenCalledWith(4);
+    expect(calibrateEv).toHaveBeenCalledWith(4);
+  });
+
+  it('catches EV calibration rejections without crashing the tick', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true, minDataDays: 2 } });
+    calibrateEv.mockRejectedValueOnce(new Error('EV calibration exploded'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    // Flush the rejected calibrateEv promise so its .catch handler runs.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[auto-calculate] EV calibration failed:',
+      'EV calibration exploded',
+    );
+    expect(isAutoCalculateRunning()).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it('defaults EV calibration minDataDays to 3 when unset', async () => {
+    loadSettings.mockResolvedValue({ adaptiveLearning: { enabled: true } }); // no minDataDays
+
+    const settings = makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false });
+    startAutoCalculate(settings);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(calibrateEv).toHaveBeenCalledWith(3);
   });
 
   it('retries with updateData:true when planAndMaybeWrite throws Insufficient future data and updateData is false', async () => {

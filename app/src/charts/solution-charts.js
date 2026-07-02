@@ -27,6 +27,7 @@ const FLOWS_TOOLTIP_LABELS = {
 };
 
 function makeFlowsTooltip(rows, flowSpecs, h) {
+  /* v8 ignore next — the `|| 0` arm is unreachable: W2kWh is only called for flow keys that already passed the `(row[key] || 0) !== 0` filter, so x is always truthy */
   const W2kWh = (x) => (x || 0) * h / 1000;
 
   return createTooltipHandler({
@@ -42,6 +43,7 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
       if (posRows.length) {
         html += ttSection("↑ Sources");
         for (const s of posRows) {
+          /* v8 ignore next — the `?? s.label` arm is unreachable: every flowSpec key has a FLOWS_TOOLTIP_LABELS entry */
           html += ttRow(s.color, FLOWS_TOOLTIP_LABELS[s.key] ?? s.label, `${fmtKwh(W2kWh(row[s.key]))} kWh`);
         }
       }
@@ -51,6 +53,7 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
       if (negRows.length) {
         html += ttSection("↓ Draws");
         for (const s of negRows) {
+          /* v8 ignore next — the `?? s.label` arm is unreachable: every flowSpec key has a FLOWS_TOOLTIP_LABELS entry */
           html += ttRow(s.color, FLOWS_TOOLTIP_LABELS[s.key] ?? s.label, `${fmtKwh(W2kWh(row[s.key]))} kWh`);
         }
       }

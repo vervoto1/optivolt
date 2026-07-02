@@ -19,9 +19,14 @@ vi.mock('../../app/src/state.js', () => ({
   updateStackedBarContainer: vi.fn(),
 }));
 
-import { updateEvPanel } from '../../app/src/ev-tab.js';
+vi.mock('../../app/src/api/api.js', () => ({
+  fetchEvStatus: vi.fn(),
+}));
+
+import { updateEvPanel, updateEvModeBadge } from '../../app/src/ev-tab.js';
 import { drawEvSocChartTab } from '../../app/src/charts.js';
 import { updateStackedBarContainer } from '../../app/src/state.js';
+import { fetchEvStatus } from '../../app/src/api/api.js';
 
 function makeEls() {
   return {
@@ -53,6 +58,8 @@ function makeEls() {
 describe('ev-tab.js', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    vi.clearAllMocks();
+    fetchEvStatus.mockReset();
   });
 
   describe('updateEvPanel -- no EV', () => {
@@ -68,6 +75,111 @@ describe('ev-tab.js', () => {
       updateEvPanel(els, [], {});
       expect(els.evTabGridKwh.textContent).toBe('');
       expect(els.evTabTotalCost.textContent).toBe('');
+    });
+  });
+
+  describe('updateEvModeBadge', () => {
+    function badgeEls() {
+      return {
+        evTabModeBadge: document.createElement('span'),
+        evTabModeRow: document.createElement('div'),
+        evTabTargetMet: document.createElement('span'),
+      };
+    }
+
+    it('returns early when els is missing', async () => {
+      await updateEvModeBadge(null);
+      expect(fetchEvStatus).not.toHaveBeenCalled();
+    });
+
+    it('returns early when the mode badge element is absent', async () => {
+      await updateEvModeBadge({ evTabModeRow: document.createElement('div') });
+      expect(fetchEvStatus).not.toHaveBeenCalled();
+    });
+
+    it('renders a known decision badge, reveals the row, and marks target met', async () => {
+      const els = badgeEls();
+      fetchEvStatus.mockResolvedValue({ mode: 'low_price', targetMet: true });
+      await updateEvModeBadge(els);
+      expect(els.evTabModeBadge.textContent).toBe('Low price');
+      expect(els.evTabModeBadge.className).toContain('bg-sky-100');
+      expect(els.evTabModeRow.classList.contains('hidden')).toBe(false);
+      expect(els.evTabTargetMet.textContent).toBe('✓ met');
+      expect(els.evTabTargetMet.className).toContain('text-emerald-600');
+    });
+
+    it('falls back to the idle badge for an unknown mode', async () => {
+      const els = badgeEls();
+      fetchEvStatus.mockResolvedValue({ mode: 'nonsense', targetMet: false });
+      await updateEvModeBadge(els);
+      expect(els.evTabModeBadge.textContent).toBe('Idle');
+      expect(els.evTabModeBadge.className).toContain('bg-slate-100');
+    });
+
+    it('marks below target when targetMet is false', async () => {
+      const els = badgeEls();
+      fetchEvStatus.mockResolvedValue({ mode: 'planned', targetMet: false });
+      await updateEvModeBadge(els);
+      expect(els.evTabTargetMet.textContent).toBe('below target');
+      expect(els.evTabTargetMet.className).toContain('text-amber-600');
+    });
+
+    it('shows a dash when targetMet is unknown (null)', async () => {
+      const els = badgeEls();
+      fetchEvStatus.mockResolvedValue({ mode: 'idle', targetMet: null });
+      await updateEvModeBadge(els);
+      expect(els.evTabTargetMet.textContent).toBe('—');
+      expect(els.evTabTargetMet.className).toContain('text-slate-400');
+    });
+
+    it('renders the badge without touching optional row/target nodes when absent', async () => {
+      const els = { evTabModeBadge: document.createElement('span') }; // no row, no targetMet
+      fetchEvStatus.mockResolvedValue({ mode: 'keep_on', targetMet: true });
+      await expect(updateEvModeBadge(els)).resolves.toBeUndefined();
+      expect(els.evTabModeBadge.textContent).toBe('Keep on');
+    });
+
+    it('hides the mode row when the status fetch fails', async () => {
+      const els = badgeEls();
+      els.evTabModeRow.classList.remove('hidden');
+      fetchEvStatus.mockRejectedValue(new Error('no plan'));
+      await updateEvModeBadge(els);
+      expect(els.evTabModeRow.classList.contains('hidden')).toBe(true);
+    });
+
+    it('swallows a fetch failure even when the mode row element is absent', async () => {
+      const els = { evTabModeBadge: document.createElement('span') };
+      fetchEvStatus.mockRejectedValue(new Error('boom'));
+      await expect(updateEvModeBadge(els)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('updateEvPanel -- preview banner', () => {
+    it('shows the preview banner and live SoC when a preview is supplied', () => {
+      const els = makeEls();
+      els.evPreviewBanner = document.createElement('div');
+      els.evPreviewSoc = document.createElement('span');
+      updateEvPanel(els, [], {}, 15, { liveSoc_percent: 54.6 });
+      expect(els.evPreviewBanner.classList.contains('hidden')).toBe(false);
+      expect(els.evPreviewSoc.textContent).toBe('55%'); // rounded
+    });
+
+    it('hides the preview banner when no preview is supplied', () => {
+      const els = makeEls();
+      els.evPreviewBanner = document.createElement('div');
+      els.evPreviewSoc = document.createElement('span');
+      updateEvPanel(els, [], {}, 15, null);
+      expect(els.evPreviewBanner.classList.contains('hidden')).toBe(true);
+      expect(els.evPreviewSoc.textContent).toBe(''); // not written without a preview
+    });
+
+    it('shows the banner but skips SoC text when liveSoc is null', () => {
+      const els = makeEls();
+      els.evPreviewBanner = document.createElement('div');
+      els.evPreviewSoc = document.createElement('span');
+      updateEvPanel(els, [], {}, 15, { liveSoc_percent: null });
+      expect(els.evPreviewBanner.classList.contains('hidden')).toBe(false);
+      expect(els.evPreviewSoc.textContent).toBe('');
     });
   });
 

@@ -251,3 +251,124 @@ describe('runPvForecast', () => {
     expect(result.forecast.values.every(v => v === 0)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pipeline with realistic, under-cap PV data so the production-record path,
+// the actuals map, and the recent/archive validation path actually execute.
+// (The fixtures above use change=800 kWh which the postprocessor drops as a
+// counter-reset spike, so they exercise only the empty-data branch.)
+// ---------------------------------------------------------------------------
+describe('runPvForecast — populated production + validation path', () => {
+  // HA readings at the same noon-hour timestamps the archive irradiance covers,
+  // each 0.5 kWh (= 500 Wh, well under the 25 kWh plausibility cap).
+  function realHaHistory() {
+    const readings = [];
+    for (let i = 1; i <= 8; i++) {
+      const dayStart = Math.floor((NOW_MS - i * 24 * 60 * 60 * 1000) / 3600000) * 3600000;
+      const t = dayStart + 11 * 3600000; // 11:00 of that day, hour-aligned
+      readings.push({ start: t, change: 0.5 });
+    }
+    return { 'sensor.pv': readings };
+  }
+
+  // Archive irradiance sharing the exact timestamps of the HA readings so the
+  // actuals map lines up and archive forecast points carry a non-null actual.
+  function realArchiveIrradiance() {
+    const records = [];
+    for (let i = 1; i <= 8; i++) {
+      const dayStart = Math.floor((NOW_MS - i * 24 * 60 * 60 * 1000) / 3600000) * 3600000;
+      const t = dayStart + 11 * 3600000;
+      records.push({
+        time: t,
+        hour: 11,
+        ghi_W_per_m2: 600,
+        directRadiation_W_per_m2: 450,
+        diffuseRadiation_W_per_m2: 150,
+        intervalMinutes: 60,
+      });
+    }
+    return records;
+  }
+
+  function realForecastIrradiance() {
+    const records = [];
+    for (let i = 0; i < 48; i++) {
+      const t = NOW_MS + i * 60 * 60 * 1000;
+      const hour = new Date(t).getUTCHours();
+      const lit = hour >= 6 && hour <= 18;
+      records.push({
+        time: t,
+        hour,
+        ghi_W_per_m2: lit ? 500 : 0,
+        directRadiation_W_per_m2: lit ? 380 : 0,
+        diffuseRadiation_W_per_m2: lit ? 120 : 0,
+        intervalMinutes: 60,
+      });
+    }
+    return records;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    fetchHaStats.mockResolvedValue(realHaHistory());
+    fetchArchiveIrradiance.mockResolvedValue(realArchiveIrradiance());
+    fetchForecastIrradiance.mockResolvedValue(realForecastIrradiance());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('builds a non-empty recent/validation series with paired actuals', async () => {
+    const result = await runPvForecast(baseConfig);
+
+    // The archive points within the last 7 days that have actuals populate `recent`.
+    expect(result.recent.length).toBeGreaterThan(0);
+    // Each recent point has both an actual and a predicted (scaled back to Wh/interval).
+    for (const p of result.recent) {
+      expect(p.actual).not.toBeNull();
+      expect(typeof p.actual).toBe('number');
+    }
+    // Validation metrics counted those paired points.
+    expect(result.metrics.n).toBe(result.recent.length);
+    expect(result.metrics.n).toBeGreaterThan(0);
+    // Actuals are the postprocessed 0.5 kWh → 500 Wh readings (hourly mode: scale 1).
+    expect(result.recent.some(p => Math.abs(p.actual - 500) < 1e-6)).toBe(true);
+  });
+
+  it('runs the robustLinear model branch when pvModel is robustLinear', async () => {
+    const config = {
+      ...baseConfig,
+      pvConfig: { ...baseConfig.pvConfig, pvModel: 'robustLinear' },
+    };
+    const result = await runPvForecast(config);
+
+    expect(result.model).toBe('robustLinear');
+    expect(result.forecast.step).toBe(15);
+    expect(result.forecast.values.every(v => v >= 0)).toBe(true);
+    // The validation path still runs on the archive points.
+    expect(result.recent.length).toBeGreaterThan(0);
+  });
+
+  it('runs the robustLinear branch in 15min mode (96 buckets)', async () => {
+    const config = {
+      ...baseConfig,
+      pvConfig: { ...baseConfig.pvConfig, pvMode: '15min', pvModel: 'robustLinear', historyDays: 7 },
+    };
+    const result = await runPvForecast(config);
+
+    expect(result.model).toBe('robustLinear');
+    expect(result.forecast.values.every(v => v >= 0)).toBe(true);
+  });
+
+  it('defaults pvModel to clearSkyRatio when unset', async () => {
+    const config = {
+      ...baseConfig,
+      pvConfig: { ...baseConfig.pvConfig, pvModel: undefined },
+    };
+    const result = await runPvForecast(config);
+    expect(result.model).toBe('clearSkyRatio');
+  });
+});

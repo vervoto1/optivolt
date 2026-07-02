@@ -271,3 +271,32 @@ describe('EV native charging — continuity + three-phase', () => {
     expect(charging1.ev_charge_A).toBeGreaterThan(charging3.ev_charge_A * 2.5);
   });
 });
+
+describe('EV opportunistic bands + degenerate efficiency (LP construction)', () => {
+  it('emits a second opportunistic band only when a type-2 cap above the type-1 cap is set', () => {
+    // target 80% (48 000 Wh), band-1 cap 90% (54 000 Wh), band-2 cap 100% (60 000 Wh).
+    const withBand2 = buildLP({
+      ...base,
+      ev: { ...evBase, evOpportunisticCap_percent: 90, evOpportunisticType2Cap_percent: 100 },
+    });
+    expect(withBand2).toContain('ev_opp_band2');
+    // band-2 width = cap2 - cap1 = 60 000 - 54 000 = 6000 Wh upper bound.
+    expect(withBand2).toMatch(/ev_opp_band2 <= 6000\b/);
+
+    // Without a type-2 cap, only the first band exists.
+    const band1Only = buildLP({
+      ...base,
+      ev: { ...evBase, evOpportunisticCap_percent: 90 },
+    });
+    expect(band1Only).toContain('ev_opp_band');
+    expect(band1Only).not.toContain('ev_opp_band2');
+  });
+
+  it('builds a finite LP when EV charge efficiency is 0 (no divide-by-zero)', () => {
+    // eta_ev = 0 ⇒ evChargeWhPerW = 0; the per-Wh cost guards must avoid 1/0.
+    const lp = buildLP({ ...base, ev: { ...evBase, evChargeEfficiency_percent: 0 } });
+    expect(typeof lp).toBe('string');
+    expect(lp.length).toBeGreaterThan(0);
+    expect(lp).not.toMatch(/Infinity|NaN/);
+  });
+});

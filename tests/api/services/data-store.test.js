@@ -100,6 +100,58 @@ describe('validateData', () => {
     const data = makeValidData({ load: { start: NOW_STRING, values: [100] } });
     expect(validateData(data)).toBe(data);
   });
+
+  it('accepts a null lastFullSocAt', () => {
+    const data = makeValidData({ lastFullSocAt: null });
+    expect(validateData(data)).toBe(data);
+  });
+
+  it('accepts a valid lastFullSocAt timestamp string', () => {
+    const data = makeValidData({ lastFullSocAt: '2024-01-02T03:04:05.000Z' });
+    expect(validateData(data)).toBe(data);
+  });
+
+  it('throws when lastFullSocAt is not a string', () => {
+    const data = makeValidData({ lastFullSocAt: 1234567890 });
+    expect(() => validateData(data)).toThrow(/lastFullSocAt.*null or a valid timestamp/);
+  });
+
+  it('throws when lastFullSocAt is an invalid timestamp string', () => {
+    const data = makeValidData({ lastFullSocAt: 'not-a-date' });
+    expect(() => validateData(data)).toThrow(/lastFullSocAt.*not-a-date/);
+  });
+
+  it('throws when predictionAdjustments is not an array', () => {
+    const data = makeValidData({ predictionAdjustments: { id: 'x' } });
+    expect(() => validateData(data)).toThrow(/predictionAdjustments: must be an array/);
+  });
+
+  it('validates each entry of a predictionAdjustments array', () => {
+    const valid = {
+      id: 'adj-1',
+      series: 'load',
+      mode: 'add',
+      value_W: 500,
+      start: '2024-01-01T00:00:00.000Z',
+      end: '2024-01-01T06:00:00.000Z',
+      createdAt: NOW_STRING,
+      updatedAt: NOW_STRING,
+    };
+    const data = makeValidData({ predictionAdjustments: [valid] });
+    expect(validateData(data)).toBe(data);
+  });
+
+  it('throws when a predictionAdjustments entry is invalid', () => {
+    const data = makeValidData({
+      predictionAdjustments: [{ id: 'adj-1', series: 'bogus', mode: 'add', value_W: 1, start: '2024-01-01T00:00:00.000Z', end: '2024-01-01T06:00:00.000Z' }],
+    });
+    expect(() => validateData(data)).toThrow(/series must be/);
+  });
+
+  it('accepts an empty predictionAdjustments array', () => {
+    const data = makeValidData({ predictionAdjustments: [] });
+    expect(validateData(data)).toBe(data);
+  });
 });
 
 describe('loadData', () => {

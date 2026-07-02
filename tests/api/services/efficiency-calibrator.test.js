@@ -55,7 +55,16 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-import { calibrate, resetCalibration } from '../../../api/services/efficiency-calibrator.ts';
+import {
+  calibrate,
+  resetCalibration,
+  calibrateEv,
+  loadEvCalibration,
+  saveEvCalibration,
+  resetEvCalibration,
+  generateThresholdsFromCurve,
+  EV_MIN_RATE,
+} from '../../../api/services/efficiency-calibrator.ts';
 import { unlink } from 'node:fs/promises';
 
 function makeSnapshot(slots, createdAtMs = Date.now() - 5 * 24 * 60 * 60_000) {
@@ -871,5 +880,348 @@ describe('efficiency-calibrator — sample counts (chargeSamples/dischargeSample
     // Charge had no data
     const totalChargeSamples = result.chargeSamples.reduce((a, b) => a + b, 0);
     expect(totalChargeSamples).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateThresholdsFromCurve — MILP threshold extraction from a curve
+// ---------------------------------------------------------------------------
+describe('generateThresholdsFromCurve', () => {
+  const flatCurve = (v = 1.0) => new Array(100).fill(v);
+  const flatSamples = (c = 10) => new Array(100).fill(c);
+
+  it('emits nothing for a flat all-1.0 curve (no reduction anywhere)', () => {
+    expect(generateThresholdsFromCurve(flatCurve(1.0), flatSamples(10), 3600, 'charge')).toEqual([]);
+  });
+
+  it('emits a single charge threshold at the segment boundary of a high-SoC cliff', () => {
+    // Drops to 0.6 from SoC 91; only the top segment (91-99) is fully reduced.
+    const curve = Array.from({ length: 100 }, (_, i) => (i >= 91 ? 0.6 : 1.0));
+    const r = generateThresholdsFromCurve(curve, flatSamples(10), 3600, 'charge');
+    expect(r).toHaveLength(1);
+    expect(r[0].soc_percent).toBe(91); // charge boundary = segment lo
+    expect(r[0].power_W).toBe(Math.round(3600 * 0.6));
+  });
+
+  it('ignores low-SoC reductions for charge (charge starts at the upper half)', () => {
+    const curve = flatCurve(1.0);
+    for (let i = 0; i < 13; i++) curve[i] = 0.6; // bottom segment only
+    expect(generateThresholdsFromCurve(curve, flatSamples(10), 3600, 'charge')).toEqual([]);
+  });
+
+  it('emits discharge thresholds in descending SoC order at the segment top', () => {
+    // Reduced at low SoC for discharge (segments 0-3 are scanned).
+    const curve = Array.from({ length: 100 }, (_, i) => (i < 25 ? 0.6 : 1.0));
+    const r = generateThresholdsFromCurve(curve, flatSamples(10), 4000, 'discharge');
+    expect(r.length).toBeGreaterThan(0);
+    for (let i = 1; i < r.length; i++) {
+      expect(r[i].soc_percent).toBeLessThanOrEqual(r[i - 1].soc_percent);
+    }
+    // Discharge boundary = hi-1 of the segment; descending → highest boundary first.
+    // Segment 1 (13-25) is mostly 0.6, boundary = min(26,100)-1 = 25.
+    expect(r[0].soc_percent).toBe(25);
+    expect(r[r.length - 1].soc_percent).toBe(12); // segment 0 boundary
+  });
+
+  it('skips segments whose total samples are below minSamples', () => {
+    const curve = flatCurve(0.5);
+    expect(generateThresholdsFromCurve(curve, new Array(100).fill(0), 3600, 'charge', 2)).toEqual([]);
+    expect(generateThresholdsFromCurve(curve, new Array(100).fill(1), 3600, 'charge', 2)).toEqual([]);
+  });
+
+  it('clamps the per-segment ratio to the default MIN_RATE (0.50) floor', () => {
+    const r = generateThresholdsFromCurve(flatCurve(0.3), flatSamples(10), 3600, 'charge');
+    for (const t of r) expect(t.power_W).toBe(Math.round(3600 * 0.50));
+  });
+
+  it('honours a lower EV floor than the battery (deeper taper allowed)', () => {
+    const curve = flatCurve(1.0);
+    const samples = new Array(100).fill(0);
+    for (let b = 88; b < 100; b++) { curve[b] = 0.18; samples[b] = 5; }
+    const r = generateThresholdsFromCurve(curve, samples, 11040, 'charge', 2, undefined, EV_MIN_RATE);
+    expect(r.length).toBeGreaterThan(0);
+    const deepest = Math.min(...r.map(t => t.power_W));
+    expect(deepest).toBeLessThan(0.5 * 11040); // below the battery clamp
+    expect(deepest).toBeGreaterThanOrEqual(Math.round(EV_MIN_RATE * 11040) - 1);
+  });
+
+  it('truncates to maxThresholds, keeping the deepest reductions, then re-sorts', () => {
+    const curve = new Array(100).fill(1.0);
+    for (let i = 52; i < 65; i++) curve[i] = 0.90; // reduction 0.10 (smallest)
+    for (let i = 65; i < 78; i++) curve[i] = 0.80; // reduction 0.20
+    for (let i = 78; i < 91; i++) curve[i] = 0.60; // reduction 0.40 (largest)
+    for (let i = 91; i < 100; i++) curve[i] = 0.70; // reduction 0.30
+    const r = generateThresholdsFromCurve(curve, flatSamples(10), 4000, 'charge', 2, 2);
+    expect(r).toHaveLength(2);
+    // Kept seg6 (0.40) + seg7 (0.30); re-sorted ascending by SoC for charge.
+    expect(r[0].soc_percent).toBe(78);
+    expect(r[1].soc_percent).toBe(91);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EV calibration: persistence + calibrateEv + collectEvRatios
+// ---------------------------------------------------------------------------
+const QUARTER = 15 * 60_000;
+const DAY = 24 * 60 * 60_000;
+
+function makeEvSnapshot(baseMs, evSocSeq) {
+  return {
+    planId: `ev-plan-${baseMs}`,
+    createdAtMs: baseMs,
+    initialSoc_percent: 50,
+    slots: evSocSeq.map((soc, i) => ({
+      timestampMs: baseMs + i * QUARTER,
+      predictedSoc_percent: 50,
+      chargePower_W: 0,
+      dischargePower_W: 0,
+      predictedLoad_W: 400,
+      predictedPv_W: 0,
+      strategy: 0,
+      predictedEvSoc_percent: soc,
+      evChargePower_W: 11040,
+    })),
+  };
+}
+
+function makeEvSamples(baseMs, actualEvSeq, over = {}) {
+  return actualEvSeq.map((soc, i) => ({
+    timestampMs: baseMs + i * QUARTER,
+    soc_percent: 50,
+    actualEvSoc_percent: soc,
+    evPluggedIn: true,
+    actualLoad_W: 400,
+    actualPv_W: 0,
+    ...over,
+  }));
+}
+
+describe('efficiency-calibrator — EV persistence', () => {
+  beforeEach(() => {
+    mockSnapshots.length = 0;
+    mockSamples.length = 0;
+    mockCalibration = null;
+    savedCalibration = null;
+  });
+
+  it('loadEvCalibration returns null on ENOENT', async () => {
+    mockCalibration = null;
+    expect(await loadEvCalibration()).toBeNull();
+  });
+
+  it('loadEvCalibration rethrows non-ENOENT errors', async () => {
+    const { readJson } = await import('../../../api/services/json-store.ts');
+    readJson.mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+    await expect(loadEvCalibration()).rejects.toThrow('EACCES');
+  });
+
+  it('saveEvCalibration persists via writeJson', async () => {
+    const cal = { evChargeCurve: new Array(100).fill(1), evChargeSamples: new Array(100).fill(0), effectiveChargeRate: 1, sampleCount: 0, confidence: 0, lastCalibratedMs: 1 };
+    await saveEvCalibration(cal);
+    expect(savedCalibration).toBe(cal);
+  });
+});
+
+describe('resetEvCalibration', () => {
+  beforeEach(() => unlink.mockClear());
+
+  it('unlinks the ev-calibration file', async () => {
+    await resetEvCalibration();
+    expect(unlink).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(expect.stringContaining('ev-calibration.json'));
+  });
+
+  it('swallows ENOENT (file already absent)', async () => {
+    unlink.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    await expect(resetEvCalibration()).resolves.toBeUndefined();
+  });
+
+  it('rethrows a non-ENOENT unlink error', async () => {
+    unlink.mockRejectedValueOnce(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+    await expect(resetEvCalibration()).rejects.toThrow('EPERM');
+  });
+});
+
+describe('calibrateEv', () => {
+  beforeEach(() => {
+    mockSnapshots.length = 0;
+    mockSamples.length = 0;
+    mockCalibration = null;
+    savedCalibration = null;
+  });
+
+  it('returns null when there are no snapshots or samples', async () => {
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('returns null when history covers fewer than minDataDays', async () => {
+    const now = Date.now();
+    mockSnapshots.push(makeEvSnapshot(now - 60_000, [80, 85]));
+    mockSamples.push(...makeEvSamples(now - 60_000, [80, 84]));
+    // oldest snapshot only ~1 minute old → far below 3 days.
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('learns a deepening acceptance taper across SoC bands and saves it', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84])); // Δ3,2,1 → tapering
+    }
+    const result = await calibrateEv(3);
+    expect(result).not.toBeNull();
+    expect(result.sampleCount).toBe(36); // 3 ratios × 12 snapshots
+    expect(result.evChargeSamples[81]).toBe(12);
+    expect(result.evChargeCurve[91]).toBeLessThan(result.evChargeCurve[86]);
+    expect(result.evChargeCurve[86]).toBeLessThan(result.evChargeCurve[81]);
+    expect(result.effectiveChargeRate).toBeLessThan(1.0);
+    expect(result.confidence).toBe(Math.round(Math.min(1, 36 / 200) * 100) / 100);
+    expect(savedCalibration).toBe(result);
+  });
+
+  it('returns null when every ratio is filtered (car never plugged in)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84], { evPluggedIn: false }));
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips slots missing a predicted EV SoC trajectory', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      const snap = makeEvSnapshot(baseMs, [78, 83, 88, 93]);
+      // Wipe the predicted EV SoC so collectEvRatios skips via the null-trajectory gate.
+      for (const slot of snap.slots) slot.predictedEvSoc_percent = null;
+      mockSnapshots.push(snap);
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84]));
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips a slot whose previous boundary lacks a predicted EV SoC (asymmetric null)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      const snap = makeEvSnapshot(baseMs, [78, 83, 88, 93]);
+      // Slot i has a value, but its predecessor (i-1) is null → second clause of the gate.
+      for (let i = 0; i < snap.slots.length; i += 2) snap.slots[i].predictedEvSoc_percent = null;
+      mockSnapshots.push(snap);
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84]));
+    }
+    // With alternating nulls every (prev,cur) pair has at least one null → all skipped.
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips slots where no actual SoC sample exists at a boundary (findLatest null)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      // Only one sample per snapshot, hours away from slots 1..3 → other boundaries null.
+      mockSamples.push({
+        timestampMs: baseMs, soc_percent: 50, actualEvSoc_percent: 78,
+        evPluggedIn: true, actualLoad_W: 400, actualPv_W: 0,
+      });
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips EV slots where home load diverged from plan (clean-slot gate)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      // Predicted home load is 400W but actual is 6000W → >20% deviation → filtered.
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84], { actualLoad_W: 6000 }));
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips slots with a missing actual EV SoC reading', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84], { actualEvSoc_percent: null }));
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('skips slots with non-positive predicted EV charge (no charge slot)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      // Flat predicted EV SoC → predictedChange = 0 < MIN_SOC_CHANGE_PERCENT.
+      mockSnapshots.push(makeEvSnapshot(baseMs, [80, 80, 80, 80]));
+      mockSamples.push(...makeEvSamples(baseMs, [80, 81, 82, 83]));
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('discards a gross EV acceptance outlier (ratio > 2)', async () => {
+    const now = Date.now();
+    for (let d = 0; d < 12; d++) {
+      const baseMs = now - 5 * DAY + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [50, 51, 52, 53])); // predicted Δ1/slot
+      mockSamples.push(...makeEvSamples(baseMs, [50, 60, 70, 80])); // actual Δ10/slot → ratio 10
+    }
+    expect(await calibrateEv(3)).toBeNull();
+  });
+
+  it('stops at the first future slot and continues EMA from a prior EV calibration', async () => {
+    const now = Date.now();
+    // Seed prev EV calibration with full-length curves to exercise the continuity path.
+    const base = now - 5 * DAY;
+    mockSnapshots.push(makeEvSnapshot(base, [78, 83, 88, 93]));
+    // Last slot is in the future → loop must break before it.
+    mockSnapshots[0].slots.push({
+      timestampMs: now + 2 * 60 * 60_000,
+      predictedSoc_percent: 50, chargePower_W: 0, dischargePower_W: 0,
+      predictedLoad_W: 400, predictedPv_W: 0, strategy: 0,
+      predictedEvSoc_percent: 98, evChargePower_W: 11040,
+    });
+    mockSamples.push(...makeEvSamples(base, [78, 81, 83, 84]));
+
+    mockCalibration = {
+      evChargeCurve: new Array(100).fill(0.7),
+      evChargeSamples: new Array(100).fill(3),
+      effectiveChargeRate: 0.7,
+      sampleCount: 30,
+      confidence: 0.15,
+      lastCalibratedMs: base,
+    };
+
+    const result = await calibrateEv(3);
+    expect(result).not.toBeNull();
+    expect(result.sampleCount).toBe(3); // only the 3 elapsed ratios
+    // Continued from the 0.7 seed → bands that got samples now carry >3 counts.
+    expect(result.evChargeSamples[81]).toBe(4);
+  });
+
+  it('falls back to default curves when the prior EV calibration has wrong-length arrays', async () => {
+    const now = Date.now();
+    const base = now - 5 * DAY;
+    for (let d = 0; d < 4; d++) {
+      const baseMs = base + d * 60 * 60_000;
+      mockSnapshots.push(makeEvSnapshot(baseMs, [78, 83, 88, 93]));
+      mockSamples.push(...makeEvSamples(baseMs, [78, 81, 83, 84]));
+    }
+    mockCalibration = {
+      evChargeCurve: [0.5, 0.4], // wrong length → defaultCurve()
+      evChargeSamples: [1],      // wrong length → defaultSampleCounts()
+      effectiveChargeRate: 0.5,
+      sampleCount: 2,
+      confidence: 0.01,
+      lastCalibratedMs: base,
+    };
+    const result = await calibrateEv(3);
+    expect(result).not.toBeNull();
+    expect(result.evChargeCurve).toHaveLength(100);
+    expect(result.evChargeSamples).toHaveLength(100);
   });
 });

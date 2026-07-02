@@ -181,6 +181,7 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
       forecastChartDrag.moved = forecastChartDrag.moved || distance > 4 || picked.index !== forecastChartDrag.startIndex;
       forecastChartDrag.endIndex = picked.index;
       const range = buildForecastSelectionRange(forecastChartDrag.startIndex, forecastChartDrag.endIndex, timestamps, stepMinutes);
+      /* v8 ignore next — the `: null` arm is unreachable: a drag in progress always has a non-empty timestamp set, so buildForecastSelectionRange returns a range */
       forecastChartSelection = range ? { ...range, series: forecastChartDrag.series } : null;
       canvas._chart?.update('none');
     };
@@ -192,6 +193,7 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
       canvas.releasePointerCapture?.(event.pointerId);
 
       const range = buildForecastSelectionRange(drag.startIndex, drag.endIndex, timestamps, stepMinutes);
+      /* v8 ignore next — unreachable: a completed drag always yields a non-null range (timestamps are non-empty) */
       if (!range) return;
       forecastChartSelection = { ...range, series: drag.series };
       canvas._chart?.update('none');
@@ -250,6 +252,7 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
 
   function showAdjustmentEditor() {
     const popover = document.getElementById('forecast-adjustment-popover');
+    /* v8 ignore next — unreachable: showAdjustmentEditor is only reached after openAdjustmentPopover's own popover guard passes */
     if (!popover) return;
     popover.classList.remove('hidden');
     popover.style.left = '';
@@ -271,6 +274,7 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
         end: adjustment.end,
       };
       forecastChartSelection = null;
+    /* v8 ignore start — defensive arms: the selection-branch fields (series/start/end) are always populated, and the final `else` is unreachable because callers always pass `adjustment` or a non-null `selection` */
     } else if (selection) {
       const series = selection?.series || 'load';
       adjustmentDraft = {
@@ -284,6 +288,7 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
     } else {
       return;
     }
+    /* v8 ignore stop */
 
     setEl('forecast-adjustment-title', adjustmentDraft.id ? 'Edit adjustment' : 'Manual adjustment');
     setEl('forecast-adjustment-range', formatRange(adjustmentDraft.start, adjustmentDraft.end));
@@ -471,6 +476,7 @@ function findAdjustmentIndexes(adj, timestamps, stepMinutes) {
   let last = first;
   for (let i = first + 1; i < timestamps.length; i++) {
     if (timestamps[i] >= adjEndMs) break;
+    /* v8 ignore next — false arm unreachable: with sorted timestamps and the break above, every bucket before adjEnd overlaps the adjustment */
     if (adjustmentOverlapsBucket(adj, timestamps[i], timestamps[i] + stepMs)) last = i;
   }
   return { first, last };

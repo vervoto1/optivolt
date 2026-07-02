@@ -36,6 +36,13 @@ describe('renderTable', () => {
     // no error thrown
   });
 
+  it('returns early when targets is omitted entirely (targets || {})', () => {
+    // With no `targets` arg the `targets || {}` fallback must yield an empty
+    // object so the destructure does not throw before the early return.
+    expect(() => renderTable({ rows: [makeRow()], cfg: {}, showKwh: false })).not.toThrow();
+    expect(() => renderTable({ rows: [makeRow()], cfg: {}, targets: null, showKwh: false })).not.toThrow();
+  });
+
   it('returns early when rows is empty or null', () => {
     const table = document.createElement('table');
     renderTable({ rows: [], cfg: {}, targets: { table }, showKwh: false });

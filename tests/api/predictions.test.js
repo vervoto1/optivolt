@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { get, post } from './helpers/express-test-client.js';
+import { get, post, inject } from './helpers/express-test-client.js';
 
 vi.mock('../../api/services/prediction-config-store.ts');
 vi.mock('../../api/services/load-prediction-service.ts');
@@ -314,5 +314,136 @@ describe('Prediction route contracts', () => {
     const res = await post(predictionsRouter, '/load/forecast', {});
     expect(res.status).toBe(502);
     expect(res.body.error).toContain('HA connection error');
+  });
+
+  // ------------------------- Manual adjustments -------------------------
+  // These drive prediction-adjustment-store.ts through the data-store mock.
+
+  const FUTURE_START = '2099-01-01T00:00:00.000Z';
+  const FUTURE_END = '2099-01-01T01:00:00.000Z';
+
+  function patch(router, url, body) {
+    return inject(router, { method: 'PATCH', url, body });
+  }
+  function del(router, url) {
+    return inject(router, { method: 'DELETE', url });
+  }
+
+  function storedAdjustment(overrides = {}) {
+    return {
+      id: 'adj-1',
+      series: 'load',
+      mode: 'add',
+      value_W: 100,
+      start: FUTURE_START,
+      end: FUTURE_END,
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('GET /predictions/adjustments returns the active adjustments', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [storedAdjustment({ id: 'a' })] });
+    const res = await get(predictionsRouter, '/adjustments');
+    expect(res.status).toBe(200);
+    expect(res.body.adjustments.map(a => a.id)).toEqual(['a']);
+  });
+
+  it('GET /predictions/adjustments returns 500 when the store throws', async () => {
+    loadData.mockRejectedValueOnce(new Error('disk read failed'));
+    const res = await get(predictionsRouter, '/adjustments');
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to read prediction adjustments');
+  });
+
+  it('POST /predictions/adjustments creates and persists an adjustment (201)', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [] });
+    const res = await post(predictionsRouter, '/adjustments', {
+      series: 'pv', mode: 'set', value_W: 0, start: FUTURE_START, end: FUTURE_END, label: 'cloudy',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.adjustment.series).toBe('pv');
+    expect(res.body.adjustment.value_W).toBe(0);
+    expect(res.body.adjustments).toHaveLength(1);
+    expect(saveData).toHaveBeenCalled();
+  });
+
+  it('POST /predictions/adjustments rejects a non-object body (400)', async () => {
+    const res = await post(predictionsRouter, '/adjustments', []);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('prediction adjustment payload must be an object');
+  });
+
+  it('POST /predictions/adjustments surfaces validation HttpErrors as 400', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [] });
+    const res = await post(predictionsRouter, '/adjustments', {
+      series: 'grid', mode: 'set', value_W: 0, start: FUTURE_START, end: FUTURE_END,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('series must be "load" or "pv"');
+  });
+
+  it('POST /predictions/adjustments maps a non-HttpError store failure to 500', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [] });
+    saveData.mockRejectedValueOnce(new Error('disk write failed'));
+    const res = await post(predictionsRouter, '/adjustments', {
+      series: 'pv', mode: 'set', value_W: 0, start: FUTURE_START, end: FUTURE_END,
+    });
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to create prediction adjustment');
+  });
+
+  it('PATCH /predictions/adjustments/:id updates an existing adjustment', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [storedAdjustment({ id: 'a', value_W: 100 })] });
+    const res = await patch(predictionsRouter, '/adjustments/a', { value_W: 555 });
+    expect(res.status).toBe(200);
+    expect(res.body.adjustment.value_W).toBe(555);
+    expect(saveData).toHaveBeenCalled();
+  });
+
+  it('PATCH /predictions/adjustments/:id rejects a non-object body (400)', async () => {
+    const res = await patch(predictionsRouter, '/adjustments/a', []);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('prediction adjustment payload must be an object');
+  });
+
+  it('PATCH /predictions/adjustments/:id returns 404 when not found', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [storedAdjustment({ id: 'a' })] });
+    const res = await patch(predictionsRouter, '/adjustments/missing', { value_W: 1 });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Prediction adjustment not found');
+  });
+
+  it('PATCH /predictions/adjustments/:id maps a non-HttpError store failure to 500', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [storedAdjustment({ id: 'a' })] });
+    saveData.mockRejectedValueOnce(new Error('disk write failed'));
+    const res = await patch(predictionsRouter, '/adjustments/a', { value_W: 1 });
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to update prediction adjustment');
+  });
+
+  it('DELETE /predictions/adjustments/:id removes an adjustment', async () => {
+    loadData.mockResolvedValue({
+      predictionAdjustments: [storedAdjustment({ id: 'a' }), storedAdjustment({ id: 'b' })],
+    });
+    const res = await del(predictionsRouter, '/adjustments/a');
+    expect(res.status).toBe(200);
+    expect(res.body.adjustments.map(x => x.id)).toEqual(['b']);
+    expect(saveData).toHaveBeenCalled();
+  });
+
+  it('DELETE /predictions/adjustments/:id returns 404 when not found', async () => {
+    loadData.mockResolvedValue({ predictionAdjustments: [storedAdjustment({ id: 'a' })] });
+    const res = await del(predictionsRouter, '/adjustments/missing');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Prediction adjustment not found');
+  });
+
+  it('DELETE /predictions/adjustments/:id maps a non-HttpError store failure to 500', async () => {
+    loadData.mockRejectedValueOnce(new Error('disk read failed'));
+    const res = await del(predictionsRouter, '/adjustments/a');
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to delete prediction adjustment');
   });
 });

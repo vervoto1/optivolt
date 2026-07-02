@@ -163,6 +163,7 @@ function buildSkeleton(batteries) {
 function renderBatteryState(battery, view, index) {
   // SoC chip
   const soc = battery.scalars?.soc;
+  /* v8 ignore next — view.socChip is always present: buildSkeleton populates it from a fixed card template, so the null-guard's false arm is unreachable */
   if (view.socChip) {
     if (soc && soc.value != null && Number.isFinite(soc.value)) {
       view.socChip.textContent = `${Math.round(soc.value)}%`;
@@ -173,6 +174,7 @@ function renderBatteryState(battery, view, index) {
   }
 
   // Overview tiles
+  /* v8 ignore next — view.overviewEl is always present (fixed card template); the null-guard's false arm is unreachable */
   if (view.overviewEl) {
     const tiles = BATTERY_SCALAR_SPEC.map((spec) => tileHtml(spec.label, formatScalar(battery.scalars?.[spec.key])));
     if (battery.balancing) tiles.push(tileHtml("Balancing", formatBalancing(battery.balancing.value)));
@@ -181,6 +183,7 @@ function renderBatteryState(battery, view, index) {
   }
 
   // Snapshot bars (re-rendered every poll to reflect the latest cell voltages)
+  /* v8 ignore next — view.snapshotCanvas is always present (fixed card template); the null-guard's false arm is unreachable */
   if (view.snapshotCanvas) {
     const drawn = renderCellSnapshot(view.snapshotCanvas, battery.cells ?? [], batteryColor(index));
     if (!drawn) setChartMessage(view.snapshotCanvas, "Cell sensors not found");

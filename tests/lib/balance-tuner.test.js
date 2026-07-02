@@ -79,3 +79,34 @@ describe('decideBalanceSettings — out-of-range warning', () => {
     expect(decide(3.3).warning).toBe(false);
   });
 });
+
+describe('decideBalanceSettings — degenerate step (step <= 0)', () => {
+  // When step <= 0 the quantizer can't grid-snap; it simply clamps the raw
+  // voltage into [base, cap]. Exercised via the bottom region where the start
+  // is computed with steppedVoltage(v, bottomFloor, step, topCap).
+  const zeroStepPolicy = { ...policy, step: 0 };
+
+  it('clamps the raw voltage into [bottomFloor, topCap] in the bottom region', () => {
+    // v=3.3 is in the bottom band (< bottomTop 3.4); with step 0 the start is
+    // clamped to the raw voltage 3.3 (between floor 2.9 and cap 3.55).
+    const d = decideBalanceSettings(3.3, 0, zeroStepPolicy);
+    expect(d.reason).toBe('bottom');
+    expect(d.startVoltage).toBe(3.3);
+  });
+
+  it('clamps up to the floor when the voltage is below it', () => {
+    // v=2.85 < bottomFloor 2.9 → Math.max(base, v) lifts it to the floor.
+    const d = decideBalanceSettings(2.85, 0, zeroStepPolicy);
+    expect(d.reason).toBe('bottom');
+    expect(d.startVoltage).toBe(2.9);
+    expect(d.warning).toBe(true);
+  });
+
+  it('clamps down to the topCap in the top region', () => {
+    // v=3.5 (top band). With step 0, steppedVoltage returns min(cap, max(base, v))
+    // = min(3.55, max(3.45, 3.5)) = 3.5.
+    const d = decideBalanceSettings(3.5, 0, zeroStepPolicy);
+    expect(d.reason).toBe('top');
+    expect(d.startVoltage).toBe(3.5);
+  });
+});

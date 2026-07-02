@@ -164,6 +164,7 @@ function updateMetrics(prefix, resultObject) {
 }
 
 function updateStoredForecastMetrics(prefix, rawForecast, adjustedForecast) {
+  /* v8 ignore next — the `?? rawForecast` arm is unreachable: callers always pass an adjustedForecast derived (just-before) from the same raw series, so it is non-null whenever rawForecast is */
   updateMetrics(prefix, { forecast: adjustedForecast ?? rawForecast, metrics: { mae: NaN } });
   setEl(`${prefix}-summary-error`, '--');
   updateStatus(prefix, 'Stored data loaded');

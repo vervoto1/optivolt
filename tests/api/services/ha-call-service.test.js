@@ -29,6 +29,22 @@ describe('callHaService — generic HA write path', () => {
     expect(body).toEqual({ entity_id: 'number.amps', value: 16 });
   });
 
+  it('sends data only when no target is given (target ?? {})', async () => {
+    // A targetless service call (e.g. a script/scene) still POSTs a body built
+    // purely from `data`; the `target ?? {}` fallback must contribute nothing.
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    await callHaService({ ...HA, domain: 'homeassistant', service: 'restart', data: { foo: 'bar' } });
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body).toEqual({ foo: 'bar' });
+  });
+
+  it('sends an empty body when neither target nor data is given', async () => {
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    await callHaService({ ...HA, domain: 'script', service: 'run_thing' });
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body).toEqual({});
+  });
+
   it('throws when HA returns non-OK', async () => {
     global.fetch.mockResolvedValue({ ok: false, status: 500 });
     await expect(callHaService({ ...HA, domain: 'switch', service: 'turn_on', target: { entity_id: 'switch.x' } }))

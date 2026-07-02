@@ -118,6 +118,62 @@ describe('soc-tracker', () => {
     expect(sample.evPluggedIn).toBe(true);
   });
 
+  it('omits EV fields and warns when the EV SoC read from HA fails', async () => {
+    const { fetchHaEntityState } = await import('../../../api/services/ha-client.ts');
+    loadSettings.mockResolvedValue({
+      shoreOptimizer: { batteryInstance: 512 },
+      evSocSensor: 'sensor.tesla_battery_level',
+      evPlugSensor: 'binary_sensor.tesla_plug',
+      haUrl: 'http://ha', haToken: 'tok',
+    });
+    fetchHaEntityState.mockRejectedValueOnce(new Error('HA unreachable'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const sample = await sampleAndStoreSoc();
+
+    // The MQTT SoC was still read and the sample persisted; only EV fields are dropped.
+    expect(sample).not.toBeNull();
+    expect(sample.soc_percent).toBe(65);
+    expect(sample.actualEvSoc_percent).toBeUndefined();
+    expect(sample.evPluggedIn).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[soc-tracker] Failed to read EV state from HA:',
+      'HA unreachable',
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('omits actualEvSoc_percent when the EV SoC sensor returns a non-numeric state', async () => {
+    const { fetchHaEntityState } = await import('../../../api/services/ha-client.ts');
+    loadSettings.mockResolvedValue({
+      shoreOptimizer: { batteryInstance: 512 },
+      evSocSensor: 'sensor.tesla_battery_level',
+      evPlugSensor: 'binary_sensor.tesla_plug',
+      haUrl: 'http://ha', haToken: 'tok',
+    });
+    fetchHaEntityState.mockImplementationOnce(async ({ entityId }) => ({
+      state: entityId.includes('plug') ? 'connected' : 'unavailable', // EV SoC non-numeric
+    }));
+
+    const sample = await sampleAndStoreSoc();
+    expect(sample.actualEvSoc_percent).toBeUndefined();
+    // Plug is still read and interpreted as connected (default mock impl).
+    expect(sample.evPluggedIn).toBe(true);
+  });
+
+  it('records EV SoC but leaves plug state undefined when no plug sensor is configured', async () => {
+    loadSettings.mockResolvedValue({
+      shoreOptimizer: { batteryInstance: 512 },
+      evSocSensor: 'sensor.tesla_battery_level',
+      // no evPlugSensor
+      haUrl: 'http://ha', haToken: 'tok',
+    });
+    const sample = await sampleAndStoreSoc();
+    expect(sample.actualEvSoc_percent).toBe(82);
+    expect(sample.evPluggedIn).toBeUndefined();
+  });
+
   it('stores the actual measurement timestamp instead of flooring to slot start', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T12:03:00.000Z'));

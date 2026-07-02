@@ -70,6 +70,23 @@ describe('GET /ess/history', () => {
     expect(getEssHistory).toHaveBeenCalledWith(mockSettings, { hours: 24, period: '5minute' });
   });
 
+  it('falls back to the built-in 24h/5minute defaults when essConfig is absent', async () => {
+    // essConfig?.historyWindowHours / historyPeriod resolve to undefined, so the
+    // `?? 24` and `?? '5minute'` literal defaults must apply.
+    const noEss = { ...mockSettings, essConfig: undefined };
+    loadSettings.mockResolvedValue(noEss);
+    await get(app, '/ess/history');
+    expect(getEssHistory).toHaveBeenCalledWith(noEss, { hours: 24, period: '5minute' });
+  });
+
+  it('uses essConfig defaults that differ from the built-in literals', async () => {
+    // Distinct values prove the essConfig branch (not the `??` literal) is taken.
+    const customEss = { ...mockSettings, essConfig: { ...mockSettings.essConfig, historyWindowHours: 12, historyPeriod: 'hour' } };
+    loadSettings.mockResolvedValue(customEss);
+    await get(app, '/ess/history');
+    expect(getEssHistory).toHaveBeenCalledWith(customEss, { hours: 12, period: 'hour' });
+  });
+
   it('clamps an out-of-range hours value to 168', async () => {
     await get(app, '/ess/history?hours=9999');
     expect(getEssHistory).toHaveBeenCalledWith(mockSettings, { hours: 168, period: '5minute' });

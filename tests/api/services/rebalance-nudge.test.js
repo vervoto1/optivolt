@@ -35,6 +35,28 @@ describe('rebalance nudge helpers', () => {
     expect(recordFullSocObservation(data)).toBe(data);
   });
 
+  it('does not record a full charge when the observation timestamp is an invalid non-empty string', () => {
+    const data = {
+      ...baseData,
+      soc: { timestamp: 'not-a-real-date', value: 100 },
+    };
+
+    // value qualifies (>= 100) but the timestamp parses to NaN -> no record.
+    const result = recordFullSocObservation(data);
+    expect(result).toBe(data);
+    expect(result.lastFullSocAt).toBeUndefined();
+  });
+
+  it('records via the explicit soc argument override', () => {
+    const data = { ...baseData, soc: { timestamp: '2024-01-01T00:00:00Z', value: 40 } };
+    const overrideSoc = { timestamp: '2024-03-03T03:03:03Z', value: 100 };
+
+    expect(recordFullSocObservation(data, overrideSoc)).toEqual({
+      ...data,
+      lastFullSocAt: '2024-03-03T03:03:03.000Z',
+    });
+  });
+
   it('does not move the last full timestamp backwards', () => {
     const data = {
       ...baseData,

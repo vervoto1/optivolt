@@ -137,6 +137,80 @@ describe('getEssState', () => {
     fetchHaEntityStates.mockRejectedValue(new Error('network down'));
     await expect(getEssState(makeSettings())).rejects.toMatchObject({ statusCode: 502 });
   });
+
+  it('uses the fallback message when the bulk-fetch rejects with a non-Error', async () => {
+    fetchHaEntityStates.mockRejectedValue('boom');
+    await expect(getEssState(makeSettings())).rejects.toMatchObject({
+      statusCode: 502,
+      message: 'Failed to fetch entity states from Home Assistant',
+    });
+  });
+
+  it('maps battery extras, with and without state/unit, and reports balancing state', async () => {
+    fetchHaEntityStates.mockResolvedValue([
+      state('sensor.bms0_balance_active', 'on'),
+      state('number.bms0_calibration', '0.05', 'V'),
+      // sensor.bms0_note intentionally absent -> value null, no unit
+    ]);
+    const settings = makeSettings();
+    settings.essConfig.batteries[0].balancingBinaryEntity = 'sensor.bms0_balance_active';
+    settings.essConfig.batteries[0].extraEntities = [
+      { entity: 'number.bms0_calibration', name: 'Calibration' },
+      { entity: 'sensor.bms0_note' }, // no name -> defaults to entity id
+    ];
+
+    const result = await getEssState(settings);
+    const battery = result.batteries[0];
+
+    expect(battery.balancing).toEqual({ entity: 'sensor.bms0_balance_active', value: 'on' });
+    expect(battery.extras).toEqual([
+      { entity: 'number.bms0_calibration', name: 'Calibration', value: '0.05', unit: 'V' },
+      { entity: 'sensor.bms0_note', name: 'sensor.bms0_note', value: null },
+    ]);
+  });
+
+  it('reports null balancing state when the binary entity is missing from the bulk read', async () => {
+    fetchHaEntityStates.mockResolvedValue([]); // entity absent
+    const settings = makeSettings();
+    settings.essConfig.batteries[0].balancingBinaryEntity = 'sensor.bms0_balance_active';
+
+    const result = await getEssState(settings);
+    expect(result.batteries[0].balancing).toEqual({ entity: 'sensor.bms0_balance_active', value: null });
+  });
+
+  it('produces an empty temperature list for a battery without temperature entities', async () => {
+    fetchHaEntityStates.mockResolvedValue([]);
+    const settings = makeSettings();
+    delete settings.essConfig.batteries[0].temperatureEntities; // exercise the `?? []` fallback
+    const result = await getEssState(settings);
+    expect(result.batteries[0].temperatures).toEqual([]);
+  });
+
+  it('omits the temperature unit when the source state carries none', async () => {
+    fetchHaEntityStates.mockResolvedValue([
+      state('sensor.bms0_temperature_sensor_1', 22.5), // no unit attribute
+    ]);
+    const result = await getEssState(makeSettings());
+    const temp = result.batteries[0].temperatures[0];
+    expect(temp).toEqual({ entity: 'sensor.bms0_temperature_sensor_1', name: 'Temp 1', value: 22.5 });
+    expect(temp.unit).toBeUndefined();
+  });
+
+  it('falls back to "System" when the system card has no name and maps system extras', async () => {
+    fetchHaEntityStates.mockResolvedValue([
+      state('sensor.sys_inverter_state', 'inverting'),
+    ]);
+    const settings = makeSettings();
+    settings.essConfig.system = {
+      // no name
+      extraEntities: [{ entity: 'sensor.sys_inverter_state', name: 'Inverter state' }],
+    };
+    const result = await getEssState(settings);
+    expect(result.system.name).toBe('System');
+    expect(result.system.extras).toEqual([
+      { entity: 'sensor.sys_inverter_state', name: 'Inverter state', value: 'inverting' },
+    ]);
+  });
 });
 
 describe('collectHistoryEntities', () => {
@@ -156,6 +230,18 @@ describe('collectHistoryEntities', () => {
     // 2 batteries * (3 cells + 1 temp + 1 soc) = 10 unique ids
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toHaveLength(10);
+  });
+
+  it('tolerates a battery with no temperature entities or SoC entity', () => {
+    const cfg = {
+      enabled: true,
+      historyWindowHours: 24,
+      historyPeriod: '5minute',
+      refreshIntervalSeconds: 30,
+      // no temperatureEntities, no socEntity -> exercises the `?? []` and the SoC guard
+      batteries: [{ name: 'b', cellVoltagePrefix: 'sensor.c_', cellCount: 2 }],
+    };
+    expect(collectHistoryEntities(cfg)).toEqual(['sensor.c_1', 'sensor.c_2']);
   });
 });
 
@@ -239,5 +325,112 @@ describe('getEssHistory', () => {
     const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
     expect(result.series['sensor.bms0_cell_voltage_1'].source).toBe('none');
     expect(result.series['sensor.bms0_cell_voltage_1'].points).toEqual([]);
+  });
+
+  it('skips the raw-history fallback entirely when every entity has statistics', async () => {
+    const t0 = 1_700_000_000_000;
+    const entityIds = collectHistoryEntities(makeSettings().essConfig);
+    const stats = {};
+    for (const id of entityIds) stats[id] = [{ start: t0, mean: 3.3 }];
+    fetchHaStats.mockResolvedValue(stats);
+    fetchHaHistory.mockResolvedValue([]);
+
+    const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
+
+    expect(result.noStatistics).toEqual([]);
+    expect(fetchHaHistory).not.toHaveBeenCalled();
+    for (const id of entityIds) expect(result.series[id].source).toBe('statistics');
+  });
+
+  it('maps a statistics-fetch failure to 502', async () => {
+    fetchHaStats.mockRejectedValue(new Error('stats endpoint down'));
+    await expect(getEssHistory(makeSettings(), { hours: 24, period: '5minute' }))
+      .rejects.toMatchObject({ statusCode: 502, message: 'stats endpoint down' });
+  });
+
+  it('uses the fallback message when the statistics-fetch rejects with a non-Error', async () => {
+    fetchHaStats.mockRejectedValue('kaput');
+    await expect(getEssHistory(makeSettings(), { hours: 24, period: '5minute' }))
+      .rejects.toMatchObject({
+        statusCode: 502,
+        message: 'Failed to fetch statistics from Home Assistant',
+      });
+  });
+
+  it('falls back to `state` then `change` when a statistics reading has no mean', async () => {
+    const t0 = 1_700_000_000_000;
+    fetchHaStats.mockResolvedValue({
+      // state-only reading and change-only reading, two distinct 5-min buckets
+      'sensor.bms0_cell_voltage_1': [
+        { start: t0, state: 3.21 },
+        { start: t0 + 5 * 60_000, change: 0.7 },
+      ],
+    });
+    fetchHaHistory.mockResolvedValue([]);
+
+    const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
+    const series = result.series['sensor.bms0_cell_voltage_1'];
+    expect(series.source).toBe('statistics');
+    expect(series.points.map(p => p.v)).toEqual([3.21, 0.7]);
+  });
+
+  it('drops statistics readings with no numeric value and with a non-finite start', async () => {
+    const t0 = 1_700_000_000_000;
+    fetchHaStats.mockResolvedValue({
+      'sensor.bms0_cell_voltage_1': [
+        { start: t0, mean: 3.30 },
+        { start: t0 + 5 * 60_000 }, // no mean/state/change -> dropped
+        { start: 'not-a-number', mean: 3.40 }, // non-finite start -> dropped
+      ],
+    });
+    fetchHaHistory.mockResolvedValue([]);
+
+    const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
+    const series = result.series['sensor.bms0_cell_voltage_1'];
+    expect(series.source).toBe('statistics');
+    expect(series.points).toHaveLength(1);
+    expect(series.points[0].v).toBe(3.30);
+  });
+
+  it('drops raw-history entries with no timestamp or a non-numeric state', async () => {
+    fetchHaStats.mockResolvedValue({});
+    const t0 = 1_700_000_000_000;
+    fetchHaHistory.mockImplementation(async ({ entityIds }) =>
+      entityIds.map((id) =>
+        id === 'sensor.bms0_cell_voltage_1'
+          ? [
+              { entity_id: id, state: '3.30', last_changed: new Date(t0).toISOString() },
+              { entity_id: id, state: '3.40' }, // no last_changed/last_updated -> t NaN -> dropped
+              { entity_id: id, state: 'unavailable', last_changed: new Date(t0).toISOString() }, // NaN value -> dropped
+            ]
+          : [],
+      ),
+    );
+
+    const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
+    const series = result.series['sensor.bms0_cell_voltage_1'];
+    expect(series.source).toBe('history');
+    expect(series.points).toHaveLength(1);
+    expect(series.points[0].v).toBe(3.30);
+  });
+
+  it('uses last_updated when a raw-history entry has no last_changed', async () => {
+    fetchHaStats.mockResolvedValue({});
+    const t0 = 1_700_000_000_000;
+    fetchHaHistory.mockImplementation(async ({ entityIds }) =>
+      entityIds.map((id) =>
+        id === 'sensor.bms0_cell_voltage_1'
+          ? [{ entity_id: id, state: '3.40', last_updated: new Date(t0).toISOString() }] // no last_changed
+          : [],
+      ),
+    );
+
+    const result = await getEssHistory(makeSettings(), { hours: 24, period: '5minute' });
+    const series = result.series['sensor.bms0_cell_voltage_1'];
+    expect(series.source).toBe('history');
+    // last_updated was parsed (last_changed absent), bucketed to the 5-min grid.
+    expect(series.points).toHaveLength(1);
+    expect(series.points[0].v).toBe(3.40);
+    expect(series.points[0].t).toBe(Math.floor(t0 / (5 * 60_000)) * (5 * 60_000));
   });
 });

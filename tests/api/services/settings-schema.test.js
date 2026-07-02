@@ -273,6 +273,56 @@ describe('settings-schema', () => {
       s.adaptiveLearning.minDataDays = 'x';
       expect(() => normalizeSettings(s)).toThrow('adaptiveLearning.minDataDays must be a finite number');
     });
+
+    describe('autoSplitLegacyEfficiency migration', () => {
+      it('back-solves a symmetric inverter+battery split for legacy 95/95 settings', () => {
+        // Pre-v0.7.20 settings lack inverterEfficiency_percent. 95/95 → sqrt(0.95)≈0.9747
+        // anchored inverter, and battery = 0.95/0.9747 ≈ 0.9747 each.
+        const s = validSettings();
+        delete s.inverterEfficiency_percent;
+        const r = normalizeSettings(s);
+        expect(r.inverterEfficiency_percent).toBe(97);
+        expect(r.chargeEfficiency_percent).toBe(97);
+        expect(r.dischargeEfficiency_percent).toBe(97);
+      });
+
+      it('anchors the inverter at sqrt(max(legacy)) for asymmetric legacy values', () => {
+        // 100/80: anchor = max = 1.0 → inverter = 1.0 → battery charge=1.0(→100%),
+        // discharge = 0.8/1.0 = 0.8(→80%). Neither battery efficiency exceeds 100%.
+        const s = validSettings();
+        delete s.inverterEfficiency_percent;
+        s.chargeEfficiency_percent = 100;
+        s.dischargeEfficiency_percent = 80;
+        const r = normalizeSettings(s);
+        expect(r.inverterEfficiency_percent).toBe(100);
+        expect(r.chargeEfficiency_percent).toBe(100);
+        expect(r.dischargeEfficiency_percent).toBe(80);
+      });
+
+      it('falls back to 0.95 for legacy efficiencies that are absent (non-finite)', () => {
+        // Missing legacy efficiencies → defaults of 0.95/0.95 → same 97/97/97 split.
+        const s = validSettings();
+        delete s.inverterEfficiency_percent;
+        delete s.chargeEfficiency_percent;
+        delete s.dischargeEfficiency_percent;
+        const r = normalizeSettings(s);
+        expect(r.inverterEfficiency_percent).toBe(97);
+        expect(r.chargeEfficiency_percent).toBe(97);
+        expect(r.dischargeEfficiency_percent).toBe(97);
+      });
+
+      it('leaves an already-migrated settings object untouched', () => {
+        // inverterEfficiency_percent present (finite) → migration is a no-op.
+        const s = validSettings();
+        s.inverterEfficiency_percent = 99;
+        s.chargeEfficiency_percent = 94;
+        s.dischargeEfficiency_percent = 93;
+        const r = normalizeSettings(s);
+        expect(r.inverterEfficiency_percent).toBe(99);
+        expect(r.chargeEfficiency_percent).toBe(94);
+        expect(r.dischargeEfficiency_percent).toBe(93);
+      });
+    });
   });
 
   describe('mergeSettings', () => {
@@ -434,6 +484,56 @@ describe('settings-schema', () => {
       expect(s.evMaxPrice_cents_per_kWh).toBeUndefined();
       const s2 = normalizeSettings({ ...validSettings(), evMaxPrice_cents_per_kWh: -3 });
       expect(s2.evMaxPrice_cents_per_kWh).toBe(-3);
+    });
+
+    describe('evDepartureTime normalization', () => {
+      it('keeps a valid HH:MM time and zero-pads single-digit hours', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: '7:05' });
+        expect(s.evDepartureTime).toBe('07:05');
+      });
+
+      it('passes through an already-padded HH:MM time unchanged', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: '23:59' });
+        expect(s.evDepartureTime).toBe('23:59');
+      });
+
+      it('rejects an out-of-range hour (>23) → empty string', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: '24:00' });
+        expect(s.evDepartureTime).toBe('');
+      });
+
+      it('rejects an out-of-range minute (>59) → empty string', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: '08:75' });
+        expect(s.evDepartureTime).toBe('');
+      });
+
+      it('migrates a legacy absolute datetime down to its local time-of-day', () => {
+        // Pre-0.7.38 stored a full datetime. It is parsed with new Date() and the
+        // *local* (Europe/Amsterdam) wall-clock time-of-day is extracted. Build the
+        // expectation from the same Date so the assertion is TZ-independent.
+        const iso = '2026-03-21T06:30:00.000Z';
+        const d = new Date(iso);
+        const expected = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: iso });
+        expect(s.evDepartureTime).toBe(expected);
+        // In Europe/Amsterdam (UTC+1 in March, CET) 06:30 UTC is 07:30 local.
+        expect(s.evDepartureTime).toBe('07:30');
+      });
+
+      it('returns empty string for an unparseable departure time', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: 'not-a-time' });
+        expect(s.evDepartureTime).toBe('');
+      });
+
+      it('returns empty string for an empty / whitespace departure time', () => {
+        const s = normalizeSettings({ ...validSettings(), evDepartureTime: '   ' });
+        expect(s.evDepartureTime).toBe('');
+      });
+
+      it('honours evDepartureDay "today" and defaults anything else to "tomorrow"', () => {
+        expect(normalizeSettings({ ...validSettings(), evDepartureDay: 'today' }).evDepartureDay).toBe('today');
+        expect(normalizeSettings({ ...validSettings(), evDepartureDay: 'whenever' }).evDepartureDay).toBe('tomorrow');
+      });
     });
 
     it('PATCH of one EV field preserves the others (flat merge)', () => {
