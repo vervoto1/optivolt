@@ -4,6 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // HiGHS WASM solves in the lib tests can exceed the 5s default on slower CI
+    // runners; give every test a generous ceiling so solver tests aren't flaky.
+    testTimeout: 30000,
+    hookTimeout: 30000,
     setupFiles: ['./tests/setup.js'],
     env: {
       TZ: 'Europe/Amsterdam',

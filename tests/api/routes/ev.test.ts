@@ -58,6 +58,12 @@ describe('GET /ev/override', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ mode: 'auto' });
   });
+
+  it('forwards a settings-load failure to the error handler', async () => {
+    (loadSettings as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('disk gone'));
+    const res = await get(makeServer(), '/ev/override');
+    expect(res.status).toBe(500);
+  });
 });
 
 describe('POST /ev/override', () => {
@@ -70,6 +76,21 @@ describe('POST /ev/override', () => {
     expect(res.body).toEqual({ mode: 'stop' });
     expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ evOverrideMode: 'stop' }));
     expect(runActuatorTick).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a missing request body with 400', async () => {
+    const res = await post(makeServer(), '/ev/override');
+    expect(res.status).toBe(400);
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('still returns 200 when the best-effort actuator tick rejects', async () => {
+    (loadSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ evOverrideMode: 'auto' });
+    (runActuatorTick as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('tick boom'));
+    const res = await post(makeServer(), '/ev/override', { mode: 'charge' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ mode: 'charge' });
+    await new Promise((r) => setTimeout(r)); // let the swallowed .catch() settle
   });
 
   it('rejects an invalid mode with 400 and writes nothing', async () => {

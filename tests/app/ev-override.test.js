@@ -96,4 +96,43 @@ describe('ev-tab.js — manual override controls', () => {
     expect(() => wireEvOverrideControls({})).not.toThrow();
     expect(fetchEvOverride).not.toHaveBeenCalled();
   });
+
+  it('tolerates an individual missing button and a missing hint element', async () => {
+    fetchEvOverride.mockResolvedValueOnce({ mode: 'charge' });
+    // evOverrideControls present, but the Charge button and hint span are absent:
+    // exercises the `if (!btn) continue` skip and the no-hint branch.
+    const els = {
+      evOverrideControls: document.createElement('div'),
+      evOverrideAuto: document.createElement('button'),
+      evOverrideStop: document.createElement('button'),
+    };
+    await expect(refreshEvOverrideState(els)).resolves.toBeUndefined();
+    expect(els.evOverrideAuto.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('wires only the buttons that exist, skipping missing ones', async () => {
+    const els = makeEls();
+    els.evOverrideCharge = null; // absent -> skipped by the wiring loop
+    wireEvOverrideControls(els);
+    await flush(); // seed refresh
+    els.evOverrideStop.click();
+    await flush();
+    expect(setEvOverride).toHaveBeenCalledWith('stop');
+  });
+
+  it('refreshEvOverrideState is a no-op without els or override controls', async () => {
+    await expect(refreshEvOverrideState()).resolves.toBeUndefined();
+    await expect(refreshEvOverrideState({})).resolves.toBeUndefined();
+    expect(fetchEvOverride).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the optimistic mode when the POST omits a mode', async () => {
+    const els = makeEls();
+    setEvOverride.mockResolvedValueOnce({}); // no mode field in the response
+    wireEvOverrideControls(els);
+    await flush();
+    els.evOverrideCharge.click();
+    await flush();
+    expect(els.evOverrideCharge.getAttribute('aria-pressed')).toBe('true');
+  });
 });
