@@ -347,6 +347,75 @@ describe('VictronMqttClient — _getClient error handler', () => {
   });
 });
 
+describe('VictronMqttClient — connection caching', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mqtt.connectAsync.mockResolvedValue(mockMqttClient);
+  });
+
+  it('reuses a live connection across calls', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+
+    await client.writeSetting('some/path', 1, { serial: 'ser1' });
+    await client.writeSetting('some/path', 2, { serial: 'ser1' });
+
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a failed connect, so the next call retries', async () => {
+    mqtt.connectAsync.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const client = new VictronMqttClient({ serial: 'ser1' });
+
+    await expect(client.writeSetting('some/path', 1, { serial: 'ser1' }))
+      .rejects.toThrow('ECONNREFUSED');
+
+    // Without dropping the rejected promise this would re-await the same failure forever.
+    await expect(client.writeSetting('some/path', 1, { serial: 'ser1' })).resolves.toBeUndefined();
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a closed connection when auto-reconnect is off', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 0 });
+    await client.writeSetting('some/path', 1, { serial: 'ser1' });
+
+    const closeHandler = mockMqttClient.on.mock.calls.find(c => c[0] === 'close');
+    expect(closeHandler).toBeDefined();
+    closeHandler[1]();
+
+    // A dead cached client would make every later call time out until restart.
+    await client.writeSetting('some/path', 2, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a replaced cache entry alone when a stale close fires', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 0 });
+    await client.writeSetting('some/path', 1, { serial: 'ser1' });
+    const closeHandler = mockMqttClient.on.mock.calls.find(c => c[0] === 'close')[1];
+
+    // close() already cleared the cache; the client's own 'close' event then arrives late
+    // and must not clobber whatever is cached by then.
+    await client.close();
+    await client.writeSetting('some/path', 2, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+
+    closeHandler();
+
+    await client.writeSetting('some/path', 3, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the cached connection on close when auto-reconnect is enabled', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 1000 });
+    await client.writeSetting('some/path', 1, { serial: 'ser1' });
+
+    // mqtt.js revives this same client, so no close handler should be registered.
+    expect(mockMqttClient.on.mock.calls.find(c => c[0] === 'close')).toBeUndefined();
+
+    await client.writeSetting('some/path', 2, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('VictronMqttClient — _waitForFirstMessage edge cases', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -100,7 +100,10 @@ export function buildSolverConfigFromSettings(
     idleDrain_W:                          settings.idleDrain_W,
     terminalSocValuation:                 settings.terminalSocValuation,
     terminalSocCustomPrice_cents_per_kWh: settings.terminalSocCustomPrice_cents_per_kWh,
-    initialSoc_percent:                   data.soc.value,
+    // Clamp to maxSoc: a battery fuller than the configured ceiling (e.g. right after
+    // lowering maxSoc) would otherwise have to discharge the excess within slot 0 to
+    // satisfy `soc_t <= maxSoc_Wh`, which can make the whole LP infeasible.
+    initialSoc_percent:                   Math.min(data.soc.value, settings.maxSoc_percent),
   };
 
   // EV load (uncontrollable) injection. CRITICAL: in native mode the LP owns EV

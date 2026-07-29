@@ -25,10 +25,15 @@ const win = VRMClient.windowLastHourToNextMidnightUTC();
 const forecasts2 = await vrm.fetchForecasts(win);
 ----------------------------------------------------------------------------- */
 
+import { fetchWithTimeout } from './fetch-utils.ts';
+
+const VRM_TIMEOUT_MS = 15_000;
+
 interface VRMClientConfig {
   baseURL?: string;
   installationId?: string;
   token?: string;
+  timeoutMs?: number;
 }
 
 interface VRMWindow {
@@ -108,12 +113,14 @@ export class VRMClient {
   installationId: string;
   token: string;
   defaultIntervalMins: number;
+  timeoutMs: number;
 
-  constructor({ baseURL, installationId, token }: VRMClientConfig = {}) {
+  constructor({ baseURL, installationId, token, timeoutMs = VRM_TIMEOUT_MS }: VRMClientConfig = {}) {
     this.baseURL = (baseURL || 'https://vrmapi.victronenergy.com').replace(/\/+$/, '') + "/v2";
     this.installationId = installationId || '';
     this.token = token || '';
     this.defaultIntervalMins = 15;
+    this.timeoutMs = timeoutMs;
   }
 
   setAuth({ installationId, token }: { installationId?: string | null; token?: string | null } = {}): void {
@@ -142,7 +149,10 @@ export class VRMClient {
       init.body = JSON.stringify(body);
     }
 
-    const res = await fetch(url.toString(), init);
+    const res = await fetchWithTimeout(url.toString(), init, {
+      timeoutMs: this.timeoutMs,
+      label: 'VRM API request',
+    });
     if (!res.ok) {
       let txt = '';
       try { txt = await res.text(); } catch { /* ignore */ }

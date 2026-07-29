@@ -161,6 +161,31 @@ describe('VRMClient — _fetch', () => {
     await expect(client._fetch('/bad')).rejects.toThrow('Request failed');
     vi.unstubAllGlobals();
   });
+
+  it('defaults to a 15s request deadline and passes an abort signal', async () => {
+    const client = new VRMClient({ installationId: '123', token: 'tok' });
+    expect(client.timeoutMs).toBe(15_000);
+
+    const mockFetch = makeFetch({ success: true });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await client._fetch('/installations/123/stats');
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    vi.unstubAllGlobals();
+  });
+
+  it('surfaces a labelled timeout error when the deadline fires', async () => {
+    const client = new VRMClient({ installationId: '123', token: 'tok', timeoutMs: 5 });
+    vi.stubGlobal('fetch', vi.fn((_input, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    })));
+
+    await expect(client._fetch('/installations/123/stats'))
+      .rejects.toThrow('VRM API request timed out after 5ms');
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('VRMClient — fetchDynamicEssSettings', () => {

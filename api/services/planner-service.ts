@@ -478,6 +478,14 @@ export async function planAndMaybeWrite({
   const run = async (): Promise<ComputePlanResult> => {
     const result = await computePlan({ updateData });
     if (writeToVictron) {
+      // Never push a non-optimal solve to the hardware: an infeasible or unbounded
+      // solve yields all-zero rows that would otherwise be written as a real DESS
+      // schedule. The display path is unchanged and still surfaces the status.
+      if (result.result.Status !== 'Optimal') {
+        throw new HttpError(503, 'Refusing to write schedule to Victron: solver did not reach an optimal solution', {
+          details: { solverStatus: result.result.Status ?? 'unknown' },
+        });
+      }
       await writePlanToVictron(result.rows, { force: forceWrite });
     }
     return result;

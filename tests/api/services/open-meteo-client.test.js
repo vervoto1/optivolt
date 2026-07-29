@@ -240,3 +240,45 @@ describe('fetchForecastIrradiance', () => {
     expect(url).toContain('forecast_days=2');
   });
 });
+
+describe('open-meteo-client — request deadlines', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('passes an abort signal to the archive request', async () => {
+    mockFetch.mockResolvedValue(makeOkResponse(makeHourlyResponse()));
+
+    await fetchArchiveIrradiance(51.05, 3.71, '2026-03-01', '2026-03-02');
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('passes an abort signal to the forecast request', async () => {
+    mockFetch.mockResolvedValue(makeOkResponse(makeHourlyResponse()));
+
+    await fetchForecastIrradiance(51.05, 3.71);
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('surfaces a labelled timeout when the archive deadline fires', async () => {
+    mockFetch.mockImplementation((_input, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+
+    await expect(fetchArchiveIrradiance(51.05, 3.71, '2026-03-01', '2026-03-02', 5))
+      .rejects.toThrow('Open-Meteo Archive API request timed out after 5ms');
+  });
+
+  it('surfaces a labelled timeout when the forecast deadline fires', async () => {
+    mockFetch.mockImplementation((_input, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+
+    await expect(fetchForecastIrradiance(51.05, 3.71, undefined, 60, 5))
+      .rejects.toThrow('Open-Meteo Forecast API request timed out after 5ms');
+  });
+});

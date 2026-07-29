@@ -225,14 +225,37 @@ describe('parseSolution — ev_charge_mode derivation', () => {
     expect(row.ev_charge_mode).toBe('solar_grid');
   });
 
-  it('max — battery involved above minimum rate (+ grid + PV)', () => {
-    const [row] = parseSolution(makeResult(1000, 500, 500), evCfg, opts);
+  // The PV and battery legs are reported AC-side (scaled by eta_inv, 95% by default), so
+  // these charger-ceiling cases pin efficiency to 100% to keep the watt arithmetic direct.
+  const losslessCfg = { ...evCfg, inverterEfficiency_percent: 100 };
+
+  it('max — battery involved at configured charger maximum (+ grid + PV)', () => {
+    const [row] = parseSolution(makeResult(1000, 500, 2180), losslessCfg, opts);
     expect(row.ev_charge_mode).toBe('max');
   });
 
-  it('max — battery only, above minimum rate', () => {
-    const [row] = parseSolution(makeResult(0, 0, 2000), evCfg, opts);
+  it('max — battery only, at configured charger maximum', () => {
+    const [row] = parseSolution(makeResult(0, 0, 3680), losslessCfg, opts);
     expect(row.ev_charge_mode).toBe('max');
+  });
+
+  it('fixed — battery assists a partial planned rate below charger maximum', () => {
+    const cfg = {
+      ...losslessCfg,
+      ev: { ...evCfg.ev, evMinChargePower_W: 1840, evMaxChargePower_W: 5750 }, // 8 A .. 25 A
+    };
+    // 1200 W PV + 1468 W battery = 2668 W = 11.6 A, well below the 25 A ceiling. Even
+    // though the battery is a limiting source, HA can reproduce the plan with exact amps;
+    // telling it "max" would charge at 25 A and blow past the planned rate.
+    const [row] = parseSolution(makeResult(0, 1200, 1468), cfg, opts);
+    expect(row.ev_charge_A).toBeCloseTo(11.6, 1);
+    expect(row.ev_charge_mode).toBe('fixed');
+  });
+
+  it('fixed — battery assist with no configured charger maximum', () => {
+    const cfg = { ...losslessCfg, ev: { ...evCfg.ev, evMaxChargePower_W: 0 } };
+    const [row] = parseSolution(makeResult(0, 1000, 1000), cfg, opts);
+    expect(row.ev_charge_mode).toBe('fixed');
   });
 
   it('fixed — battery tops up to reach minimum charge rate (not max)', () => {

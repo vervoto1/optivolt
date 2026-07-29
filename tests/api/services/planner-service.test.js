@@ -264,6 +264,52 @@ describe('computePlan — error handling', () => {
   });
 });
 
+describe('planAndMaybeWrite — solver status guard', () => {
+  // An infeasible LP: no grid import, no PV and no battery discharge, so the hard
+  // load-balance constraint has no source that can serve the 500 W load.
+  const infeasibleSettings = { ...baseSettings, maxGridImport_W: 0, maxDischargePower_W: 0 };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    setDynamicEssSchedule.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refuses to write a non-optimal solve to Victron', async () => {
+    loadSettings.mockResolvedValue({ ...infeasibleSettings });
+
+    await expect(planAndMaybeWrite({ writeToVictron: true, forceWrite: true }))
+      .rejects.toThrow(/Refusing to write schedule to Victron/);
+    expect(setDynamicEssSchedule).not.toHaveBeenCalled();
+  });
+
+  it('still computes and returns a non-optimal plan when not writing', async () => {
+    loadSettings.mockResolvedValue({ ...infeasibleSettings });
+
+    const result = await planAndMaybeWrite({ writeToVictron: false });
+    expect(result.result.Status).not.toBe('Optimal');
+    expect(setDynamicEssSchedule).not.toHaveBeenCalled();
+  });
+
+  it('writes normally when the solve is optimal', async () => {
+    const result = await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+
+    expect(result.result.Status).toBe('Optimal');
+    expect(setDynamicEssSchedule).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('computePlan — MQTT SoC refresh', () => {
   beforeEach(() => {
     vi.useFakeTimers();
