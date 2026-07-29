@@ -104,19 +104,39 @@ export class VictronMqttClient {
 
     const url = `${this.protocol}://${this.host}:${this.port}`;
 
-    this._clientPromise = mqtt.connectAsync(url, {
+    const clientPromise = mqtt.connectAsync(url, {
       username: this.username,
       password: this.password,
       reconnectPeriod: this.reconnectPeriod,
       rejectUnauthorized: this.rejectUnauthorized,
       family: 4, // prefer IPv4 — mDNS hostnames (e.g. venus.local) often resolve to unreachable IPv6
     } as mqtt.IClientOptions & { family?: number });
+    this._clientPromise = clientPromise;
 
-    const client = await this._clientPromise;
+    let client: MqttClient;
+    try {
+      client = await clientPromise;
+    } catch (err) {
+      // Drop the rejected promise so the next call retries instead of re-awaiting it.
+      // The identity guard's false arm needs the cache replaced mid-reject, which can't
+      // happen: concurrent callers reuse this promise and close() re-throws it.
+      /* v8 ignore next */
+      if (this._clientPromise === clientPromise) this._clientPromise = null;
+      throw err;
+    }
 
     client.on('error', (err) => {
       console.error('[victron-mqtt] client error:', err.message);
     });
+    // With reconnectPeriod 0 the client never reconnects on its own, so a dropped
+    // connection would leave a dead client cached and time out every later call.
+    // Discard it on close; when auto-reconnect is enabled mqtt.js revives this same
+    // client, so keep the cache and let it recover.
+    if (this.reconnectPeriod === 0) {
+      client.on('close', () => {
+        if (this._clientPromise === clientPromise) this._clientPromise = null;
+      });
+    }
 
     return client;
   }

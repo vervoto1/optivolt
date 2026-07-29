@@ -200,6 +200,34 @@ describe('buildSolverConfigFromSettings — insufficient data', () => {
   });
 });
 
+describe('buildSolverConfigFromSettings — initial SoC clamping', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes the measured SoC through when it is at or below maxSoc', () => {
+    const settings = { ...mockSettings, maxSoc_percent: 90 };
+    const data = { ...makeData(), soc: { timestamp: NOW_STRING, value: 72 } };
+
+    expect(buildSolverConfigFromSettings(settings, data, NOW_MS).initialSoc_percent).toBe(72);
+  });
+
+  it('clamps a measured SoC above maxSoc down to maxSoc', () => {
+    // Battery sitting at 95% after maxSoc was lowered to 80%: without the clamp the LP
+    // would have to shed 15% within slot 0 to satisfy soc_t <= maxSoc_Wh, which can be
+    // infeasible at the configured discharge power.
+    const settings = { ...mockSettings, maxSoc_percent: 80 };
+    const data = { ...makeData(), soc: { timestamp: NOW_STRING, value: 95 } };
+
+    expect(buildSolverConfigFromSettings(settings, data, NOW_MS).initialSoc_percent).toBe(80);
+  });
+});
+
 describe('buildSolverConfigFromSettings — cvPhase thresholds', () => {
   beforeEach(() => {
     vi.useFakeTimers();
