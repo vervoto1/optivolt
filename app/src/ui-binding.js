@@ -181,8 +181,10 @@ export function getElements() {
     evTargetSocQuickSet: $("#ev-target-soc-quick-set"),
     evSocSensor: $("#ev-soc-sensor"),
     evPlugSensor: $("#ev-plug-sensor"),
+    evTargetSocEntity: $("#ev-target-soc-entity"),
     evSocValue: $("#ev-soc-value"),
     evPlugValue: $("#ev-plug-value"),
+    evTargetSocEntityValue: $("#ev-target-soc-entity-value"),
 
     // EV native-charging feature parity (EV tab)
     evStartTime: $("#ev-start-time"),

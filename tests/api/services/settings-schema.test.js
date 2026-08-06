@@ -479,6 +479,12 @@ describe('settings-schema', () => {
       expect(s.evFailSafeMode).toBe('hold');
     });
 
+    it('trims the target-SoC entity and defaults it to empty', () => {
+      expect(normalizeSettings(validSettings()).evTargetSocEntity).toBe('');
+      const s = normalizeSettings({ ...validSettings(), evTargetSocEntity: '  number.tesla_charge_limit  ' });
+      expect(s.evTargetSocEntity).toBe('number.tesla_charge_limit');
+    });
+
     it('leaves optional numeric levels undefined when absent, allows negative prices', () => {
       const s = normalizeSettings(validSettings());
       expect(s.evMaxPrice_cents_per_kWh).toBeUndefined();

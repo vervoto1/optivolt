@@ -8,9 +8,21 @@ import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-s
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { resolveDepartureMs } from './ev-departure.ts';
+import { fetchEvTargetSoc } from './ev-target-soc.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
+
+/**
+ * Live EV readings that seed the plan. `targetSoc_percent` is present only when
+ * an `evTargetSocEntity` was configured and readable; otherwise the static
+ * `evTargetSoc_percent` setting is used.
+ */
+export interface EvLiveState {
+  pluggedIn: boolean;
+  soc_percent: number;
+  targetSoc_percent?: number;
+}
 
 function departureTimeToSlot(
   departureMs: number,
@@ -57,7 +69,7 @@ export function buildSolverConfigFromSettings(
   settings: Settings,
   data: Data,
   nowMs = getQuarterStart(new Date(), settings.stepSize_m),
-  evState?: { pluggedIn: boolean; soc_percent: number },
+  evState?: EvLiveState,
 ): SolverConfig {
   const loadEndMs   = getSeriesEndMs(data.load);
   const pvEndMs     = getSeriesEndMs(data.pv);
@@ -148,6 +160,10 @@ export function buildSolverConfigFromSettings(
     const minPow_W = settings.evMinChargeCurrent_A * wattsPerAmp;
     const maxPow_W = settings.evMaxChargeCurrent_A * wattsPerAmp;
     const capacityWh = settings.evBatteryCapacity_kWh * 1000;
+    // Live target (the car's own charge limit, when an entity is configured and
+    // readable) wins over the static setting — planning to a target the car
+    // refuses to reach books cheap slots for a charge that never happens.
+    const targetSoc_percent = evState.targetSoc_percent ?? settings.evTargetSoc_percent;
 
     // "Ready by" deadline. When the user has not set one, default to the end of
     // the known horizon — i.e. reach target by the last slot we have prices for,
@@ -177,7 +193,7 @@ export function buildSolverConfigFromSettings(
       // Capacity-only clamp. The OLD achievable-charge clamp lowered the target
       // before the LP saw it, so the (now soft) target read as "met" while the
       // car sat below the user's requested SoC. Soft target carries feasibility.
-      const requestedTargetWh = Math.min((settings.evTargetSoc_percent / 100) * capacityWh, capacityWh);
+      const requestedTargetWh = Math.min((targetSoc_percent / 100) * capacityWh, capacityWh);
 
       const ev: EvConfig = {
         evMinChargePower_W: Math.min(minPow_W, maxPow_W),
@@ -202,16 +218,16 @@ export function buildSolverConfigFromSettings(
       // above the initial SoC — otherwise it is already satisfied.
       /* v8 ignore next — the `?? 0` arm is unreachable: Number.isFinite() short-circuits the && for any nullish evMinSoc_percent, so the nullish-coalesce never falls back */
       if (Number.isFinite(settings.evMinSoc_percent) && (settings.evMinSoc_percent ?? 0) > 0) {
-        ev.evMinSocFloor_percent = Math.min(settings.evMinSoc_percent!, settings.evTargetSoc_percent);
+        ev.evMinSocFloor_percent = Math.min(settings.evMinSoc_percent!, targetSoc_percent);
       }
 
       // Opportunistic top-up bands (caps above target, clamped to 100%).
       if (settings.evOpportunisticEnabled && Number.isFinite(settings.evOpportunisticLevel_percent)) {
-        const cap = Math.min(100, Math.max(settings.evTargetSoc_percent, settings.evOpportunisticLevel_percent!));
-        if (cap > settings.evTargetSoc_percent) ev.evOpportunisticCap_percent = cap;
+        const cap = Math.min(100, Math.max(targetSoc_percent, settings.evOpportunisticLevel_percent!));
+        if (cap > targetSoc_percent) ev.evOpportunisticCap_percent = cap;
       }
       if (settings.evOpportunisticType2Enabled && Number.isFinite(settings.evOpportunisticType2Level_percent)) {
-        const base1 = ev.evOpportunisticCap_percent ?? settings.evTargetSoc_percent;
+        const base1 = ev.evOpportunisticCap_percent ?? targetSoc_percent;
         const cap2 = Math.min(100, Math.max(base1, settings.evOpportunisticType2Level_percent!));
         if (cap2 > base1) ev.evOpportunisticType2Cap_percent = cap2;
       }
@@ -331,7 +347,7 @@ export function applyEvCalibration(cfg: SolverConfig, evCal: EvCalibrationResult
   };
 }
 
-export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: { pluggedIn: boolean; soc_percent: number } }> {
+export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: EvLiveState }> {
   const [settings, loadedData] = await Promise.all([loadSettings(), loadData()]);
   const startMs = getQuarterStart(new Date(), settings.stepSize_m);
   const pruned = pruneExpiredPredictionAdjustments(loadedData, startMs);
@@ -346,12 +362,15 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
 
   if (shouldSaveData) await saveData(data);
 
-  let evState: { pluggedIn: boolean; soc_percent: number } | undefined;
+  let evState: EvLiveState | undefined;
   if (resolveEvMode(settings) === 'native' && settings.evSocSensor && settings.evPlugSensor) {
     try {
-      const [socEntity, plugEntity] = await Promise.all([
+      // fetchEvTargetSoc never rejects (null when unset/unreadable), so a missing
+      // target entity can't take the SoC/plug read down with it.
+      const [socEntity, plugEntity, liveTarget] = await Promise.all([
         fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evSocSensor }),
         fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evPlugSensor }),
+        fetchEvTargetSoc(settings),
       ]);
       const soc_percent = parseFloat(socEntity.state);
       const pluggedIn = plugEntity.state !== 'disconnected'
@@ -360,6 +379,7 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
         && plugEntity.state !== 'off';
       if (Number.isFinite(soc_percent)) {
         evState = { pluggedIn, soc_percent };
+        if (liveTarget != null) evState.targetSoc_percent = liveTarget;
       }
     } catch (err) {
       console.warn('Could not read EV state from HA:', err instanceof Error ? err.message : String(err));

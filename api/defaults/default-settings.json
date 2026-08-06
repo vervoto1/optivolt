@@ -187,6 +187,7 @@
   "evDepartureTime": "",
   "evDepartureDay": "tomorrow",
   "evTargetSoc_percent": 80,
+  "evTargetSocEntity": "",
   "evChargeEfficiency_percent": 90,
   "evStartTime": "",
   "evApplyPriceLimit": false,

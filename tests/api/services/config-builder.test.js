@@ -573,6 +573,63 @@ describe('getSolverInputs — EV state fetching from HA', () => {
     expect(cfg.ev.evDepartureSlot).toBe(8);
   });
 
+  it('plans to the live target-SoC entity instead of the static setting', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evTargetSocEntity: 'number.tesla_charge_limit',
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      const state = entityId === 'sensor.ev_soc' ? '75'
+        : entityId === 'number.tesla_charge_limit' ? '60'
+          : 'connected';
+      return Promise.resolve({ entity_id: entityId, state, attributes: {}, last_changed: '', last_updated: '' });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg, evState } = await getSolverInputs();
+
+    expect(cfg.ev.evTargetSoc_percent).toBe(60);
+    expect(evState.targetSoc_percent).toBe(60);
+  });
+
+  it('falls back to the static target when the target-SoC entity is unreadable', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evTargetSocEntity: 'number.tesla_charge_limit',
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      if (entityId === 'number.tesla_charge_limit') return Promise.reject(new Error('entity gone'));
+      const state = entityId === 'sensor.ev_soc' ? '75' : 'connected';
+      return Promise.resolve({ entity_id: entityId, state, attributes: {}, last_changed: '', last_updated: '' });
+    });
+
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg, evState } = await getSolverInputs();
+
+    expect(cfg.ev.evTargetSoc_percent).toBe(80);
+    expect(evState.targetSoc_percent).toBeUndefined();
+  });
+
   it('falls back to end-of-horizon (keeps EV planning) when the ready-by deadline has elapsed', async () => {
     loadSettings.mockResolvedValue({
       ...makeEvSettings(),

@@ -353,7 +353,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         settings,
         applyPredictionAdjustmentsToData(data),
         timing.startMs,
-        { pluggedIn: true, soc_percent: liveSoc },
+        { pluggedIn: true, soc_percent: liveSoc, targetSoc_percent: evState.targetSoc_percent },
       );
       if (previewCfg.ev) {
         const previewResult = highs.solve(buildLP(previewCfg), solveOptions);

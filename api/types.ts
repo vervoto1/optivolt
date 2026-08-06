@@ -69,6 +69,13 @@ export interface Settings {
   /** Which day the "ready by" time falls on, resolved relative to now. */
   evDepartureDay?: 'today' | 'tomorrow';
   evTargetSoc_percent: number;
+  /**
+   * Optional HA entity holding the target SoC — typically the car's own charge
+   * limit (`number.tesla_charge_limit`). When set and readable its state wins
+   * over `evTargetSoc_percent`, so changing the limit in the car's app steers
+   * both the plan and the live charge decision.
+   */
+  evTargetSocEntity?: string;
   evChargeEfficiency_percent: number;
 
   // ---- Feature-parity planning controls (port of EV Smart Charging) ----
