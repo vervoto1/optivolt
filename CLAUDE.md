@@ -18,10 +18,11 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 - **Run a single test file:** `npx vitest run tests/lib/build-lp.test.js`
 - **Typecheck:** `npm run typecheck`
 - **Lint:** `npm run lint`
+- **Rebuild Tailwind CSS:** `npm run build:css` — regenerates `app/vendor/tailwind.css` from `tailwind.config.js`. Run after adding new Tailwind classes anywhere under `app/` and commit the result (CI fails if it is stale).
 
 ## Architecture
 
-The system has three layers. Server/core code is TypeScript ESM executed directly by Node 22; the browser UI is static ESM with no build step.
+The system has three layers. Server/core code is TypeScript ESM executed directly by Node 22; the browser UI is static ESM with no build step for JavaScript. The only generated asset is `app/vendor/tailwind.css`, precompiled via `npm run build:css` and committed.
 
 ### `lib/` — Core logic (pure, no I/O unless noted)
 - **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, EV flows, etc.) and tracks `soc` evolution with charge/discharge efficiency. Supports CV phase modeling via MILP binaries.
@@ -52,7 +53,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 - **`translations/en.yaml`** — HA configuration UI labels.
 - **`repository.yaml`** (at repo root) — HA add-on repository metadata.
 
-### `app/` — Static web UI (no build step)
+### `app/` — Static web UI (no JS build step)
 - `index.html` + `main.js` — Entry points.
 - `app/src/` — Browser modules: API client, config store, chart barrels/modules, predictions modules, EV modules, table, utils.
 - The UI calls the Express API on the same origin. Time-series data is display-only (comes from VRM, not editable).
@@ -67,7 +68,7 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 ## Code conventions
 
 - ESM modules throughout (`"type": "module"` in package.json).
-- TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules.
+- TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules. Styling uses precompiled Tailwind (`app/vendor/tailwind.css`, rebuilt with `npm run build:css`) — there is no runtime Tailwind compiler.
 - Node.js >= 22 required.
 - Express 5.
 - Unused variables prefixed with `_` (eslint rule).
