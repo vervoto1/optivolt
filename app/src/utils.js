@@ -24,6 +24,18 @@ export function resolveDepartureMs(timeStr, day, now = Date.now()) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+// Effective EV target SoC for display, mirroring the backend resolver
+// (api/services/ev-target-soc.ts): the live `evTargetSocEntity` state wins over
+// the static Target SoC field whenever it is usable, so the chart's target line
+// and the table's departure cell show the number the plan and the charger both
+// actually used. Non-numeric or non-positive states fall back to the setting,
+// exactly like the server does. Both unusable → null (no target drawn).
+export function effectiveTargetSoc(liveState, staticValue) {
+  const live = parseFloat(liveState);
+  if (Number.isFinite(live) && live > 0) return Math.min(100, live);
+  return parseFloat(staticValue) || null;
+}
+
 export function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')

@@ -6,7 +6,7 @@
 
   This closes a silent failure mode. With the two numbers drifting apart, a car limit *below* OptiVolt's target meant the car stopped at its own limit while OptiVolt kept seeing "SoC below target": it went on booking cheap slots for a charge that could never happen, held the charger energized, and kept battery→grid discharge suppressed for a session that was already over.
 
-  Reads are best-effort and never block a plan — no entity configured, HA unreachable, or a non-numeric state (`unavailable`/`unknown`) falls back to the static `evTargetSoc_percent`, which stays the setting of record. Values are clamped to 0–100.
+  Reads are best-effort and never block a plan — no entity configured, HA unreachable, a non-numeric state (`unavailable`/`unknown`), or a non-positive one falls back to the static `evTargetSoc_percent`, which stays the setting of record. Values above 100 are clamped. A `0` state is treated as unusable rather than as a 0% target: nobody sets a car to charge to 0%, but an unsynced `input_number`, a template sensor evaluating to 0, or a mistyped entity id all report it, and taking it literally would silently plan no charge at all and drop the minimum-SoC floor. When the live value overrides the setting, the plan logs which entity it came from.
 
 ## 0.7.45 - 2026-07-30
 

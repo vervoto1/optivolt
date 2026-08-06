@@ -1,7 +1,7 @@
 import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./charts.js";
 import { formatKWh, updateStackedBarContainer } from "./state.js";
 import { fetchEvStatus, fetchEvOverride, setEvOverride } from "./api/api.js";
-import { resolveDepartureMs } from "./utils.js";
+import { resolveDepartureMs, effectiveTargetSoc } from "./utils.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
@@ -129,7 +129,7 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = nul
   }
 
   const evSettings = {
-    targetSoc_percent: parseFloat(els.evTargetSoc?.value) || null,
+    targetSoc_percent: effectiveTargetSoc(els.evTargetSocEntityValue?.dataset.haState, els.evTargetSoc?.value),
     departureTime: resolveDepartureMs(els.evDepartureTime?.value, els.evDepartureDay?.value),
   };
 

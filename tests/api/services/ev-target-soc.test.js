@@ -28,9 +28,9 @@ describe('parseTargetSocState', () => {
     expect(parseTargetSocState('72.5')).toBe(72.5);
   });
 
-  it('clamps to 0-100', () => {
+  it('clamps above 100', () => {
     expect(parseTargetSocState('130')).toBe(100);
-    expect(parseTargetSocState('-5')).toBe(0);
+    expect(parseTargetSocState('100')).toBe(100);
   });
 
   it('returns null for non-numeric states', () => {
@@ -38,6 +38,16 @@ describe('parseTargetSocState', () => {
     expect(parseTargetSocState('unknown')).toBeNull();
     expect(parseTargetSocState('')).toBeNull();
     expect(parseTargetSocState(undefined)).toBeNull();
+  });
+
+  // A 0% charge limit is nobody's setting — it is an unsynced input_number, a
+  // template sensor evaluating to 0, or the wrong entity id. Taking it literally
+  // would plan no EV charge, clamp evMinSocFloor_percent to 0, and idle every
+  // slot on the liveSoc >= targetSoc cutoff, all without a fallback firing.
+  it('returns null for zero and negative states', () => {
+    expect(parseTargetSocState('0')).toBeNull();
+    expect(parseTargetSocState('0.0')).toBeNull();
+    expect(parseTargetSocState('-5')).toBeNull();
   });
 });
 
@@ -99,5 +109,15 @@ describe('resolveEvTargetSoc', () => {
 
   it('falls back to the setting when no entity is configured', async () => {
     await expect(resolveEvTargetSoc(makeSettings({ evTargetSocEntity: '' }))).resolves.toBe(80);
+  });
+});
+
+describe('fetchEvTargetSoc — unusable entity states fall back', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('returns null when the entity reports 0 (unsynced helper / wrong entity)', async () => {
+    fetchHaEntityState.mockResolvedValue({ state: '0' });
+    await expect(fetchEvTargetSoc(makeSettings())).resolves.toBeNull();
+    await expect(resolveEvTargetSoc(makeSettings())).resolves.toBe(80);
   });
 });

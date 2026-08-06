@@ -3,6 +3,7 @@ import {
   debounce,
   toDatetimeLocal,
   resolveDepartureMs,
+  effectiveTargetSoc,
   escapeHtml,
 } from '../../app/src/utils.js';
 
@@ -120,5 +121,36 @@ describe('debounce', () => {
     vi.advanceTimersByTime(101);
     expect(fn).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+});
+
+// Mirrors api/services/ev-target-soc.ts so the chart's target line and the
+// table's departure cell show the number the plan and the charger actually used,
+// not the static field the entity overrode.
+describe('effectiveTargetSoc', () => {
+  it('prefers a usable live entity state over the static field', () => {
+    expect(effectiveTargetSoc('70', '80')).toBe(70);
+    expect(effectiveTargetSoc('72.5', '80')).toBe(72.5);
+  });
+
+  it('clamps a live state above 100', () => {
+    expect(effectiveTargetSoc('130', '80')).toBe(100);
+  });
+
+  it('falls back to the static field for non-numeric live states', () => {
+    expect(effectiveTargetSoc('unavailable', '80')).toBe(80);
+    expect(effectiveTargetSoc('unknown', '80')).toBe(80);
+    expect(effectiveTargetSoc('', '80')).toBe(80);
+    expect(effectiveTargetSoc(undefined, '80')).toBe(80);
+  });
+
+  it('falls back to the static field for zero/negative live states', () => {
+    expect(effectiveTargetSoc('0', '80')).toBe(80);
+    expect(effectiveTargetSoc('-5', '80')).toBe(80);
+  });
+
+  it('returns null when neither source is usable', () => {
+    expect(effectiveTargetSoc(undefined, '')).toBeNull();
+    expect(effectiveTargetSoc('unavailable', undefined)).toBeNull();
   });
 });

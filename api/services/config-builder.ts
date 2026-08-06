@@ -379,7 +379,16 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
         && plugEntity.state !== 'off';
       if (Number.isFinite(soc_percent)) {
         evState = { pluggedIn, soc_percent };
-        if (liveTarget != null) evState.targetSoc_percent = liveTarget;
+        if (liveTarget != null) {
+          evState.targetSoc_percent = liveTarget;
+          // Every failure path here is deliberately silent, so the success path
+          // has to say something — otherwise a plan built to a target the user
+          // never typed is indistinguishable from one built to the setting.
+          // Once per plan, not per control tick, and only when they disagree.
+          if (liveTarget !== settings.evTargetSoc_percent) {
+            console.log(`[ev] target SoC ${liveTarget}% read from ${settings.evTargetSocEntity} (overrides the ${settings.evTargetSoc_percent}% setting)`);
+          }
+        }
       }
     } catch (err) {
       console.warn('Could not read EV state from HA:', err instanceof Error ? err.message : String(err));

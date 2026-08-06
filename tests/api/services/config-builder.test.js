@@ -594,12 +594,50 @@ describe('getSolverInputs — EV state fetching from HA', () => {
       return Promise.resolve({ entity_id: entityId, state, attributes: {}, last_changed: '', last_updated: '' });
     });
 
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
 
     const { cfg, evState } = await getSolverInputs();
 
     expect(cfg.ev.evTargetSoc_percent).toBe(60);
     expect(evState.targetSoc_percent).toBe(60);
+    // Every failure path is silent by design, so the override has to announce
+    // itself — otherwise a plan built to 60% looks identical in the log to one
+    // built to the 80% the user actually typed.
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('target SoC 60% read from number.tesla_charge_limit'));
+    logSpy.mockRestore();
+  });
+
+  it('stays quiet when the live target agrees with the setting', async () => {
+    loadSettings.mockResolvedValue({
+      ...makeEvSettings(),
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '2024-01-01T14:00:00Z',
+      evTargetSoc_percent: 80,
+      evTargetSocEntity: 'number.tesla_charge_limit',
+      evChargeEfficiency_percent: 100,
+    });
+    loadData.mockResolvedValue(makeData());
+    loadCalibration.mockResolvedValue(null);
+
+    fetchHaEntityState.mockImplementation(({ entityId }) => {
+      const state = entityId === 'sensor.ev_soc' ? '75'
+        : entityId === 'number.tesla_charge_limit' ? '80'
+          : 'connected';
+      return Promise.resolve({ entity_id: entityId, state, attributes: {}, last_changed: '', last_updated: '' });
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { getSolverInputs } = await import('../../../api/services/config-builder.ts');
+
+    const { cfg, evState } = await getSolverInputs();
+
+    expect(cfg.ev.evTargetSoc_percent).toBe(80);
+    expect(evState.targetSoc_percent).toBe(80);
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('target SoC'));
+    logSpy.mockRestore();
   });
 
   it('falls back to the static target when the target-SoC entity is unreadable', async () => {

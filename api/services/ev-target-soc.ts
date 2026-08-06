@@ -11,18 +11,29 @@
  * never happens, keeps the charger energized, and keeps battery→grid discharge
  * suppressed for a session that is already finished.
  *
- * Every read is best-effort: no entity configured, no HA connection, or a
- * non-numeric state (`unavailable`, `unknown`) falls back to the static setting.
+ * Every read is best-effort: no entity configured, no HA connection, a
+ * non-numeric state (`unavailable`, `unknown`), or a non-positive one falls back
+ * to the static setting.
  */
 
 import type { Settings } from '../types.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 
-/** Parse an HA state string into a 0–100 target SoC, or null when unusable. */
+/**
+ * Parse an HA state string into a 0–100 target SoC, or null when unusable.
+ *
+ * Zero and negative states are unusable, not a 0% target. Nobody sets a car to
+ * "charge to 0%", but an `input_number` helper before its first sync, a template
+ * sensor that evaluates to 0, or an entity id pointing at the wrong thing all
+ * report it — and taking it literally is silent and expensive: the LP plans no
+ * EV charge at all, `evMinSocFloor_percent` clamps to 0 so the minimum-SoC floor
+ * stops protecting the car, and the decision layer's `liveSoc >= targetSoc`
+ * cutoff idles every planned slot. Fall back to the setting instead.
+ */
 export function parseTargetSocState(state: string | undefined): number | null {
   const value = parseFloat(String(state ?? ''));
-  if (!Number.isFinite(value)) return null;
-  return Math.max(0, Math.min(100, value));
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.min(100, value);
 }
 
 /**
