@@ -1,11 +1,41 @@
 /* v8 ignore start — import lines are v8 branch-counting artifacts */
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { toHttpError } from '../http-errors.ts';
-import { planAndMaybeWrite, getLastEvPreview } from '../services/planner-service.ts';
+import { HttpError, toHttpError } from '../http-errors.ts';
+import { planAndMaybeWrite, getLastPlan, getLastEvPreview } from '../services/planner-service.ts';
+import type { ComputePlanResult } from '../services/planner-service.ts';
 /* v8 ignore end */
 
 const router = express.Router();
+
+function planResponseBody(plan: ComputePlanResult) {
+  const { cfg, timing, result, rows, summary, rebalanceWindow, rebalanceNudge, computedAtMs } = plan;
+  return {
+    solverStatus: result.Status,
+    objectiveValue: result.ObjectiveValue,
+    rows,
+    initialSoc_percent: cfg.initialSoc_percent,
+    tsStart: new Date(timing.startMs).toISOString(),
+    summary,
+    rebalanceWindow,
+    rebalanceNudge,
+    // Present only when the car is disconnected: the EV schedule as it WOULD
+    // be if plugged in now (display-only; never written to Victron).
+    evPreview: getLastEvPreview(),
+    computedAtMs,
+  };
+}
+
+// GET /calculate/last — the cached last plan (kept fresh by auto-calculate),
+// without triggering a solve. Lets the UI hydrate instantly on page load.
+router.get('/last', (_req: Request, res: Response, next: NextFunction) => {
+  const plan = getLastPlan();
+  if (!plan) {
+    next(new HttpError(404, 'No plan computed yet'));
+    return;
+  }
+  res.json(planResponseBody(plan));
+});
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -18,26 +48,13 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       writeToVictron: shouldWriteToVictron,
     });
 
-    const { cfg, timing, result, rows, summary, rebalanceWindow, rebalanceNudge } =
-      await planAndMaybeWrite({
-        updateData: shouldUpdateData,
-        writeToVictron: shouldWriteToVictron,
-        forceWrite: true, // manual trigger always writes
-      });
-
-    res.json({
-      solverStatus: result.Status,
-      objectiveValue: result.ObjectiveValue,
-      rows,
-      initialSoc_percent: cfg.initialSoc_percent,
-      tsStart: new Date(timing.startMs).toISOString(),
-      summary,
-      rebalanceWindow,
-      rebalanceNudge,
-      // Present only when the car is disconnected: the EV schedule as it WOULD
-      // be if plugged in now (display-only; never written to Victron).
-      evPreview: getLastEvPreview(),
+    const plan = await planAndMaybeWrite({
+      updateData: shouldUpdateData,
+      writeToVictron: shouldWriteToVictron,
+      forceWrite: true, // manual trigger always writes
     });
+
+    res.json(planResponseBody(plan));
   } catch (error) {
     logCalculateError(error);
     next(toHttpError(error, 500, 'Failed to calculate plan'));

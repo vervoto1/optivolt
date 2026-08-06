@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.47 - 2026-08-06
+
+- **The dashboard now renders instantly on page load.** Opening the UI used to keep every card invisible until a full boot sequence finished: four Predictions-tab fetches, a settings write-back, and a complete LP solve — several seconds, and worse when the load raced an auto-calculate tick (solves are serialized server-side). Boot is restructured:
+  - New `GET /calculate/last` endpoint serves the server's cached last plan — the same payload shape as `POST /calculate`, plus `computedAtMs`, without triggering a solve. On load the UI hydrates charts, table, summary, and the EV panel from it immediately; the status line shows the plan's age ("Plan loaded (3 min ago)"). With auto-calculate on, this plan is at most one interval old and is exactly what drives the hardware. A fresh solve still runs when no cached plan exists (fresh server start), and a cached plan older than 15 minutes is refreshed in the background after rendering.
+  - Cards reveal before the first plan arrives instead of after — the charts' designed empty states show while the plan loads, so first paint no longer waits on the network.
+  - The Predictions tab is now lazy like the ESS and Settings tabs: its config/adjustments/data fetches and the forecast run (load prediction + Open-Meteo PV fetch) happen on first tab open instead of on every page load.
+  - Settings persists are skipped when the snapshot is byte-identical to what was last persisted — boot no longer POSTs the settings it just loaded straight back to the server.
+
 ## 0.7.46 - 2026-08-06
 
 - **EV target SoC can now be read from the car instead of retyped in OptiVolt.** New optional `evTargetSocEntity` setting ("Target SoC entity ID" in the EV settings card) points at the car's own charge-limit entity — e.g. `number.tesla_charge_limit`. While it is set and readable, its value replaces the static Target SoC everywhere the target is used: the LP target, the min-SoC floor clamp, the opportunistic band bases, the EV preview solve, and the live mid-slot "target reached, stop charging" cutoff. Changing the limit in the car's app is now enough — no second edit in OptiVolt.

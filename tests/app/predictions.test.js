@@ -883,3 +883,16 @@ describe('predictions.js', () => {
     }
   });
 });
+
+describe('static wiring', () => {
+  it('lazy-inits the Predictions tab via an activation hook, not during boot()', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const main = readFileSync(resolve(process.cwd(), 'app/main.js'), 'utf8');
+    expect(main).toContain('onActivate: ensurePredictionsTab');
+    // boot() must not eagerly init the Predictions tab — its API fetches and
+    // forecast run (load prediction + Open-Meteo) belong on first tab open.
+    const boot = main.slice(main.indexOf('async function boot()'));
+    expect(boot).not.toContain('initPredictionsTab');
+  });
+});

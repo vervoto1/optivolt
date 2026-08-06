@@ -11,6 +11,7 @@ import {
   fetchStoredSettings,
   saveStoredSettings,
   requestRemoteSolve,
+  fetchLastPlan,
   refreshVrmSettings,
   fetchHaEntityState,
   fetchPredictionConfig,
@@ -80,6 +81,13 @@ describe('api.js wrappers', () => {
     postJson.mockResolvedValue({});
     await requestRemoteSolve();
     expect(postJson).toHaveBeenCalledWith('/calculate', {});
+  });
+
+  it('fetchLastPlan calls getJson /calculate/last', async () => {
+    getJson.mockResolvedValue({ rows: [1] });
+    const out = await fetchLastPlan();
+    expect(getJson).toHaveBeenCalledWith('/calculate/last');
+    expect(out).toEqual({ rows: [1] });
   });
 
   it('refreshVrmSettings calls postJson /vrm/refresh-settings', async () => {

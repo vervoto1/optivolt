@@ -35,6 +35,20 @@ const els = getElements();
 const optimizer = createOptimizerController({ els });
 let optimizerQuickSettings = null;
 
+// How stale the server's cached plan may be before boot kicks off a fresh
+// solve in the background (the cached plan still renders immediately).
+const CACHED_PLAN_MAX_AGE_MS = 15 * 60_000;
+
+// Predictions is lazy like ESS/Settings: its API fetches and the forecast run
+// (load prediction + Open-Meteo) happen on first tab open, not on page load.
+// Once-only — initPredictionsTab wires listeners; re-running would double-wire.
+let predictionsTabStarted = false;
+function ensurePredictionsTab() {
+  if (predictionsTabStarted) return;
+  predictionsTabStarted = true;
+  void initPredictionsTab();
+}
+
 // ---------- Boot ----------
 boot();
 
@@ -44,7 +58,8 @@ function setupTabSwitcher() {
 
   const tabs = [
     { tab: document.getElementById('tab-optimizer'),   panel: document.getElementById('panel-optimizer') },
-    { tab: document.getElementById('tab-predictions'), panel: document.getElementById('panel-predictions') },
+    { tab: document.getElementById('tab-predictions'), panel: document.getElementById('panel-predictions'),
+      onActivate: ensurePredictionsTab },
     { tab: document.getElementById('tab-ev'),          panel: document.getElementById('panel-ev'),
       onActivate: () => { void refreshEvOverrideState(els); } },
     // ESS tab is lazy: it does no HA traffic until first activated, and stops
@@ -132,7 +147,6 @@ async function boot() {
 
   setupTabSwitcher();
   setupSettingsSubtabs();
-  await initPredictionsTab();
 
   // Wire inputs with callbacks
   wireGlobalInputs(els, {
@@ -157,6 +171,10 @@ async function boot() {
     debounceRun: optimizer.debounceRun,
   });
 
+  // The inputs now mirror the server's persisted settings; mark that snapshot
+  // as clean so the initial run doesn't POST an identical copy straight back.
+  optimizer.seedPersistedConfig();
+
   if (els.status) {
     els.status.textContent =
       source === "api" ? "Loaded settings from API." : "No settings yet (use the VRM buttons).";
@@ -169,12 +187,21 @@ async function boot() {
   // Wire the manual charging override (Auto/Charge/Stop) and seed its active state.
   wireEvOverrideControls(els);
 
-  // Initial compute
-  await optimizer.onRun();
-
-  // Reveal cards on the initial (optimizer) panel after first compute
+  // Reveal the optimizer panel immediately — the charts have designed empty
+  // states, so first paint no longer waits on a solve round-trip.
   const optimizerPanel = document.getElementById('panel-optimizer');
   if (optimizerPanel) revealCards(optimizerPanel);
+
+  // Hydrate from the server's cached plan when one exists (auto-calculate
+  // keeps it fresh) instead of paying for a boot-time solve. Solve only when
+  // there is no cached plan (fresh server start); refresh a stale one in the
+  // background — the UI is already populated either way.
+  const cached = await optimizer.hydrateFromCachedPlan();
+  if (!cached) {
+    await optimizer.onRun();
+  } else if (cached.ageMs > CACHED_PLAN_MAX_AGE_MS) {
+    void optimizer.onRun();
+  }
 }
 
 // ---------- Actions ----------

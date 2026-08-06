@@ -51,6 +51,7 @@ function setupController() {
     drawLoadPvGrouped: vi.fn(),
     drawPricesStepLines: vi.fn(),
     drawSocChart: vi.fn(),
+    fetchLastPlan: vi.fn(),
     renderTable: vi.fn(),
     requestRemoteSolve: vi.fn().mockResolvedValue({
       initialSoc_percent: 42,
@@ -381,5 +382,144 @@ describe('optimizer controller', () => {
     expect(services.drawFlowsBarStackSigned).toHaveBeenLastCalledWith(
       els.flows, expect.anything(), 30, expect.anything(), null, 60,
     );
+  });
+
+  // --- cached-plan hydration (GET /calculate/last) ---
+
+  function cachedPlan(overrides = {}) {
+    return {
+      initialSoc_percent: 42,
+      rows: [{ tIdx: 0, timestampMs: 1714586400000, soc_percent: 55 }],
+      solverStatus: 'Optimal',
+      summary: { netGridCost_cents: 12.5 },
+      tsStart: '2026-05-01T12:00:00.000Z',
+      computedAtMs: Date.now() - 5 * 60_000,
+      ...overrides,
+    };
+  }
+
+  it('hydrates the UI from the cached plan without solving or persisting', async () => {
+    const { controller, els, services, summary } = setupController();
+    services.fetchLastPlan.mockResolvedValue(cachedPlan());
+
+    const result = await controller.hydrateFromCachedPlan();
+
+    expect(result.ageMs).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(result.ageMs).toBeLessThan(5 * 60_000 + 5_000);
+    expect(services.requestRemoteSolve).not.toHaveBeenCalled();
+    expect(services.saveConfig).not.toHaveBeenCalled();
+    expect(services.updatePlanMeta).toHaveBeenCalledWith(els, 42, '2026-05-01T12:00:00.000Z');
+    expect(services.updateSummaryUI).toHaveBeenCalledWith(els, summary);
+    expect(services.renderTable).toHaveBeenCalledTimes(1);
+    expect(services.drawSocChart).toHaveBeenCalledTimes(1);
+    expect(services.updateEvPanel).toHaveBeenCalledTimes(1);
+    expect(els.status.textContent).toBe('Plan loaded (5 min ago)');
+    expect(els.status.className).toContain('text-emerald-600');
+  });
+
+  it('labels a cached plan younger than a minute "just now"', async () => {
+    const { controller, els, services } = setupController();
+    services.fetchLastPlan.mockResolvedValue(cachedPlan({ computedAtMs: Date.now() }));
+
+    await controller.hydrateFromCachedPlan();
+
+    expect(els.status.textContent).toBe('Plan loaded (just now)');
+  });
+
+  it('reports Infinity age when the cached plan carries no computedAtMs', async () => {
+    const { controller, els, services } = setupController();
+    services.fetchLastPlan.mockResolvedValue(cachedPlan({ computedAtMs: undefined }));
+
+    const result = await controller.hydrateFromCachedPlan();
+
+    expect(result.ageMs).toBe(Infinity);
+    expect(els.status.textContent).toBe('Plan loaded (age unknown)');
+  });
+
+  it('shows an amber plan-status notice for a non-optimal cached plan', async () => {
+    const { controller, els, services } = setupController();
+    services.fetchLastPlan.mockResolvedValue(cachedPlan({ solverStatus: 'Infeasible' }));
+
+    await controller.hydrateFromCachedPlan();
+
+    expect(els.status.textContent).toBe('Plan status: Infeasible');
+    expect(els.status.className).toContain('text-amber-600');
+  });
+
+  it('coerces a non-string cached solver status to the non-optimal "OK" notice', async () => {
+    const { controller, els, services } = setupController();
+    services.fetchLastPlan.mockResolvedValue(cachedPlan({ solverStatus: undefined }));
+
+    await controller.hydrateFromCachedPlan();
+
+    expect(els.status.textContent).toBe('Plan status: OK');
+    expect(els.status.className).toContain('text-amber-600');
+  });
+
+  it('returns null when the cached-plan fetch fails (404 or network)', async () => {
+    const { controller, services } = setupController();
+    services.fetchLastPlan.mockRejectedValue(new Error('No plan computed yet'));
+
+    expect(await controller.hydrateFromCachedPlan()).toBeNull();
+    expect(services.updatePlanMeta).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a cached plan with no rows', async () => {
+    const { controller, services } = setupController();
+
+    services.fetchLastPlan.mockResolvedValue(null);
+    expect(await controller.hydrateFromCachedPlan()).toBeNull();
+
+    services.fetchLastPlan.mockResolvedValue(cachedPlan({ rows: [] }));
+    expect(await controller.hydrateFromCachedPlan()).toBeNull();
+
+    expect(services.updatePlanMeta).not.toHaveBeenCalled();
+  });
+
+  it('hydrates from the cached plan without a status element', async () => {
+    const { controller, els, services } = setupController();
+    els.status = null;
+    services.fetchLastPlan.mockResolvedValue(cachedPlan());
+
+    const result = await controller.hydrateFromCachedPlan();
+
+    expect(result).not.toBeNull();
+    expect(services.updatePlanMeta).toHaveBeenCalled();
+  });
+
+  // --- settings persist dirty-check ---
+
+  it('skips the boot-time persist when the snapshot matches the seeded config', async () => {
+    const { controller, els, services } = setupController();
+    controller.seedPersistedConfig();
+
+    await controller.onRun();
+    expect(services.saveConfig).not.toHaveBeenCalled();
+
+    // A real change persists again.
+    els.tableKwh.checked = false;
+    await controller.persistConfig();
+    expect(services.saveConfig).toHaveBeenCalledWith({ tableShowKwh: false });
+  });
+
+  it('does not re-persist an identical snapshot twice', async () => {
+    const { controller, services } = setupController();
+
+    await controller.persistConfig();
+    await controller.persistConfig();
+
+    expect(services.saveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries persisting after a failed save', async () => {
+    const { controller, services } = setupController();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    services.saveConfig.mockRejectedValueOnce(new Error('disk full'));
+
+    await controller.persistConfig();
+    await controller.persistConfig();
+
+    // The failed attempt does not advance the baseline, so the retry still POSTs.
+    expect(services.saveConfig).toHaveBeenCalledTimes(2);
   });
 });

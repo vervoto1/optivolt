@@ -20,6 +20,10 @@ export function requestRemoteSolve(body = {}) {
   return postJson("/calculate", body);
 }
 
+// The server's cached last plan (kept fresh by auto-calculate) — no solve is
+// triggered. 404s (throws) when no plan has been computed since server start.
+export const fetchLastPlan = () => getJson("/calculate/last");
+
 // --- Data ---
 export function fetchStoredData() {
   return getJson("/data");
