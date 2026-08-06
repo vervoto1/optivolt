@@ -59,7 +59,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 - The UI calls the Express API on the same origin. Time-series data is display-only (comes from VRM, not editable).
 
 ### Data flow
-Settings, prediction config, and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings`, prediction config via `/predictions/config`, and triggers computation via `POST /calculate`. The LP is always built server-side from persisted state — the client never sends LP parameters directly. `evLoad` can be sourced from Home Assistant or injected manually via `POST /data`; electricity prices can come from VRM, `POST /data`, or a Home Assistant sensor.
+Settings, prediction config, and time-series data are server-owned, persisted as JSON under `DATA_DIR`. The client reads/writes settings via `/settings`, prediction config via `/predictions/config`, and triggers computation via `POST /calculate`. On page load the client first hydrates from `GET /calculate/last` — the server's cached plan, kept fresh by auto-calculate — and only solves when no cached plan exists or the cached one is older than 15 minutes (then in the background). The LP is always built server-side from persisted state — the client never sends LP parameters directly. `evLoad` can be sourced from Home Assistant or injected manually via `POST /data`; electricity prices can come from VRM, `POST /data`, or a Home Assistant sensor.
 
 ## Testing
 

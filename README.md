@@ -59,6 +59,8 @@ npm run api       # or: npm run dev  (loads .env.local via dotenv-cli + nodemon)
 
 By default the server listens on `http://localhost:3000`.
 
+The web UI ships a precompiled Tailwind stylesheet (`app/vendor/tailwind.css`). If you change Tailwind classes anywhere under `app/`, rebuild it with `npm run build:css` and commit the result — CI fails when it is stale.
+
 **Environment variables:**
 - `HOST` (default `0.0.0.0`), `PORT` (default `3000`)
 - `DATA_DIR` (default `<repo>/data`); stores `settings.json`, `data.json`, and `prediction-config.json`
@@ -274,6 +276,7 @@ The **API** exposes:
   }
   ```
 - `POST /calculate` — Builds and solves the LP with **HiGHS** from persisted settings/data. Optional body flags: `updateData` refreshes VRM series before solving, and `writeToVictron` attempts an MQTT DESS schedule write.
+- `GET /calculate/last` — Returns the cached last plan (same payload shape as `POST /calculate`, plus `computedAtMs`) without triggering a solve; 404 until a first plan has been computed. The web UI hydrates from this on page load so the dashboard renders instantly instead of waiting for a solve.
 - `POST /vrm/refresh-settings` — Fetches latest Dynamic ESS limits/settings from VRM and persists.
 - `GET /predictions/config` — Reads prediction configuration plus `isAddon`.
 - `POST /predictions/config` — Saves prediction configuration. Home Assistant URL/token are intentionally stored in `/settings`, not this file.
