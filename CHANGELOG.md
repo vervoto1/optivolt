@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.48 - 2026-08-06
+
+- **Replaced the runtime Tailwind compiler with precompiled CSS.** The UI shipped the Tailwind Play CDN build — 407KB of render-blocking JavaScript that recompiled the stylesheet in the browser on every page load by scanning the 128KB document, costing a few hundred milliseconds of main-thread time before first paint (more on tablets/wall panels). The stylesheet is now built once with the Tailwind CLI (same version, 3.4.17) into `app/vendor/tailwind.css` (~25KB) and committed; the inline Play-CDN config moved to `tailwind.config.js`. Class coverage was audited token-by-token against the compiled output — all utilities used in `app/` (including `!`-important, arbitrary values, and slash-opacity variants) are present; app JavaScript stays build-free. `npm run build:css` regenerates the file and CI fails if it is stale.
+
 ## 0.7.47 - 2026-08-06
 
 - **The dashboard now renders instantly on page load.** Opening the UI used to keep every card invisible until a full boot sequence finished: four Predictions-tab fetches, a settings write-back, and a complete LP solve — several seconds, and worse when the load raced an auto-calculate tick (solves are serialized server-side). Boot is restructured:
