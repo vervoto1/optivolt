@@ -26,7 +26,7 @@ import { startAutoCalculate, stopAutoCalculate } from '../../api/services/auto-c
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../../api/services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
-import { planAndMaybeWrite } from '../../api/services/planner-service.ts';
+import { planAndMaybeWrite, getLastPlan, getLastEvPreview } from '../../api/services/planner-service.ts';
 
 async function importRoutes() {
   vi.resetModules();
@@ -197,6 +197,45 @@ describe('Route contracts', () => {
       forceWrite: true,
     });
     expect(res.body.solverStatus).toBe('Optimal');
+  });
+
+  it('GET /calculate/last serves the cached plan without solving', async () => {
+    getLastPlan.mockReturnValue({
+      cfg: { initialSoc_percent: 20 },
+      timing: { startMs: new Date('2024-01-01T00:00:00.000Z').getTime() },
+      result: { Status: 'Optimal', ObjectiveValue: 1.5 },
+      rows: [1, 2, 3],
+      summary: { netGridCost_cents: 10 },
+      rebalanceWindow: null,
+      rebalanceNudge: { show: false },
+      computedAtMs: 1704067100000,
+    });
+    getLastEvPreview.mockReturnValue(null);
+
+    const res = await get(routes.calculateRouter, '/last');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      solverStatus: 'Optimal',
+      objectiveValue: 1.5,
+      rows: [1, 2, 3],
+      initialSoc_percent: 20,
+      tsStart: '2024-01-01T00:00:00.000Z',
+      summary: { netGridCost_cents: 10 },
+      evPreview: null,
+      computedAtMs: 1704067100000,
+    });
+    expect(planAndMaybeWrite).not.toHaveBeenCalled();
+  });
+
+  it('GET /calculate/last returns 404 when no plan has been computed yet', async () => {
+    getLastPlan.mockReturnValue(undefined);
+
+    const res = await get(routes.calculateRouter, '/last');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('No plan computed yet');
+    expect(planAndMaybeWrite).not.toHaveBeenCalled();
   });
 
   it('GET /plan-accuracy returns null report when no data exists', async () => {
