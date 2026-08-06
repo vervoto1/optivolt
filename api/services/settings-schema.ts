@@ -317,6 +317,10 @@ function normalizeEvNativeSettings(s: Settings): void {
   // Earliest-start window (ISO local datetime or empty)
   s.evStartTime = typeof s.evStartTime === 'string' ? s.evStartTime : '';
 
+  // Target-SoC source: optional HA entity (e.g. the car's own charge limit)
+  // that overrides evTargetSoc_percent while it is readable. Empty = static.
+  s.evTargetSocEntity = String(s.evTargetSocEntity ?? '').trim();
+
   // Price limit
   s.evApplyPriceLimit = s.evApplyPriceLimit === true;
   s.evMaxPrice_cents_per_kWh = optNumber(s.evMaxPrice_cents_per_kWh); // may be negative

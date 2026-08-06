@@ -616,6 +616,7 @@ describe('updateSummaryUI', () => {
     els.evTargetSoc = { value: '' };
     els.evSocSensor = { value: '' };
     els.evPlugSensor = { value: '' };
+    els.evTargetSocEntity = { value: '' };
     hydrateUI(els, {
       evEnabled: true,
       evMinChargeCurrent_A: 10,
@@ -627,6 +628,7 @@ describe('updateSummaryUI', () => {
       evTargetSoc_percent: 80,
       evSocSensor: 'sensor.ev_soc',
       evPlugSensor: 'sensor.ev_plug',
+      evTargetSocEntity: 'number.tesla_charge_limit',
     });
     expect(els.evMinChargeCurrent.value).toBe('10');
     expect(els.evMaxChargeCurrent.value).toBe('32');
@@ -637,6 +639,7 @@ describe('updateSummaryUI', () => {
     expect(els.evTargetSoc.value).toBe('80');
     expect(els.evSocSensor.value).toBe('sensor.ev_soc');
     expect(els.evPlugSensor.value).toBe('sensor.ev_plug');
+    expect(els.evTargetSocEntity.value).toBe('number.tesla_charge_limit');
   });
 });
 

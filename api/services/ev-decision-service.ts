@@ -4,6 +4,7 @@ import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { resolveDepartureMs } from './ev-departure.ts';
+import { resolveEvTargetSoc } from './ev-target-soc.ts';
 
 /**
  * Effective live EV mode. Reactive overrides (low_soc/low_price/min_soc/keep_on)
@@ -87,7 +88,9 @@ export async function computeEvDecision(
   const minA = settings.evMinChargeCurrent_A;
   const maxW = maxA * wattsPerAmp;
   const minW = minA * wattsPerAmp;
-  const targetSoc = settings.evTargetSoc_percent;
+  // Baseline target; replaced below by the live entity value when one is
+  // configured and readable (see the HA reads).
+  let targetSoc = settings.evTargetSoc_percent;
   // Resolve the wall-clock "ready by" time-of-day + today/tomorrow selector to an
   // absolute instant relative to now (null when unset). Surfaced as ISO metadata
   // and used by the keep-on window check below.
@@ -104,23 +107,34 @@ export async function computeEvDecision(
     ? (lastPlan.rows.find(r => r.ev_target_met != null)?.ev_target_met ?? null)
     : null;
 
-  // Live HA reads (best-effort).
+  // Live HA reads (best-effort). Concurrent, not sequential: this runs on the
+  // actuator's control tick, every REST read carries its own 10s timeout, and
+  // three of them back-to-back against a stalled HA would burn half the default
+  // 60s interval — long enough that the `ticking` guard drops the ticks queued
+  // behind it. One round trip's worth of wall-clock instead of three.
   let liveSoc: number | null = null;
   let plugConnected: boolean | null = null;
   if (settings.haUrl || process.env.SUPERVISOR_TOKEN) {
-    if (settings.evSocSensor) {
-      try {
-        const s = await fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evSocSensor });
-        const v = parseFloat(s.state);
-        if (Number.isFinite(v)) liveSoc = v;
-      } catch { /* HA unavailable → fall back to plan */ }
-    }
-    if (settings.evPlugSensor) {
-      try {
-        const p = await fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evPlugSensor });
-        plugConnected = interpretPlug(p.state);
-      } catch { plugConnected = null; }
-    }
+    const [soc, plug, liveTarget] = await Promise.all([
+      settings.evSocSensor
+        ? fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evSocSensor })
+            .then(s => { const v = parseFloat(s.state); return Number.isFinite(v) ? v : null; })
+            .catch(() => null) /* HA unavailable → fall back to plan */
+        : Promise.resolve(null),
+      settings.evPlugSensor
+        ? fetchHaEntityState({ haUrl: settings.haUrl, haToken: settings.haToken, entityId: settings.evPlugSensor })
+            .then(p => interpretPlug(p.state))
+            .catch(() => null)
+        : Promise.resolve(null),
+      // Target SoC from the car's own charge limit, when configured. Keeping this
+      // in step with the planner matters for the mid-slot cutoff below: a stale
+      // higher target keeps the charger running past the limit the car enforces.
+      // Resolves to the static setting on every failure path.
+      resolveEvTargetSoc(settings),
+    ]);
+    liveSoc = soc;
+    plugConnected = plug;
+    targetSoc = liveTarget;
   }
 
   const base = {

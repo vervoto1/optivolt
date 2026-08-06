@@ -176,6 +176,48 @@ describe('computeEvDecision — priority + gating', () => {
   });
 });
 
+describe('computeEvDecision — target SoC from an HA entity', () => {
+  beforeEach(() => { vi.clearAllMocks(); delete process.env.SUPERVISOR_TOKEN; });
+
+  function mockHaWithTarget({ soc, plug = 'on', target }) {
+    fetchHaEntityState.mockImplementation(async ({ entityId }) => {
+      if (entityId === 'sensor.soc') return { state: String(soc) };
+      if (entityId === 'sensor.plug') return { state: String(plug) };
+      if (entityId === 'number.charge_limit') {
+        if (target instanceof Error) throw target;
+        return { state: String(target) };
+      }
+      throw new Error(`unknown entity ${entityId}`);
+    });
+  }
+
+  it('stops a planned charge at the live entity target, not the stale setting', async () => {
+    // Car limit lowered to 70% in its own app; the setting still says 80%.
+    mockHaWithTarget({ soc: '75', target: '70' });
+    const settings = makeSettings({ evTargetSocEntity: 'number.charge_limit' });
+    const d = await computeEvDecision(settings, makePlan({ evCharge: 11040 }), NOW);
+    expect(d.targetSoc_percent).toBe(70);
+    expect(d.mode).toBe('idle');
+    expect(d.reason).toMatch(/at\/above target 70%/);
+  });
+
+  it('falls back to the setting when the target entity is unreadable', async () => {
+    mockHaWithTarget({ soc: '75', target: new Error('entity gone') });
+    const settings = makeSettings({ evTargetSocEntity: 'number.charge_limit' });
+    const d = await computeEvDecision(settings, makePlan({ evCharge: 11040 }), NOW);
+    expect(d.targetSoc_percent).toBe(80);
+    expect(d.mode).toBe('planned');
+    expect(d.is_charging).toBe(true);
+  });
+
+  it('keeps the setting when no target entity is configured', async () => {
+    mockHa({ soc: '75', plug: 'on' });
+    const d = await computeEvDecision(makeSettings(), makePlan({ evCharge: 11040 }), NOW);
+    expect(d.targetSoc_percent).toBe(80);
+    expect(d.mode).toBe('planned');
+  });
+});
+
 describe('computeEvDecision — no plan / no row / no departure', () => {
   beforeEach(() => { vi.clearAllMocks(); delete process.env.SUPERVISOR_TOKEN; });
 

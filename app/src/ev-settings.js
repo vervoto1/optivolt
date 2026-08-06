@@ -12,6 +12,7 @@ function sensorEntries(els) {
   return [
     { input: els.evSocSensor, indicator: els.evSocValue, afterUpdate: () => updateEvSocQuickSet(els) },
     { input: els.evPlugSensor, indicator: els.evPlugValue },
+    { input: els.evTargetSocEntity, indicator: els.evTargetSocEntityValue },
     { input: els.evChargerSwitchEntity, indicator: els.evChargerSwitchValue },
     { input: els.evChargerCurrentEntity, indicator: els.evChargerCurrentValue },
   ];

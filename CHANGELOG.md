@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.46 - 2026-08-06
+
+- **EV target SoC can now be read from the car instead of retyped in OptiVolt.** New optional `evTargetSocEntity` setting ("Target SoC entity ID" in the EV settings card) points at the car's own charge-limit entity — e.g. `number.tesla_charge_limit`. While it is set and readable, its value replaces the static Target SoC everywhere the target is used: the LP target, the min-SoC floor clamp, the opportunistic band bases, the EV preview solve, and the live mid-slot "target reached, stop charging" cutoff. Changing the limit in the car's app is now enough — no second edit in OptiVolt.
+
+  This closes a silent failure mode. With the two numbers drifting apart, a car limit *below* OptiVolt's target meant the car stopped at its own limit while OptiVolt kept seeing "SoC below target": it went on booking cheap slots for a charge that could never happen, held the charger energized, and kept battery→grid discharge suppressed for a session that was already over.
+
+  Reads are best-effort and never block a plan — no entity configured, HA unreachable, a non-numeric state (`unavailable`/`unknown`), or a non-positive one falls back to the static `evTargetSoc_percent`, which stays the setting of record. Values above 100 are clamped. A `0` state is treated as unusable rather than as a 0% target: nobody sets a car to charge to 0%, but an unsynced `input_number`, a template sensor evaluating to 0, or a mistyped entity id all report it, and taking it literally would silently plan no charge at all and drop the minimum-SoC floor. When the live value overrides the setting, the plan logs which entity it came from.
+
 ## 0.7.45 - 2026-07-30
 
 Ported the correctness fixes from upstream `bmesuere/optivolt` that our fork was missing. The upstream EV availability-window rework was deliberately left out — it replaces the EV model this fork already has.

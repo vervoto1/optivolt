@@ -1892,6 +1892,12 @@
                   class="form-input font-mono text-xs" data-no-autosolve data-settings-input />
                 <span id="ev-plug-value" class="mt-1 block text-xs text-slate-500 dark:text-slate-400"></span>
               </label>
+              <label class="block text-sm">Target SoC entity ID (optional)
+                <input id="ev-target-soc-entity" type="text" placeholder="number.tesla_charge_limit"
+                  class="form-input font-mono text-xs" data-no-autosolve data-settings-input />
+                <span id="ev-target-soc-entity-value" class="mt-1 block text-xs text-slate-500 dark:text-slate-400"></span>
+                <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">The car's own charge limit. When set and readable it overrides the Target SoC field on the EV tab, so the limit you pick in the car app is what gets planned.</span>
+              </label>
             </div>
           </section>
 

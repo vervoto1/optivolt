@@ -150,6 +150,7 @@ export function snapshotUI(els) {
     evTargetSoc_percent: num(els.evTargetSoc?.value),
     evSocSensor: els.evSocSensor?.value ?? '',
     evPlugSensor: els.evPlugSensor?.value ?? '',
+    evTargetSocEntity: els.evTargetSocEntity?.value ?? '',
 
     // EV native-charging feature parity
     evStartTime: els.evStartTime?.value ?? '',
@@ -253,6 +254,7 @@ export function hydrateUI(els, obj = {}) {
   setIfDef(els.evTargetSoc, obj.evTargetSoc_percent);
   setIfDef(els.evSocSensor, obj.evSocSensor);
   setIfDef(els.evPlugSensor, obj.evPlugSensor);
+  setIfDef(els.evTargetSocEntity, obj.evTargetSocEntity);
 
   // EV native-charging feature parity
   setIfDef(els.evStartTime, obj.evStartTime);
