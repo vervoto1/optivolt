@@ -25,6 +25,14 @@ jobs:
     - name: Run lint
       run: npm run lint
 
+    - name: Check precompiled Tailwind CSS is up to date
+      run: |
+        npm run build:css
+        git diff --exit-code app/vendor/tailwind.css || {
+          echo "::error::app/vendor/tailwind.css is stale — run 'npm run build:css' and commit the result."
+          exit 1
+        }
+
     - name: Run typecheck
       run: npm run typecheck
 
