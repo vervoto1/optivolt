@@ -611,12 +611,13 @@ describe('buildLP — discharge phase', () => {
     // initialSoc_percent = 50, capacity = 10000, so initialSoc_Wh = 5000
     // threshold 0: 30% = 3000 Wh
     // Forward: -tightM * dp <= initialSoc - threshold = 5000 - 3000 = 2000
-    // tightM = threshold - minSoc = 3000 - 1000 = 2000
+    // tightM = threshold - 0 = 3000 (SoC's true lower bound is 0: the minSoc
+    // floor is soft, so SoC can legitimately sit below it)
     const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
     // c_dp_0_0 should NOT contain soc_ variable
     expect(lp).not.toMatch(/c_dp_0_0:.*soc_/);
-    // Forward constraint for slot 0: -2000 dp_0_0 <= 2000
-    expect(lp).toMatch(/c_dp_0_0: -2000 dp_0_0 <= 2000/);
+    // Forward constraint for slot 0: -3000 dp_0_0 <= 2000
+    expect(lp).toMatch(/c_dp_0_0: -3000 dp_0_0 <= 2000/);
   });
 
   it('generates reverse constraints for slot 0 with initialSoc constant', () => {
@@ -629,8 +630,8 @@ describe('buildLP — discharge phase', () => {
   it('generates forward and reverse constraints for slot t>0', () => {
     const lp = buildLP({ ...mockData, dischargePhaseThresholds: twoThresholds });
     // Forward for k=0, t=1: -soc_0 - tightM * dp <= -threshold
-    // tightM = 3000 - 1000 = 2000, threshold = 3000
-    expect(lp).toMatch(/c_dp_0_1: - soc_0 - 2000 dp_0_1 <= -3000/);
+    // tightM = threshold - 0 = 3000
+    expect(lp).toMatch(/c_dp_0_1: - soc_0 - 3000 dp_0_1 <= -3000/);
     // Reverse for k=0, t=1: revM * dp + soc_{t-1} <= maxSoc
     // revM = 10000 - 3000 = 7000
     expect(lp).toMatch(/c_dp_rev_0_1: 7000 dp_0_1 \+ soc_0 <= 10000/);

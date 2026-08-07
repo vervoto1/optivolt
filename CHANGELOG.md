@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.7.48 - 2026-08-06
+## 0.7.49 - 2026-08-07
+
+- **A morning SoC below the minSoc floor no longer makes the plan buy the deficit back at peak price** (#49). The minSoc floor was a soft constraint whose shortfall penalty (50 c/kWh) accrued *every slot*, so a battery that drifted 1% under the floor overnight (idle drain after the evening export dump parked it on the floor) made the LP "restore" the floor in the very first slot — at the day's most expensive price — while the Victron reactive layer treats such a delta as maintained (`idle_maintain_targetsoc`) and does nothing. The plan then diverged from reality for hours and showed a confusing peak-price charge that never happened.
+
+  The floor now acts as a discharge floor rather than a charge target when the plan *starts* below it: until the battery first recovers to the floor, the effective floor follows the no-intervention trajectory (initial SoC minus modeled idle drain), so carrying the inherited deficit is free — it gets absorbed by PV surplus or the cheapest charge window the plan uses anyway. Deepening the deficit stays penalized (the remaining reserve cannot be exported through the floor), and a per-slot recovery latch (monotone binary, only emitted when the plan starts below the floor — the LP is unchanged otherwise) restores the full floor permanently after the first recovery, so the allowance can never be reused to drain below minSoc later in the horizon and erode the floor day over day.
+
+- **Fixed a latent infeasibility: discharge-phase thresholds + SoC below the floor.** The discharge-taper big-M was sized as `threshold - minSoc`, assuming SoC never sits below minSoc — but the floor is soft, so it can. With any discharge threshold configured, a below-floor start made the whole LP infeasible (no plan at all). The M is now sized against SoC's true lower bound (0).
 
 - **Replaced the runtime Tailwind compiler with precompiled CSS.** The UI shipped the Tailwind Play CDN build — 407KB of render-blocking JavaScript that recompiled the stylesheet in the browser on every page load by scanning the 128KB document, costing a few hundred milliseconds of main-thread time before first paint (more on tablets/wall panels). The stylesheet is now built once with the Tailwind CLI (same version, 3.4.17) into `app/vendor/tailwind.css` (~25KB) and committed; the inline Play-CDN config moved to `tailwind.config.js`. Class coverage was audited token-by-token against the compiled output — all utilities used in `app/` (including `!`-important, arbitrary values, and slash-opacity variants) are present; app JavaScript stays build-free. `npm run build:css` regenerates the file and CI fails if it is stale.
 

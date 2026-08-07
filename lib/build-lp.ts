@@ -171,6 +171,24 @@ export function buildLP({
   const maxSoc_Wh = (maxSoc_percent / 100) * batteryCapacity_Wh;
   const initialSoc_Wh = (initialSoc_percent / 100) * batteryCapacity_Wh;
 
+  // Inherited-deficit floor ratchet. When the initial SoC is already below the
+  // minSoc floor (overnight idle drain past the horizon end, integer SoC
+  // quantization, a raised floor), the per-slot shortfall penalty must not
+  // force an immediate grid buy-back at whatever the current price is — the
+  // Victron reactive layer treats a small deficit as maintained and does
+  // nothing. Until the battery first recovers to the floor, the effective
+  // floor follows the no-intervention trajectory (initialSoc minus cumulative
+  // idle drain): carrying the inherited deficit is free, deepening it is
+  // penalized as usual. Once SoC crosses the floor, floor_recovered_t latches
+  // to 1 (monotone), restoring the full floor for the rest of the horizon so
+  // the allowance can never be reused to drain below minSoc later (which
+  // would erode the floor a little further every day). Known limitation: a
+  // partial recovery that never reaches the floor keeps the full allowance
+  // alive; with realistic charge rates any planned charge window recovers
+  // completely, so this stays theoretical.
+  const initialShortfall_Wh = Math.max(0, minSoc_Wh - initialSoc_Wh);
+  const floorRatchetActive = initialShortfall_Wh > 0;
+
   // Rebalancing MILP: number of slots remaining in the hold window.
   // Truncate to integer to guard against fractional values from future callers.
   // Clamp to [0, T] — D > T is unsatisfiable; D <= 0 means no rebalancing this solve.
@@ -351,6 +369,10 @@ export function buildLP({
   const batteryToGrid = (t: number) => `battery_to_grid_${t}`;
   const soc = (t: number) => `soc_${t}`;
   const socShortfall = (t: number) => `soc_shortfall_${t}`;
+  // Floor-ratchet recovery latch. Deliberately NOT prefixed "soc_": the
+  // solution parser treats every soc_* column except soc_shortfall_* as the
+  // per-slot SoC value.
+  const floorRecovered = (t: number) => `floor_recovered_${t}`;
   const batteryCharging = (t: number) => `battery_charging_${t}`;
   const cvBin = (k: number, t: number) => `cv_${k}_${t}`;
   const dpBin = (k: number, t: number) => `dp_${k}_${t}`;
@@ -525,8 +547,25 @@ export function buildLP({
     lines.push(` c_battery_charge_mode_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)} - ${toNum(maxChargePower_W)} ${batteryCharging(t)} <= 0`);
     lines.push(` c_battery_discharge_mode_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} + ${toNum(maxDischargePower_W)} ${batteryCharging(t)} <= ${toNum(maxDischargePower_W)}`);
 
-    // Soft min SOC constraint
-    lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
+    // Soft min SOC constraint. With an inherited deficit (ratchet active) the
+    // pre-recovery floor is the no-intervention trajectory instead of minSoc:
+    //   floor_recovered = 0:  shortfall + soc >= minSoc - allowance
+    //                         (= initialSoc - idleDrain·(t+1), so sitting idle
+    //                         costs nothing and no phantom trickle-charge is
+    //                         needed to offset modeled idle drain)
+    //   floor_recovered = 1:  shortfall + soc >= minSoc  (full floor)
+    if (floorRatchetActive) {
+      const allowance_Wh = initialShortfall_Wh + idleDrain_Wh * (t + 1);
+      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(allowance_Wh)} ${floorRecovered(t)} >= ${toNum(minSoc_Wh - allowance_Wh)}`);
+      // Latch: SoC above the floor forces floor_recovered = 1 (M spans the
+      // remaining SoC range above the floor); monotonicity keeps it there.
+      lines.push(` c_floor_rec_${t}: ${soc(t)} - ${toNum(maxSoc_Wh - minSoc_Wh)} ${floorRecovered(t)} <= ${toNum(minSoc_Wh)}`);
+      if (t > 0) {
+        lines.push(` c_floor_rec_mono_${t}: ${floorRecovered(t)} - ${floorRecovered(t - 1)} >= 0`);
+      }
+    } else {
+      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
+    }
 
     // CV phase: cv_k_t = 1 if and only if start-of-slot SoC >= threshold.
     // Forward constraint: forces cv=1 when SoC > threshold.
@@ -553,7 +592,11 @@ export function buildLP({
     // Reverse constraint: forces dp=0 when SoC > threshold.
     //   soc - threshold + M * (1 - dp) >= 0  →  rearranged: -M * dp + soc >= threshold - M
     for (let k = 0; k < dpK; k++) {
-      const tightM = dpThresholdWh[k] - minSoc_Wh;
+      // M sized against SoC's true lower bound (0). The minSoc floor is soft,
+      // so SoC can legitimately sit below it (inherited deficit); sizing M as
+      // threshold - minSoc_Wh makes the forward constraint infeasible in
+      // exactly that state.
+      const tightM = dpThresholdWh[k];
       if (t === 0) {
         // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant
         // Forward: initialSoc + M * dp >= threshold  →  M * dp >= threshold - initialSoc
@@ -818,6 +861,12 @@ export function buildLP({
     for (let k = 0; k < dpK; k++) {
       for (let t = 0; t < T; t++) {
         lines.push(` ${dpBin(k, t)}`);
+      }
+    }
+    // Floor-ratchet recovery latches (only when starting below the minSoc floor)
+    if (floorRatchetActive) {
+      for (let t = 0; t < T; t++) {
+        lines.push(` ${floorRecovered(t)}`);
       }
     }
     // EV on/off binaries
