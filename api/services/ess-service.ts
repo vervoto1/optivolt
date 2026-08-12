@@ -34,6 +34,7 @@ import {
   type HaEntityState,
   type HaHistoryEntry,
 } from './ha-client.ts';
+import { recordSocCalibrationEvent } from './soc-calibration-events.ts';
 import type { HaReading } from '../../lib/ha-postprocess.ts';
 
 // ----------------------------- Response shapes ---------------------------
@@ -329,6 +330,16 @@ export async function calibrateBatterySoc(
     });
   } catch (err) {
     throw new HttpError(502, err instanceof Error ? err.message : 'Failed to write the SoC calibration to Home Assistant');
+  }
+
+  // Fence the adaptive-learning SoC samples: a manual recalibration steps the
+  // system SoC, so record the event and let the efficiency calibrator skip any
+  // sample pair that straddles it. Best-effort — the hardware write already
+  // succeeded, so a bookkeeping failure must not turn into a client error.
+  try {
+    await recordSocCalibrationEvent({ timestampMs: Date.now(), batteryIndex, entity: battery.socCalibrationEntity, value });
+  } catch (err) {
+    console.warn('[ess-service] Failed to record SoC calibration event:', (err as Error).message);
   }
 
   return { entity: battery.socCalibrationEntity, value };

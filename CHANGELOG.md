@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.52 - 2026-08-13
+
+- **ESS tab: a dropped BMS alarm sensor now shows a distinct "offline" chip instead of reading as all-clear.** When the alarm entity is configured but the sensor is `unavailable`/`unknown` (or missing from the state read), the card shows an amber **⚠ Alarm sensor offline** chip rather than hiding the chip — a dead alarm channel is no longer indistinguishable from a healthy pack. An active fault still shows the red chip; a healthy pack still shows nothing.
+- **SoC calibration writes are fenced against the adaptive-learning SoC samples.** A manual SoC-register write steps the system SoC discontinuously; if that battery is the system SoC source, the step used to poison the efficiency calibrator's actual-vs-predicted ratio for the straddled slot. Each calibration write is now recorded (`data/soc-calibration-events.json`) and the calibrator skips any SoC-sample pair that straddles a calibration event.
+- **ESS cell-voltage trend axis gets symmetric headroom (2.55–3.70 V).** The floor sat exactly on the 2.60 V UV cutoff, so a dip to the cutoff drew on the axis line and anything below clipped; the floor now sits 0.05 V below it, mirroring the headroom above the 3.65 V OVP.
+- **Docs: the `/ess` route group is now documented in the README API reference** (`GET /ess/state`, `GET /ess/history`, `POST /ess/battery/:index/soc-calibration` with its body/response shape and error statuses).
+
 ## 0.7.51 - 2026-08-13
 
 - **ESS tab: the BMS alarm chip no longer shows a phantom alarm for a healthy pack.** The idle-state check only recognized `OK`/`none`/`off` (plus empty and the `unavailable`/`unknown` dropout states), so a BMS whose "errors" sensor reports a healthy pack as `0` (a numeric fault bitmask), `Normal`, `No error`, or `Clear` showed a permanent red `⚠ 0` / `⚠ Normal` chip that never cleared. The check now also treats those healthy words and a numeric-zero value (`0`, `0.0`) as "no alarm", while any non-zero fault code or unrecognized text still surfaces as an alarm.

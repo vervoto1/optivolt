@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the HA I/O layer; the service + ha-config run for real.
 vi.mock('../../../api/services/ha-client.ts');
+// Mock the SoC-calibration-event store (the write path records into it).
+vi.mock('../../../api/services/soc-calibration-events.ts');
 
 import {
   fetchHaEntityStates,
@@ -9,6 +11,7 @@ import {
   fetchHaHistory,
   callHaService,
 } from '../../../api/services/ha-client.ts';
+import { recordSocCalibrationEvent } from '../../../api/services/soc-calibration-events.ts';
 import {
   getEssState,
   getEssHistory,
@@ -305,6 +308,26 @@ describe('calibrateBatterySoc', () => {
       data: { value: 85 },
     });
     expect(result).toEqual({ entity: 'number.bms0_soc_calibration', value: 85 });
+    // The write is fenced against the adaptive-learning samples via a recorded event.
+    expect(recordSocCalibrationEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ batteryIndex: 0, entity: 'number.bms0_soc_calibration', value: 85, timestampMs: expect.any(Number) }),
+    );
+  });
+
+  it('still resolves when recording the calibration event fails (best-effort fence)', async () => {
+    callHaService.mockResolvedValue(undefined);
+    recordSocCalibrationEvent.mockRejectedValue(new Error('disk full'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 50))
+      .resolves.toEqual({ entity: 'number.bms0_soc_calibration', value: 50 });
+    expect(callHaService).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not record an event when the hardware write fails', async () => {
+    callHaService.mockRejectedValue(new Error('HA down'));
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 50)).rejects.toMatchObject({ statusCode: 502 });
+    expect(recordSocCalibrationEvent).not.toHaveBeenCalled();
   });
 
   it('accepts the 0 and 100 boundary values', async () => {
