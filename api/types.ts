@@ -432,6 +432,19 @@ export interface SocSample {
   evPluggedIn?: boolean;
 }
 
+/**
+ * A manual SoC-register calibration write. Recorded so the efficiency
+ * calibrator can skip any SoC-sample pair that straddles the event: a manual
+ * recalibration steps the system SoC discontinuously, which would otherwise
+ * poison the actual-vs-predicted ratio for that slot.
+ */
+export interface SocCalibrationEvent {
+  timestampMs: number;
+  batteryIndex: number;
+  entity: string;
+  value: number;
+}
+
 export interface SlotDeviation {
   timestampMs: number;
   predictedSoc_percent: number;

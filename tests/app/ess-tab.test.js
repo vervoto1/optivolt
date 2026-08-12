@@ -16,7 +16,7 @@ vi.mock('../../app/src/api/api.js', () => ({
   sendEssSocCalibration: vi.fn(),
 }));
 
-import { initEssTab, deactivateEssTab, activeAlarmText } from '../../app/src/ess-tab.js';
+import { initEssTab, deactivateEssTab, alarmChipState } from '../../app/src/ess-tab.js';
 import { getEssState, getEssHistory, sendEssSocCalibration } from '../../app/src/api/api.js';
 import { renderCellSnapshot, renderLineChart } from '../../app/src/ess-charts.js';
 
@@ -78,7 +78,7 @@ describe('initEssTab — rendering', () => {
     expect(document.getElementById('ess-empty').classList.contains('hidden')).toBe(true);
   });
 
-  it('pins the cell-voltage trend axis to the JK protection window (2.6–3.7 V) with an HTML tooltip', async () => {
+  it('pins the cell-voltage trend axis to the JK protection window with headroom (2.55–3.7 V) and an HTML tooltip', async () => {
     getEssState.mockResolvedValue({
       batteries: [battery('B0')],
       system: null,
@@ -92,7 +92,7 @@ describe('initEssTab — rendering', () => {
     const cellTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === 'V');
     expect(cellTrendCall).toBeDefined();
     expect(cellTrendCall[2]).toMatchObject({
-      yMin: 2.6, yMax: 3.7, showLegend: false, tooltip: { unit: 'V', decimals: 3 },
+      yMin: 2.55, yMax: 3.7, showLegend: false, tooltip: { unit: 'V', decimals: 3 },
     });
   });
 
@@ -214,11 +214,21 @@ describe('alarm chip', () => {
     expect(chip.title).toBe('Cell undervoltage');
   });
 
+  it('shows the alarm chip in red (not amber) for an active fault', async () => {
+    getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value: 'Cell undervoltage' }));
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+    const chip = document.querySelector('#ess-batteries [data-alarm]');
+    expect(chip.classList.contains('bg-red-100')).toBe(true);
+    expect(chip.classList.contains('bg-amber-100')).toBe(false);
+  });
+
   it.each([
-    '', '  ', 'OK', 'okay', 'none', 'off', 'unavailable', 'unknown',
+    '', '  ', 'OK', 'okay', 'none', 'off',
     'Normal', 'nominal', 'Clear', 'Healthy', 'idle', 'No error', 'No errors', 'No fault', 'No faults',
     '0', '0.0', '00', ' 0 ',
-  ])('hides the chip for the idle sensor state %j', async (value) => {
+  ])('hides the chip for the healthy sensor state %j', async (value) => {
     getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value }));
     getEssHistory.mockResolvedValue(emptyHistory);
 
@@ -237,9 +247,22 @@ describe('alarm chip', () => {
       expect(chip.textContent).toBe(`⚠ ${value.trim()}`);
     });
 
-  it('hides the chip when no alarm entity is configured or its value is null', async () => {
+  it.each(['unavailable', 'unknown'])(
+    'shows a distinct amber offline chip when the alarm sensor reports %j', async (value) => {
+      getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value }));
+      getEssHistory.mockResolvedValue(emptyHistory);
+
+      await initEssTab();
+      const chip = document.querySelector('#ess-batteries [data-alarm]');
+      expect(chip.classList.contains('hidden')).toBe(false);
+      expect(chip.textContent).toBe('⚠ Alarm sensor offline');
+      expect(chip.classList.contains('bg-amber-100')).toBe(true);
+      expect(chip.classList.contains('bg-red-100')).toBe(false);
+    });
+
+  it('shows the offline chip when configured but the sensor is missing (value null), hides it when no entity is configured', async () => {
     getEssState.mockResolvedValue({
-      batteries: [battery('NoAlarm'), battery('NullAlarm', { alarm: { entity: 'sensor.e', value: null } })],
+      batteries: [battery('NoAlarm'), battery('MissingAlarm', { alarm: { entity: 'sensor.e', value: null } })],
       system: null,
       refreshIntervalSeconds: 30,
       fetchedAtMs: 0,
@@ -248,35 +271,34 @@ describe('alarm chip', () => {
 
     await initEssTab();
     const chips = document.querySelectorAll('#ess-batteries [data-alarm]');
-    expect(chips[0].classList.contains('hidden')).toBe(true);
-    expect(chips[1].classList.contains('hidden')).toBe(true);
+    expect(chips[0].classList.contains('hidden')).toBe(true); // absent
+    expect(chips[1].classList.contains('hidden')).toBe(false); // offline
+    expect(chips[1].textContent).toBe('⚠ Alarm sensor offline');
   });
 
-  it('clears the chip when a poll reports the alarm resolved', async () => {
+  it('swaps a stale alarm chip back to hidden when a poll reports the alarm resolved', async () => {
     vi.useFakeTimers();
     getEssState.mockResolvedValueOnce(stateWith({ entity: 'sensor.bms0_errors', value: 'Wire resistance' }));
     getEssHistory.mockResolvedValue(emptyHistory);
     await initEssTab();
     const chip = document.querySelector('#ess-batteries [data-alarm]');
     expect(chip.classList.contains('hidden')).toBe(false);
+    expect(chip.classList.contains('bg-red-100')).toBe(true);
 
     getEssState.mockResolvedValueOnce(stateWith({ entity: 'sensor.bms0_errors', value: '' }));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(chip.classList.contains('hidden')).toBe(true);
   });
 
-  it('activeAlarmText trims surrounding whitespace from the alarm text', () => {
-    expect(activeAlarmText({ entity: 'e', value: '  Wire resistance  ' })).toBe('Wire resistance');
-    expect(activeAlarmText(undefined)).toBeNull();
-  });
-
-  it('activeAlarmText treats healthy words and a numeric-zero bitmask as no alarm', () => {
-    for (const idle of ['Normal', 'No error', 'Clear', 0, '0', '0.0']) {
-      expect(activeAlarmText({ entity: 'e', value: idle })).toBeNull();
+  it('alarmChipState classifies healthy, offline, absent and active states', () => {
+    expect(alarmChipState(null)).toEqual({ kind: 'absent' });
+    expect(alarmChipState({ entity: 'e', value: null })).toEqual({ kind: 'offline' });
+    expect(alarmChipState({ entity: 'e', value: 'unavailable' })).toEqual({ kind: 'offline' });
+    for (const healthy of ['Normal', 'No error', 'Clear', 0, '0', '0.0', '  OK  ']) {
+      expect(alarmChipState({ entity: 'e', value: healthy })).toEqual({ kind: 'clear' });
     }
-    // A non-zero fault code is a real alarm and surfaces verbatim.
-    expect(activeAlarmText({ entity: 'e', value: 2 })).toBe('2');
-    expect(activeAlarmText({ entity: 'e', value: 'Cell overvoltage' })).toBe('Cell overvoltage');
+    expect(alarmChipState({ entity: 'e', value: '  Wire resistance  ' })).toEqual({ kind: 'alarm', text: 'Wire resistance' });
+    expect(alarmChipState({ entity: 'e', value: 2 })).toEqual({ kind: 'alarm', text: '2' });
   });
 });
 

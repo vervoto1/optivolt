@@ -293,3 +293,6 @@ The **API** exposes:
 - `GET /ev/current` — Current time slot's EV charging decision (`ev_charge_mode`, `ev_charge_A`, source flows, EV SoC).
 - `GET /ev/schedule` — Full per-slot EV charging schedule from the last computed plan.
 - `GET /ha/entity/:entityId` — Fetch live entity state from Home Assistant (used to validate EV sensor configuration).
+- `GET /ess/state` — Live per-battery + system snapshot for the ESS dashboard (cells, temperatures, SoC, balancing, alarms, and SoC-calibration targets), read in one bulk Home Assistant `/api/states` call. Per-entity tolerant: a missing/renamed id yields a `null` value rather than blanking the tab.
+- `GET /ess/history?hours=&period=` — Trend series (cell voltages, temperatures, per-battery SoC) for the dashboard charts. Prefers pre-aggregated statistics and falls back to raw recorder history for entities without statistics.
+- `POST /ess/battery/:index/soc-calibration` — Writes `{ socPercent }` (whole percent, 0–100) to the battery's configured SoC-calibration `number` entity via HA `number.set_value` — the dashboard's one hardware-write path. Errors: `400` (bad index/value), `404` (no such battery), `422` (ESS disabled / HA unconfigured / no calibration entity), `502` (HA write failed).

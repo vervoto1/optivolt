@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock dependencies
 const mockSnapshots = [];
 const mockSamples = [];
+let mockCalibrationEvents = [];
 let mockCalibration = null;
 let savedCalibration = null;
 
@@ -28,6 +29,12 @@ vi.mock('../../../api/services/soc-tracker.ts', () => ({
     }
     return bestPrior ?? bestNearFuture;
   }),
+}));
+
+// Keep the real (pure) calibrationEventInRange; only the loader reads a file.
+vi.mock('../../../api/services/soc-calibration-events.ts', async (importOriginal) => ({
+  ...(await importOriginal()),
+  loadSocCalibrationEvents: vi.fn(async () => mockCalibrationEvents),
 }));
 
 vi.mock('../../../api/services/json-store.ts', () => ({
@@ -535,8 +542,50 @@ describe('efficiency-calibrator — collectRatios branch coverage', () => {
   beforeEach(() => {
     mockSnapshots.length = 0;
     mockSamples.length = 0;
+    mockCalibrationEvents = [];
     mockCalibration = null;
     savedCalibration = null;
+  });
+  afterEach(() => { mockCalibrationEvents = []; });
+
+  it('skips a sample pair straddling a manual SoC calibration event', async () => {
+    const base = Date.now() - 5 * 24 * 60 * 60_000;
+    const step = 15 * 60_000;
+    const slots = [
+      { timestampMs: base, predictedSoc_percent: 50, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+      { timestampMs: base + step, predictedSoc_percent: 55, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+    ];
+    mockSamples.push(
+      { timestampMs: base, soc_percent: 50, actualLoad_W: 500, actualPv_W: 0 },
+      { timestampMs: base + step, soc_percent: 54, actualLoad_W: 500, actualPv_W: 0 },
+    );
+
+    // Without an event, this clean pair yields one ratio.
+    mockSnapshots.push(makeSnapshot(slots, base));
+    expect((await calibrate(1))?.sampleCount).toBe(1);
+
+    // A calibration event between the two samples poisons the SoC delta, so the
+    // pair must be dropped and no ratios survive.
+    mockCalibration = null;
+    savedCalibration = null;
+    mockCalibrationEvents = [{ timestampMs: base + step / 2, batteryIndex: 0, entity: 'number.bms0_soc_calibration', value: 80 }];
+    expect(await calibrate(1)).toBeNull();
+  });
+
+  it('keeps a pair when the calibration event falls outside the sample window', async () => {
+    const base = Date.now() - 5 * 24 * 60 * 60_000;
+    const step = 15 * 60_000;
+    mockSnapshots.push(makeSnapshot([
+      { timestampMs: base, predictedSoc_percent: 50, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+      { timestampMs: base + step, predictedSoc_percent: 55, chargePower_W: 3000, dischargePower_W: 0, predictedLoad_W: 500, predictedPv_W: 0, strategy: 0 },
+    ], base));
+    mockSamples.push(
+      { timestampMs: base, soc_percent: 50, actualLoad_W: 500, actualPv_W: 0 },
+      { timestampMs: base + step, soc_percent: 54, actualLoad_W: 500, actualPv_W: 0 },
+    );
+    // Event before the earlier sample (== boundary, exclusive) does not straddle the pair.
+    mockCalibrationEvents = [{ timestampMs: base, batteryIndex: 0, entity: 'number.bms0_soc_calibration', value: 80 }];
+    expect((await calibrate(1))?.sampleCount).toBe(1);
   });
 
   it('stops processing slots when a future slot is encountered', async () => {

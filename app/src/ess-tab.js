@@ -70,29 +70,46 @@ function formatBalancing(value) {
 }
 
 /**
- * Alarm text-sensor states that mean "no active alarm". Different BMS "errors"
- * sensors spell a healthy pack differently: the JK BMS errors sensor emits `OK`,
- * others report `Normal` / `No error(s)` / `Clear` / `None`, and HA reports a
- * dropped-out sensor as `unavailable` / `unknown`. A numeric bitmask sensor
- * (`0` = no fault bits) is handled separately below, since it also covers
- * `0.0` / `00` and any non-zero code stays an alarm.
+ * Alarm text-sensor states that mean "no active alarm" (a healthy pack).
+ * Different BMS "errors" sensors spell it differently: the JK BMS errors sensor
+ * emits `OK`, others report `Normal` / `No error(s)` / `Clear` / `None`. A
+ * numeric bitmask sensor (`0` = no fault bits) is handled separately below,
+ * since it also covers `0.0` / `00` while any non-zero code stays an alarm.
  */
 const ALARM_IDLE_VALUES = new Set([
   "", "ok", "okay", "none", "off", "no error", "no errors", "no fault", "no faults",
-  "normal", "nominal", "clear", "healthy", "idle", "unavailable", "unknown",
+  "normal", "nominal", "clear", "healthy", "idle",
 ]);
 
-/** The alarm text to display, or null when the sensor reports no active alarm. */
-export function activeAlarmText(alarm) {
-  if (!alarm || alarm.value == null) return null;
+/**
+ * States that mean the alarm sensor itself is not reporting. These are shown as
+ * a distinct "offline" chip rather than hidden: a dropped alarm channel must not
+ * read as "all clear" — that would silently mask a real fault behind a dead sensor.
+ */
+const ALARM_OFFLINE_VALUES = new Set(["unavailable", "unknown"]);
+
+/**
+ * Classify a battery's alarm sensor:
+ *  - `absent`  — no alarm entity configured (render nothing)
+ *  - `offline` — configured but the sensor is missing/unavailable/unknown
+ *  - `clear`   — the sensor reports a healthy state (render nothing)
+ *  - `alarm`   — an active fault; `text` carries the alarm string
+ */
+export function alarmChipState(alarm) {
+  if (!alarm) return { kind: "absent" };
+  if (alarm.value == null) return { kind: "offline" };
   const text = String(alarm.value).trim();
-  if (ALARM_IDLE_VALUES.has(text.toLowerCase())) return null;
-  // Bitmask "errors" sensors report a healthy pack as 0 (some emit 0.0 / 000);
-  // any non-zero code is a real fault and stays visible (e.g. "⚠ 2").
+  const lower = text.toLowerCase();
+  if (ALARM_OFFLINE_VALUES.has(lower)) return { kind: "offline" };
+  if (ALARM_IDLE_VALUES.has(lower)) return { kind: "clear" };
   const numeric = Number(text);
-  if (Number.isFinite(numeric) && numeric === 0) return null;
-  return text;
+  if (Number.isFinite(numeric) && numeric === 0) return { kind: "clear" };
+  return { kind: "alarm", text };
 }
+
+/** Chip colours toggled by the alarm state: red = active fault, amber = sensor offline. */
+const ALARM_ACTIVE_CLASSES = ["bg-red-100", "text-red-700", "dark:bg-red-900/40", "dark:text-red-300"];
+const ALARM_OFFLINE_CLASSES = ["bg-amber-100", "text-amber-700", "dark:bg-amber-900/40", "dark:text-amber-300"];
 
 function tileHtml(label, valueHtml) {
   return `<div><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${valueHtml}</div></div>`;
@@ -135,7 +152,7 @@ function buildBatteryCard(name) {
       <div class="flex items-center justify-between mb-3 gap-2">
         <h3 class="sidebar-label">${escapeHtml(name)}</h3>
         <div class="flex items-center gap-2 min-w-0">
-          <span data-alarm class="hidden truncate rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 px-2.5 py-0.5 text-sm font-semibold"></span>
+          <span data-alarm class="hidden truncate rounded-full px-2.5 py-0.5 text-sm font-semibold"></span>
           <span data-soc class="hidden rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 px-2.5 py-0.5 text-sm font-semibold"></span>
         </div>
       </div>
@@ -259,12 +276,19 @@ function renderBatteryState(battery, view, index) {
     }
   }
 
-  // Alarm chip — visible only while the alarm text sensor reports an active alarm.
-  const alarmText = activeAlarmText(battery.alarm);
-  if (alarmText) {
-    view.alarmChip.textContent = `⚠ ${alarmText}`;
-    view.alarmChip.title = alarmText;
-    view.alarmChip.classList.remove("hidden");
+  // Alarm chip — red for an active fault, amber when the alarm sensor itself is
+  // offline (so a dropped channel is not read as "all clear"), hidden otherwise.
+  const alarm = alarmChipState(battery.alarm);
+  if (alarm.kind === "alarm") {
+    view.alarmChip.textContent = `⚠ ${alarm.text}`;
+    view.alarmChip.title = alarm.text;
+    view.alarmChip.classList.remove("hidden", ...ALARM_OFFLINE_CLASSES);
+    view.alarmChip.classList.add(...ALARM_ACTIVE_CLASSES);
+  } else if (alarm.kind === "offline") {
+    view.alarmChip.textContent = "⚠ Alarm sensor offline";
+    view.alarmChip.title = "The BMS alarm sensor is unavailable — alarm state unknown";
+    view.alarmChip.classList.remove("hidden", ...ALARM_ACTIVE_CLASSES);
+    view.alarmChip.classList.add(...ALARM_OFFLINE_CLASSES);
   } else {
     view.alarmChip.classList.add("hidden");
   }
@@ -341,9 +365,9 @@ function renderHistory(state, history) {
     if (!view) return;
 
     // Cell voltage trends — one thin line per cell, legend hidden. Pin the axis
-    // to the full JK protection window (2.6–3.7 V: UV protection trips at
-    // 2.60 V, OVP at 3.65 V) so bottom-balancing dips and over-voltage
-    // excursions stay on-scale instead of clipping at the chart edge.
+    // around the full JK protection window (UV protection trips at 2.60 V, OVP at
+    // 3.65 V) with ~0.05 V headroom on each side (2.55–3.70 V), so a dip to the
+    // UV cutoff draws just inside the floor instead of clipping on the axis line.
     const cells = battery.cells ?? [];
     const cellEntries = cells.map((cell, idx) => ({
       label: `Cell ${idx + 1}`,
@@ -351,7 +375,7 @@ function renderHistory(state, history) {
       points: pointsFor(history, cell.entity),
     }));
     const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, {
-      yTitle: "V", yMin: 2.6, yMax: 3.7, showLegend: false, tooltip: { unit: "V", decimals: 3 },
+      yTitle: "V", yMin: 2.55, yMax: 3.7, showLegend: false, tooltip: { unit: "V", decimals: 3 },
     });
     if (!cellsDrawn) setChartMessage(view.trendCanvas, "No trend data");
 

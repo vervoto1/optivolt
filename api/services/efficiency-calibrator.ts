@@ -2,7 +2,8 @@ import path from 'node:path';
 import { resolveDataDir, readJson, writeJson } from './json-store.ts';
 import { getRecentSnapshots } from './plan-history-store.ts';
 import { loadSocSamples, findLatestSampleAtOrBefore } from './soc-tracker.ts';
-import type { CalibrationResult, EvCalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample } from '../types.ts';
+import { loadSocCalibrationEvents, calibrationEventInRange } from './soc-calibration-events.ts';
+import type { CalibrationResult, EvCalibrationResult, AccuracyCurve, PlanSnapshot, PlanSnapshotSlot, SocSample, SocCalibrationEvent } from '../types.ts';
 
 const DATA_DIR = resolveDataDir();
 const CALIBRATION_PATH = path.join(DATA_DIR, 'calibration.json');
@@ -101,6 +102,7 @@ export async function calibrate(
 ): Promise<CalibrationResult | null> {
   const snapshots = await getRecentSnapshots(Math.max(minDataDays + 1, 7));
   const samples = await loadSocSamples();
+  const calibrationEvents = await loadSocCalibrationEvents();
 
   if (snapshots.length === 0 || samples.length === 0) {
     console.log(`[calibrator] skipped: ${snapshots.length} snapshots, ${samples.length} samples`);
@@ -118,7 +120,7 @@ export async function calibrate(
   // Collect all ratio samples across all snapshots
   const allRatios: RatioSample[] = [];
   for (const snapshot of snapshots) {
-    collectRatios(snapshot, samples, allRatios);
+    collectRatios(snapshot, samples, calibrationEvents, allRatios);
   }
 
   if (allRatios.length === 0) {
@@ -228,6 +230,7 @@ function isCleanSlot(
 function collectRatios(
   snapshot: PlanSnapshot,
   samples: SocSample[],
+  calibrationEvents: SocCalibrationEvent[],
   out: RatioSample[],
 ): void {
   const now = Date.now();
@@ -243,6 +246,10 @@ function collectRatios(
     const prevSample = findLatestSampleAtOrBefore(samples, prevSlot.timestampMs);
     const curSample = findLatestSampleAtOrBefore(samples, slot.timestampMs);
     if (!prevSample || !curSample) continue;
+
+    // Skip a pair straddling a manual SoC recalibration: the step in the SoC
+    // register is not a real charge/discharge, so its ratio is meaningless.
+    if (calibrationEventInRange(calibrationEvents, prevSample.timestampMs, curSample.timestampMs)) continue;
 
     // Skip slots where load or PV deviated from prediction (confound filter)
     if (!isCleanSlot(slot, curSample)) continue;
