@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.51 - 2026-08-13
+
+- **ESS tab: the BMS alarm chip no longer shows a phantom alarm for a healthy pack.** The idle-state check only recognized `OK`/`none`/`off` (plus empty and the `unavailable`/`unknown` dropout states), so a BMS whose "errors" sensor reports a healthy pack as `0` (a numeric fault bitmask), `Normal`, `No error`, or `Clear` showed a permanent red `⚠ 0` / `⚠ Normal` chip that never cleared. The check now also treats those healthy words and a numeric-zero value (`0`, `0.0`) as "no alarm", while any non-zero fault code or unrecognized text still surfaces as an alarm.
+
 ## 0.7.50 - 2026-08-12
 
 - **ESS tab: BMS alarms are now visible — including which alarm.** A battery card can point at the BMS's alarm/errors text sensor (new per-battery `alarmEntity` setting, e.g. the JK BMS "errors" text sensor). While that sensor reports anything other than an idle state (empty, `OK`, `none`, `off`, `unavailable`, `unknown`), the card header shows a red chip with the alarm text (e.g. "⚠ Cell undervoltage"); it clears on the next poll after the BMS drops the alarm.

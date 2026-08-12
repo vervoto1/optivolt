@@ -69,14 +69,29 @@ function formatBalancing(value) {
   return `<span class="${cls}">${on ? "On" : "Off"}</span>`;
 }
 
-/** Alarm text-sensor states that mean "no active alarm". */
-const ALARM_IDLE_VALUES = new Set(["", "ok", "none", "off", "unavailable", "unknown"]);
+/**
+ * Alarm text-sensor states that mean "no active alarm". Different BMS "errors"
+ * sensors spell a healthy pack differently: the JK BMS errors sensor emits `OK`,
+ * others report `Normal` / `No error(s)` / `Clear` / `None`, and HA reports a
+ * dropped-out sensor as `unavailable` / `unknown`. A numeric bitmask sensor
+ * (`0` = no fault bits) is handled separately below, since it also covers
+ * `0.0` / `00` and any non-zero code stays an alarm.
+ */
+const ALARM_IDLE_VALUES = new Set([
+  "", "ok", "okay", "none", "off", "no error", "no errors", "no fault", "no faults",
+  "normal", "nominal", "clear", "healthy", "idle", "unavailable", "unknown",
+]);
 
 /** The alarm text to display, or null when the sensor reports no active alarm. */
 export function activeAlarmText(alarm) {
   if (!alarm || alarm.value == null) return null;
   const text = String(alarm.value).trim();
-  return ALARM_IDLE_VALUES.has(text.toLowerCase()) ? null : text;
+  if (ALARM_IDLE_VALUES.has(text.toLowerCase())) return null;
+  // Bitmask "errors" sensors report a healthy pack as 0 (some emit 0.0 / 000);
+  // any non-zero code is a real fault and stays visible (e.g. "⚠ 2").
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric === 0) return null;
+  return text;
 }
 
 function tileHtml(label, valueHtml) {
