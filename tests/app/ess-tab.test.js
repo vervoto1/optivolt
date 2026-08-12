@@ -214,13 +214,27 @@ describe('alarm chip', () => {
     expect(chip.title).toBe('Cell undervoltage');
   });
 
-  it.each(['', '  ', 'OK', 'none', 'off', 'unavailable', 'unknown'])(
-    'hides the chip for the idle sensor state %j', async (value) => {
+  it.each([
+    '', '  ', 'OK', 'okay', 'none', 'off', 'unavailable', 'unknown',
+    'Normal', 'nominal', 'Clear', 'Healthy', 'idle', 'No error', 'No errors', 'No fault', 'No faults',
+    '0', '0.0', '00', ' 0 ',
+  ])('hides the chip for the idle sensor state %j', async (value) => {
+    getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value }));
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+    expect(document.querySelector('#ess-batteries [data-alarm]').classList.contains('hidden')).toBe(true);
+  });
+
+  it.each(['2', 'Cell undervoltage', 'Wire resistance', '0x2', '1, 4'])(
+    'still shows the chip for the active alarm state %j', async (value) => {
       getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value }));
       getEssHistory.mockResolvedValue(emptyHistory);
 
       await initEssTab();
-      expect(document.querySelector('#ess-batteries [data-alarm]').classList.contains('hidden')).toBe(true);
+      const chip = document.querySelector('#ess-batteries [data-alarm]');
+      expect(chip.classList.contains('hidden')).toBe(false);
+      expect(chip.textContent).toBe(`⚠ ${value.trim()}`);
     });
 
   it('hides the chip when no alarm entity is configured or its value is null', async () => {
@@ -254,6 +268,15 @@ describe('alarm chip', () => {
   it('activeAlarmText trims surrounding whitespace from the alarm text', () => {
     expect(activeAlarmText({ entity: 'e', value: '  Wire resistance  ' })).toBe('Wire resistance');
     expect(activeAlarmText(undefined)).toBeNull();
+  });
+
+  it('activeAlarmText treats healthy words and a numeric-zero bitmask as no alarm', () => {
+    for (const idle of ['Normal', 'No error', 'Clear', 0, '0', '0.0']) {
+      expect(activeAlarmText({ entity: 'e', value: idle })).toBeNull();
+    }
+    // A non-zero fault code is a real alarm and surfaces verbatim.
+    expect(activeAlarmText({ entity: 'e', value: 2 })).toBe('2');
+    expect(activeAlarmText({ entity: 'e', value: 'Cell overvoltage' })).toBe('Cell overvoltage');
   });
 });
 
