@@ -9,6 +9,8 @@
  *  - getChartAnimations()        — per-chart-type animation config
  */
 
+import { escapeHtml } from "./utils.js";
+
 // ---------------------------------------------------------------------------
 // CSS injection
 // ---------------------------------------------------------------------------
@@ -92,17 +94,21 @@ export function injectTooltipStyles() {
 // HTML helpers
 // ---------------------------------------------------------------------------
 
+// `metaHtml` is the one intentional HTML param (callers pass markup like
+// `SoC <strong>…</strong>`); `time` is plain text and gets escaped. `label` and
+// `value` in ttRow are escaped too — some callers pass user-configured strings
+// (e.g. a battery/sensor name), which must not reach innerHTML unescaped.
 export function ttHeader(time, metaHtml = "") {
   return `<div class="ov-tt-head">
-    <span class="ov-tt-time">${time}</span>
+    <span class="ov-tt-time">${escapeHtml(time)}</span>
     ${metaHtml ? `<span class="ov-tt-meta">${metaHtml}</span>` : ""}
   </div>`;
 }
 
 export function ttRow(color, label, value) {
   return `<div class="ov-tt-row">
-    <span class="ov-tt-lbl"><span class="ov-tt-dot" style="background:${color}"></span>${label}</span>
-    <span class="ov-tt-val">${value}</span>
+    <span class="ov-tt-lbl"><span class="ov-tt-dot" style="background:${color}"></span>${escapeHtml(label)}</span>
+    <span class="ov-tt-val">${escapeHtml(value)}</span>
   </div>`;
 }
 

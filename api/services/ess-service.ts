@@ -310,11 +310,13 @@ export async function calibrateBatterySoc(
     throw new HttpError(422, `Battery "${battery.name}" has no SoC calibration entity configured`);
   }
 
-  const soc = Number(socPercent);
-  if (!Number.isFinite(soc) || soc < 0 || soc > 100) {
+  // Require a real number: `Number()` would coerce null, '', [] and false to 0
+  // (and true to 1), which would silently write 0% to the physical BMS SoC
+  // register — this is a one-way hardware write, so reject non-numbers outright.
+  if (typeof socPercent !== 'number' || !Number.isFinite(socPercent) || socPercent < 0 || socPercent > 100) {
     throw new HttpError(400, 'socPercent must be a number between 0 and 100');
   }
-  const value = Math.round(soc);
+  const value = Math.round(socPercent);
 
   try {
     await callHaService({

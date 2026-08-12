@@ -283,11 +283,14 @@ describe('calibrateBatterySoc', () => {
       .rejects.toMatchObject({ statusCode: 422, message: expect.stringContaining('no SoC calibration entity') });
   });
 
-  it.each([NaN, -1, 101, 'nope', undefined])('throws 400 for out-of-range/non-numeric SoC %s', async (soc) => {
-    await expect(calibrateBatterySoc(calibratableSettings(), 0, soc))
-      .rejects.toMatchObject({ statusCode: 400 });
-    expect(callHaService).not.toHaveBeenCalled();
-  });
+  // null/''/false/[] coerce to 0 and true to 1 under Number(); the endpoint must
+  // reject them rather than silently writing a coerced value to the BMS register.
+  it.each([NaN, -1, 101, 'nope', undefined, null, '', true, false, []])(
+    'throws 400 for out-of-range/non-numeric SoC %s', async (soc) => {
+      await expect(calibrateBatterySoc(calibratableSettings(), 0, soc))
+        .rejects.toMatchObject({ statusCode: 400 });
+      expect(callHaService).not.toHaveBeenCalled();
+    });
 
   it('writes the rounded percent via number.set_value and echoes entity + value', async () => {
     callHaService.mockResolvedValue(undefined);

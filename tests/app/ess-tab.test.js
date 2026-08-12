@@ -404,11 +404,17 @@ describe('SoC calibration widget', () => {
     send.click();
     await flush();
     expect(status.classList.contains('text-red-600')).toBe(true);
+    // The base slate colour must be dropped in the error state, else it wins the
+    // cascade (defined later in the sheet) and the error text renders gray.
+    expect(status.classList.contains('text-slate-500')).toBe(false);
+    expect(status.classList.contains('dark:text-slate-400')).toBe(false);
 
     input.value = '60';
     send.click();
     await flush();
     expect(status.classList.contains('text-red-600')).toBe(false);
+    expect(status.classList.contains('text-slate-500')).toBe(true);
+    expect(status.classList.contains('dark:text-slate-400')).toBe(true);
     expect(status.textContent).toBe('Sent 60 % to the BMS.');
   });
 });

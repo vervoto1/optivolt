@@ -243,6 +243,15 @@ describe('seriesTooltipContent', () => {
     expect(html).toContain('3.00');
     expect(html).toContain('ov-tt-time');
   });
+
+  it('escapes HTML in a series label so a hostile battery/sensor name cannot inject markup', () => {
+    const hostile = [{ label: '<img src=x onerror="alert(1)">', color: 'hsl(0,0%,0%)', data: [3.3] }];
+    const html = seriesTooltipContent(hostile, { unit: 'V', decimals: 2 })(0, { title: ['<b>t</b>'] });
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<b>t</b>');
+    expect(html).toContain('&lt;b&gt;t&lt;/b&gt;');
+  });
 });
 
 describe('renderCellSnapshot', () => {

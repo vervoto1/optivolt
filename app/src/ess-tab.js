@@ -200,6 +200,11 @@ function setCalibrateStatus(view, message, isError) {
   view.calibrateStatus.textContent = message;
   view.calibrateStatus.classList.toggle("text-red-600", isError);
   view.calibrateStatus.classList.toggle("dark:text-red-400", isError);
+  // Toggle the base slate classes off in the error state: they are defined
+  // after the red utilities in the compiled Tailwind sheet, so at equal
+  // specificity the slate colour would otherwise win and hide the red.
+  view.calibrateStatus.classList.toggle("text-slate-500", !isError);
+  view.calibrateStatus.classList.toggle("dark:text-slate-400", !isError);
 }
 
 /**
