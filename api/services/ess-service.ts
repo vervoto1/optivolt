@@ -1,12 +1,15 @@
 /**
  * ess-service.ts
  *
- * Orchestration for the ESS dashboard tab over the HA client. Two endpoints:
+ * Orchestration for the ESS dashboard tab over the HA client. Three endpoints:
  *
  *  - `getEssState`   — one bulk `/api/states` read, indexed by entity id, shaped
  *                      into per-battery + system snapshots. Per-entity tolerant:
  *                      a missing/renamed id yields a `null` value rather than
  *                      blanking the tab.
+ *  - `calibrateBatterySoc` — writes a SoC calibration percent to a battery's
+ *                      configured calibration number entity via the HA service
+ *                      API (the dashboard's one write path).
  *  - `getEssHistory` — trend series for cells/temperatures/SoC. Prefers
  *                      pre-aggregated statistics; falls back to raw recorder
  *                      history for entities that have no statistics (the common
@@ -27,6 +30,7 @@ import {
   fetchHaEntityStates,
   fetchHaStats,
   fetchHaHistory,
+  callHaService,
   type HaEntityState,
   type HaHistoryEntry,
 } from './ha-client.ts';
@@ -65,6 +69,10 @@ export interface EssBatteryState {
   temperatures: EssTemperatureReading[];
   scalars: Record<string, EssScalar>;
   balancing: { entity: string; value: string | null } | null;
+  /** Raw state of the alarm text sensor; the client decides what counts as active. */
+  alarm: { entity: string; value: string | null } | null;
+  /** Present iff a SoC calibration write target is configured for this battery. */
+  socCalibration: { entity: string; value: number | null } | null;
   extras: EssExtraReading[];
 }
 
@@ -200,12 +208,25 @@ function buildBatteryState(battery: EssBatteryConfig, byId: Map<string, HaEntity
     balancing = { entity: battery.balancingBinaryEntity, value: state ? state.state : null };
   }
 
+  let alarm: { entity: string; value: string | null } | null = null;
+  if (battery.alarmEntity) {
+    const state = byId.get(battery.alarmEntity);
+    alarm = { entity: battery.alarmEntity, value: state ? state.state : null };
+  }
+
+  let socCalibration: { entity: string; value: number | null } | null = null;
+  if (battery.socCalibrationEntity) {
+    socCalibration = { entity: battery.socCalibrationEntity, value: numericValue(byId.get(battery.socCalibrationEntity)) };
+  }
+
   return {
     name: battery.name,
     cells,
     temperatures,
     scalars,
     balancing,
+    alarm,
+    socCalibration,
     extras: extrasFor(battery.extraEntities, byId),
   };
 }
@@ -260,6 +281,57 @@ export async function getEssState(settings: Settings): Promise<EssStateResponse>
     refreshIntervalSeconds: cfg.refreshIntervalSeconds,
     fetchedAtMs: Date.now(),
   };
+}
+
+// ----------------------------- SoC calibration ----------------------------
+
+/**
+ * Write a SoC calibration value (whole percent) to a battery's configured
+ * calibration number entity — the dashboard's one WRITE path. The entity is a
+ * write-through to the BMS SoC register (e.g. a JK BMS calibration number
+ * exposed via ESPHome), so the value is rounded to an integer percent.
+ */
+export async function calibrateBatterySoc(
+  settings: Settings,
+  batteryIndex: number,
+  socPercent: unknown,
+): Promise<{ entity: string; value: number }> {
+  const cfg = requireEssConfig(settings);
+
+  if (!resolveHaHttpConfig(settings.haUrl, settings.haToken)) {
+    throw new HttpError(422, 'Home Assistant is not configured');
+  }
+
+  const battery = cfg.batteries[batteryIndex];
+  if (!battery) {
+    throw new HttpError(404, `No battery at index ${batteryIndex}`);
+  }
+  if (!battery.socCalibrationEntity) {
+    throw new HttpError(422, `Battery "${battery.name}" has no SoC calibration entity configured`);
+  }
+
+  // Require a real number: `Number()` would coerce null, '', [] and false to 0
+  // (and true to 1), which would silently write 0% to the physical BMS SoC
+  // register — this is a one-way hardware write, so reject non-numbers outright.
+  if (typeof socPercent !== 'number' || !Number.isFinite(socPercent) || socPercent < 0 || socPercent > 100) {
+    throw new HttpError(400, 'socPercent must be a number between 0 and 100');
+  }
+  const value = Math.round(socPercent);
+
+  try {
+    await callHaService({
+      haUrl: settings.haUrl,
+      haToken: settings.haToken,
+      domain: 'number',
+      service: 'set_value',
+      target: { entity_id: battery.socCalibrationEntity },
+      data: { value },
+    });
+  } catch (err) {
+    throw new HttpError(502, err instanceof Error ? err.message : 'Failed to write the SoC calibration to Home Assistant');
+  }
+
+  return { entity: battery.socCalibrationEntity, value };
 }
 
 // ----------------------------- History -----------------------------------

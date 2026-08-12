@@ -638,6 +638,22 @@ describe('settings-schema', () => {
       expect(r.essConfig.batteries[0].balanceTriggerVoltageEntity).toBe('number.t0');
     });
 
+    it('preserves the per-battery alarm and SoC calibration entities through essConfig normalization', () => {
+      const r = normalizeSettings({
+        ...validSettings(),
+        essConfig: {
+          enabled: true, historyWindowHours: 24, historyPeriod: '5minute', refreshIntervalSeconds: 5,
+          batteries: [{
+            name: 'B0',
+            alarmEntity: 'sensor.bms0_errors',
+            socCalibrationEntity: 'number.bms0_soc_calibration',
+          }],
+        },
+      });
+      expect(r.essConfig.batteries[0].alarmEntity).toBe('sensor.bms0_errors');
+      expect(r.essConfig.batteries[0].socCalibrationEntity).toBe('number.bms0_soc_calibration');
+    });
+
     it('deep-merges a partial batteryChargeControl PATCH', () => {
       const base = normalizeSettings({ ...validSettings(), batteryChargeControl: chargeCfg() });
       const merged = mergeSettings(base, { batteryChargeControl: { enabled: true } });

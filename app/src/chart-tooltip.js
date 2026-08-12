@@ -9,6 +9,8 @@
  *  - getChartAnimations()        — per-chart-type animation config
  */
 
+import { escapeHtml } from "./utils.js";
+
 // ---------------------------------------------------------------------------
 // CSS injection
 // ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ export function injectTooltipStyles() {
     .dark .ov-tt-val { color:#f1f5f9; }
     .ov-tt-div { border-top:1px solid #e2e8f0; margin:5px 0; }
     .dark .ov-tt-div { border-color:rgba(255,255,255,0.08); }
+    .ov-tt-cols { display:grid; grid-auto-flow:column; column-gap:16px; }
     .ov-tt-prices { display:flex; justify-content:space-between; align-items:center;
                     font-size:11px; color:#64748b; padding:1px 0; }
     .dark .ov-tt-prices { color:#94a3b8; }
@@ -91,17 +94,21 @@ export function injectTooltipStyles() {
 // HTML helpers
 // ---------------------------------------------------------------------------
 
+// `metaHtml` is the one intentional HTML param (callers pass markup like
+// `SoC <strong>…</strong>`); `time` is plain text and gets escaped. `label` and
+// `value` in ttRow are escaped too — some callers pass user-configured strings
+// (e.g. a battery/sensor name), which must not reach innerHTML unescaped.
 export function ttHeader(time, metaHtml = "") {
   return `<div class="ov-tt-head">
-    <span class="ov-tt-time">${time}</span>
+    <span class="ov-tt-time">${escapeHtml(time)}</span>
     ${metaHtml ? `<span class="ov-tt-meta">${metaHtml}</span>` : ""}
   </div>`;
 }
 
 export function ttRow(color, label, value) {
   return `<div class="ov-tt-row">
-    <span class="ov-tt-lbl"><span class="ov-tt-dot" style="background:${color}"></span>${label}</span>
-    <span class="ov-tt-val">${value}</span>
+    <span class="ov-tt-lbl"><span class="ov-tt-dot" style="background:${color}"></span>${escapeHtml(label)}</span>
+    <span class="ov-tt-val">${escapeHtml(value)}</span>
   </div>`;
 }
 

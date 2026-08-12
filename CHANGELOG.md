@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.50 - 2026-08-12
+
+- **ESS tab: BMS alarms are now visible — including which alarm.** A battery card can point at the BMS's alarm/errors text sensor (new per-battery `alarmEntity` setting, e.g. the JK BMS "errors" text sensor). While that sensor reports anything other than an idle state (empty, `OK`, `none`, `off`, `unavailable`, `unknown`), the card header shows a red chip with the alarm text (e.g. "⚠ Cell undervoltage"); it clears on the next poll after the BMS drops the alarm.
+
+- **ESS tab: SoC calibration per battery, straight from the dashboard.** A battery with the new `socCalibrationEntity` setting (a number entity that writes through to the BMS SoC register, e.g. the ESPHome JK BMS calibration number) gets a "SoC calibration" widget on its card: it shows the battery's actual SoC next to a percent input, and Send writes the value through the new `POST /ess/battery/:index/soc-calibration` endpoint (HA `number.set_value`, rounded to a whole percent — BMS SoC registers take integer percent). Values outside 0–100 are rejected client- and server-side, and the button locks while a write is in flight so a double-click can't fire two register writes.
+
+- **ESS tab: the cell-voltage trend now spans the full JK protection window (2.6–3.7 V).** The old 2.75–3.75 V pin clipped exactly the excursions worth watching: bottom-balancing dips run down to the 2.60 V under-voltage cutoff and disappeared below the chart floor. The new floor sits on the UV protection voltage, and 3.7 V keeps a little headroom above the 3.65 V OVP at the top.
+
+- **ESS tab: hovering the cell-voltage trend now shows all 16 cells.** The built-in Chart.js tooltip is painted on the canvas and clipped by it, so in the 11rem-tall trend chart only the first ~9 of 16 cell rows fit — the rest were simply invisible. The ESS trend charts (cell voltages, temperatures, combined SoC) now use the shared external HTML tooltip, which overflows the chart freely and lays long series lists out as a two-column grid (cells 1–8 down the left column, 9–16 down the right).
+
 ## 0.7.49 - 2026-08-07
 
 - **A morning SoC below the minSoc floor no longer makes the plan buy the deficit back at peak price** (#49). The minSoc floor was a soft constraint whose shortfall penalty (50 c/kWh) accrued *every slot*, so a battery that drifted 1% under the floor overnight (idle drain after the evening export dump parked it on the floor) made the LP "restore" the floor in the very first slot — at the day's most expensive price — while the Victron reactive layer treats such a delta as maintained (`idle_maintain_targetsoc`) and does nothing. The plan then diverged from reality for hours and showed a confusing peak-price charge that never happened.

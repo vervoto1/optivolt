@@ -598,6 +598,7 @@ const ESS_BATTERY_ENTITY_KEYS = [
   'dischargingPowerEntity', 'capacitySettingEntity', 'capacityRemainingEntity',
   'minCellVoltageEntity', 'maxCellVoltageEntity', 'balancingBinaryEntity',
   'balancingCurrentEntity', 'balanceStartVoltageEntity', 'balanceTriggerVoltageEntity',
+  'alarmEntity', 'socCalibrationEntity',
 ] as const;
 
 function normalizeEssBattery(battery: unknown, idx: number): EssBatteryConfig {

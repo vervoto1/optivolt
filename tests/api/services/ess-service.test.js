@@ -7,10 +7,12 @@ import {
   fetchHaEntityStates,
   fetchHaStats,
   fetchHaHistory,
+  callHaService,
 } from '../../../api/services/ha-client.ts';
 import {
   getEssState,
   getEssHistory,
+  calibrateBatterySoc,
   expandCellEntities,
   collectHistoryEntities,
 } from '../../../api/services/ess-service.ts';
@@ -169,6 +171,42 @@ describe('getEssState', () => {
     ]);
   });
 
+  it('reports the alarm text sensor state, and null when the entity is missing', async () => {
+    fetchHaEntityStates.mockResolvedValue([
+      state('sensor.bms0_errors', 'Wire resistance'),
+    ]);
+    const settings = makeSettings();
+    settings.essConfig.batteries[0].alarmEntity = 'sensor.bms0_errors';
+    let result = await getEssState(settings);
+    expect(result.batteries[0].alarm).toEqual({ entity: 'sensor.bms0_errors', value: 'Wire resistance' });
+
+    fetchHaEntityStates.mockResolvedValue([]); // entity absent from the bulk read
+    result = await getEssState(settings);
+    expect(result.batteries[0].alarm).toEqual({ entity: 'sensor.bms0_errors', value: null });
+  });
+
+  it('reports a null alarm when no alarm entity is configured', async () => {
+    fetchHaEntityStates.mockResolvedValue([]);
+    const result = await getEssState(makeSettings());
+    expect(result.batteries[0].alarm).toBeNull();
+  });
+
+  it('reports the SoC calibration entity and its numeric value when configured', async () => {
+    fetchHaEntityStates.mockResolvedValue([
+      state('number.bms0_soc_calibration', 87, '%'),
+    ]);
+    const settings = makeSettings();
+    settings.essConfig.batteries[0].socCalibrationEntity = 'number.bms0_soc_calibration';
+    const result = await getEssState(settings);
+    expect(result.batteries[0].socCalibration).toEqual({ entity: 'number.bms0_soc_calibration', value: 87 });
+  });
+
+  it('reports a null SoC calibration block when no calibration entity is configured', async () => {
+    fetchHaEntityStates.mockResolvedValue([]);
+    const result = await getEssState(makeSettings());
+    expect(result.batteries[0].socCalibration).toBeNull();
+  });
+
   it('reports null balancing state when the binary entity is missing from the bulk read', async () => {
     fetchHaEntityStates.mockResolvedValue([]); // entity absent
     const settings = makeSettings();
@@ -210,6 +248,81 @@ describe('getEssState', () => {
     expect(result.system.extras).toEqual([
       { entity: 'sensor.sys_inverter_state', name: 'Inverter state', value: 'inverting' },
     ]);
+  });
+});
+
+describe('calibrateBatterySoc', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function calibratableSettings() {
+    const settings = makeSettings();
+    settings.essConfig.batteries[0].socCalibrationEntity = 'number.bms0_soc_calibration';
+    return settings;
+  }
+
+  it('throws 422 when ESS is disabled', async () => {
+    await expect(calibrateBatterySoc(makeSettings({ essConfig: { enabled: false, batteries: [] } }), 0, 50))
+      .rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it('throws 422 when HA is not configured', async () => {
+    await expect(calibrateBatterySoc(makeSettings({ haUrl: '', haToken: '' }), 0, 50))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('throws 404 for an out-of-range battery index', async () => {
+    await expect(calibrateBatterySoc(calibratableSettings(), 5, 50))
+      .rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('throws 422 when the battery has no calibration entity configured', async () => {
+    await expect(calibrateBatterySoc(makeSettings(), 0, 50))
+      .rejects.toMatchObject({ statusCode: 422, message: expect.stringContaining('no SoC calibration entity') });
+  });
+
+  // null/''/false/[] coerce to 0 and true to 1 under Number(); the endpoint must
+  // reject them rather than silently writing a coerced value to the BMS register.
+  it.each([NaN, -1, 101, 'nope', undefined, null, '', true, false, []])(
+    'throws 400 for out-of-range/non-numeric SoC %s', async (soc) => {
+      await expect(calibrateBatterySoc(calibratableSettings(), 0, soc))
+        .rejects.toMatchObject({ statusCode: 400 });
+      expect(callHaService).not.toHaveBeenCalled();
+    });
+
+  it('writes the rounded percent via number.set_value and echoes entity + value', async () => {
+    callHaService.mockResolvedValue(undefined);
+    const result = await calibrateBatterySoc(calibratableSettings(), 0, 84.6);
+
+    expect(callHaService).toHaveBeenCalledWith({
+      haUrl: HA.haUrl,
+      haToken: HA.haToken,
+      domain: 'number',
+      service: 'set_value',
+      target: { entity_id: 'number.bms0_soc_calibration' },
+      data: { value: 85 },
+    });
+    expect(result).toEqual({ entity: 'number.bms0_soc_calibration', value: 85 });
+  });
+
+  it('accepts the 0 and 100 boundary values', async () => {
+    callHaService.mockResolvedValue(undefined);
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 0)).resolves.toMatchObject({ value: 0 });
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 100)).resolves.toMatchObject({ value: 100 });
+  });
+
+  it('maps a service-call failure to 502', async () => {
+    callHaService.mockRejectedValue(new Error('HA service number.set_value returned 500'));
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 50))
+      .rejects.toMatchObject({ statusCode: 502, message: 'HA service number.set_value returned 500' });
+  });
+
+  it('uses the fallback message when the service call rejects with a non-Error', async () => {
+    callHaService.mockRejectedValue('boom');
+    await expect(calibrateBatterySoc(calibratableSettings(), 0, 50))
+      .rejects.toMatchObject({ statusCode: 502, message: 'Failed to write the SoC calibration to Home Assistant' });
   });
 });
 

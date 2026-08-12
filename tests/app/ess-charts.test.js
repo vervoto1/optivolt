@@ -21,6 +21,7 @@ import {
   batteryColor,
   cellColor,
   buildUnifiedSeries,
+  seriesTooltipContent,
   renderLineChart,
   renderCellSnapshot,
 } from '../../app/src/ess-charts.js';
@@ -183,6 +184,73 @@ describe('renderLineChart', () => {
     expect(typeof axisArg.ticksCb).toBe('function');
     expect(typeof axisArg.tooltipTitleCb).toBe('function');
     expect(typeof axisArg.gridCb).toBe('function');
+  });
+
+  it('uses the built-in canvas tooltip when opts.tooltip is absent', () => {
+    const canvas = document.createElement('canvas');
+    renderLineChart(canvas, entries);
+    const overrides = getBaseOptions.mock.calls[0][1];
+    expect(overrides.plugins.tooltip).toBeUndefined();
+  });
+
+  it('swaps in the external HTML tooltip when opts.tooltip is set', () => {
+    const canvas = document.createElement('canvas');
+    renderLineChart(canvas, entries, { tooltip: { unit: 'V', decimals: 3 } });
+    const overrides = getBaseOptions.mock.calls[0][1];
+    expect(overrides.plugins.tooltip.enabled).toBe(false);
+    expect(typeof overrides.plugins.tooltip.external).toBe('function');
+  });
+});
+
+describe('seriesTooltipContent', () => {
+  const datasets = (n) => Array.from({ length: n }, (_unused, i) => ({
+    label: `Cell ${i + 1}`,
+    color: `hsl(${i}, 72%, 52%)`,
+    data: [3.001 + i / 1000, null],
+  }));
+
+  it('renders a header row plus one row per series with unit + decimals', () => {
+    const html = seriesTooltipContent(datasets(3), { unit: 'V', decimals: 3 })(0, { title: ['12:00'] });
+    expect(html).toContain('12:00');
+    expect(html).toContain('Cell 1');
+    expect(html).toContain('3.001 V');
+    expect(html).toContain('Cell 3');
+    expect(html).toContain('3.003 V');
+    expect(html).toContain('hsl(2, 72%, 52%)');
+  });
+
+  it('renders an em dash for a gap (null) value', () => {
+    const html = seriesTooltipContent(datasets(2), { unit: 'V', decimals: 3 })(1, { title: ['12:05'] });
+    expect(html).toContain('—');
+    expect(html).not.toContain('V<'); // no numeric value rendered
+  });
+
+  it('stays single-column for 8 series and omits the unit suffix when none is given', () => {
+    const html = seriesTooltipContent(datasets(8), { decimals: 1 })(0, { title: ['12:00'] });
+    expect(html).not.toContain('ov-tt-cols');
+    expect(html).toContain('3.0'); // 1 decimal, no unit suffix
+  });
+
+  it('wraps 16 series into a two-column grid, column-major with 8 rows per column', () => {
+    const html = seriesTooltipContent(datasets(16), { unit: 'V', decimals: 3 })(0, { title: ['12:00'] });
+    expect(html).toContain('ov-tt-cols');
+    expect(html).toContain('grid-template-rows:repeat(8,auto)');
+    for (let i = 1; i <= 16; i++) expect(html).toContain(`Cell ${i}`);
+  });
+
+  it('falls back to defaults: empty title, 2 decimals, no unit', () => {
+    const html = seriesTooltipContent(datasets(1))(0, {});
+    expect(html).toContain('3.00');
+    expect(html).toContain('ov-tt-time');
+  });
+
+  it('escapes HTML in a series label so a hostile battery/sensor name cannot inject markup', () => {
+    const hostile = [{ label: '<img src=x onerror="alert(1)">', color: 'hsl(0,0%,0%)', data: [3.3] }];
+    const html = seriesTooltipContent(hostile, { unit: 'V', decimals: 2 })(0, { title: ['<b>t</b>'] });
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<b>t</b>');
+    expect(html).toContain('&lt;b&gt;t&lt;/b&gt;');
   });
 });
 

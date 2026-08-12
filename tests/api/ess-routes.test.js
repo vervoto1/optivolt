@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import app from '../../api/app.ts';
-import { get } from './helpers/express-test-client.js';
+import essRouter from '../../api/routes/ess.ts';
+import { get, post } from './helpers/express-test-client.js';
 import { HttpError } from '../../api/http-errors.ts';
 
 vi.mock('../../api/services/settings-store.ts');
 vi.mock('../../api/services/ess-service.ts');
 
 import { loadSettings } from '../../api/services/settings-store.ts';
-import { getEssState, getEssHistory } from '../../api/services/ess-service.ts';
+import { getEssState, getEssHistory, calibrateBatterySoc } from '../../api/services/ess-service.ts';
 
 const mockSettings = {
   haUrl: 'ws://homeassistant.local:8123/api/websocket',
@@ -44,6 +45,41 @@ describe('GET /ess/state', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain('Home Assistant');
+  });
+});
+
+describe('POST /ess/battery/:index/soc-calibration', () => {
+  // POSTs go through the router directly (like the other POST route tests):
+  // the helper's own express.json has already consumed the body stream, so
+  // routing through `app` would double-parse it.
+  it('passes the battery index and body SoC through to the service', async () => {
+    calibrateBatterySoc.mockResolvedValue({ entity: 'number.bms0_soc_calibration', value: 85 });
+
+    const res = await post(essRouter, '/battery/1/soc-calibration', { socPercent: 85 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ entity: 'number.bms0_soc_calibration', value: 85 });
+    expect(calibrateBatterySoc).toHaveBeenCalledWith(mockSettings, 1, 85);
+  });
+
+  it('tolerates a missing body by passing socPercent as undefined', async () => {
+    calibrateBatterySoc.mockResolvedValue({ entity: 'number.x', value: 50 });
+    const res = await post(essRouter, '/battery/0/soc-calibration');
+    expect(res.status).toBe(200);
+    expect(calibrateBatterySoc).toHaveBeenCalledWith(mockSettings, 0, undefined);
+  });
+
+  it.each(['abc', '-1', '1.5'])('rejects the non-index path segment %s with 400', async (index) => {
+    const res = await post(essRouter, `/battery/${index}/soc-calibration`, { socPercent: 50 });
+    expect(res.status).toBe(400);
+    expect(calibrateBatterySoc).not.toHaveBeenCalled();
+  });
+
+  it('propagates service HttpErrors (e.g. 422 unconfigured entity)', async () => {
+    calibrateBatterySoc.mockRejectedValue(new HttpError(422, 'Battery "B0" has no SoC calibration entity configured'));
+    const res = await post(essRouter, '/battery/0/soc-calibration', { socPercent: 50 });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain('no SoC calibration entity');
   });
 });
 
