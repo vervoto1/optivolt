@@ -49,6 +49,8 @@ export const setEvOverride = (mode) => postJson('/ev/override', { mode });
 
 // --- ESS dashboard ---
 export const getEssState = () => getJson('/ess/state');
+export const sendEssSocCalibration = (batteryIndex, socPercent) =>
+  postJson(`/ess/battery/${encodeURIComponent(batteryIndex)}/soc-calibration`, { socPercent });
 export function getEssHistory({ hours, period } = {}) {
   const params = new URLSearchParams();
   if (hours != null) params.set('hours', String(hours));

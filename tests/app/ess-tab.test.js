@@ -13,10 +13,11 @@ vi.mock('../../app/src/ess-charts.js', () => ({
 vi.mock('../../app/src/api/api.js', () => ({
   getEssState: vi.fn(),
   getEssHistory: vi.fn(),
+  sendEssSocCalibration: vi.fn(),
 }));
 
-import { initEssTab, deactivateEssTab } from '../../app/src/ess-tab.js';
-import { getEssState, getEssHistory } from '../../app/src/api/api.js';
+import { initEssTab, deactivateEssTab, activeAlarmText } from '../../app/src/ess-tab.js';
+import { getEssState, getEssHistory, sendEssSocCalibration } from '../../app/src/api/api.js';
 import { renderCellSnapshot, renderLineChart } from '../../app/src/ess-charts.js';
 
 function setupDom() {
@@ -77,7 +78,7 @@ describe('initEssTab — rendering', () => {
     expect(document.getElementById('ess-empty').classList.contains('hidden')).toBe(true);
   });
 
-  it('pins the cell-voltage trend axis to the LiFePO4 range (2.75–3.75 V)', async () => {
+  it('pins the cell-voltage trend axis to the JK protection window (2.6–3.7 V) with an HTML tooltip', async () => {
     getEssState.mockResolvedValue({
       batteries: [battery('B0')],
       system: null,
@@ -90,7 +91,9 @@ describe('initEssTab — rendering', () => {
 
     const cellTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === 'V');
     expect(cellTrendCall).toBeDefined();
-    expect(cellTrendCall[2]).toMatchObject({ yMin: 2.75, yMax: 3.75, showLegend: false });
+    expect(cellTrendCall[2]).toMatchObject({
+      yMin: 2.6, yMax: 3.7, showLegend: false, tooltip: { unit: 'V', decimals: 3 },
+    });
   });
 
   it('pins the temperature trend axis to the 20–80 °C band', async () => {
@@ -106,7 +109,25 @@ describe('initEssTab — rendering', () => {
 
     const tempTrendCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === '°C');
     expect(tempTrendCall).toBeDefined();
-    expect(tempTrendCall[2]).toMatchObject({ yMin: 20, yMax: 80, showLegend: true });
+    expect(tempTrendCall[2]).toMatchObject({
+      yMin: 20, yMax: 80, showLegend: true, tooltip: { unit: '°C', decimals: 1 },
+    });
+  });
+
+  it('renders the combined SoC chart with an HTML tooltip', async () => {
+    getEssState.mockResolvedValue({
+      batteries: [battery('B0')],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+
+    const socCall = renderLineChart.mock.calls.find(([, , opts]) => opts && opts.yTitle === '%');
+    expect(socCall).toBeDefined();
+    expect(socCall[2]).toMatchObject({ tooltip: { unit: '%', decimals: 1 } });
   });
 
   it('renders the system card when present', async () => {
@@ -168,6 +189,227 @@ describe('initEssTab — graceful degradation', () => {
     // Battery card still built; tab not blanked.
     expect(document.querySelectorAll('#ess-batteries section.card')).toHaveLength(1);
     expect(document.getElementById('ess-empty').classList.contains('hidden')).toBe(true);
+  });
+});
+
+describe('alarm chip', () => {
+  function stateWith(alarm) {
+    return {
+      batteries: [battery('B0', { alarm })],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    };
+  }
+
+  it('shows the alarm chip with the alarm text while the sensor reports an alarm', async () => {
+    getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value: 'Cell undervoltage' }));
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+
+    const chip = document.querySelector('#ess-batteries [data-alarm]');
+    expect(chip.classList.contains('hidden')).toBe(false);
+    expect(chip.textContent).toBe('⚠ Cell undervoltage');
+    expect(chip.title).toBe('Cell undervoltage');
+  });
+
+  it.each(['', '  ', 'OK', 'none', 'off', 'unavailable', 'unknown'])(
+    'hides the chip for the idle sensor state %j', async (value) => {
+      getEssState.mockResolvedValue(stateWith({ entity: 'sensor.bms0_errors', value }));
+      getEssHistory.mockResolvedValue(emptyHistory);
+
+      await initEssTab();
+      expect(document.querySelector('#ess-batteries [data-alarm]').classList.contains('hidden')).toBe(true);
+    });
+
+  it('hides the chip when no alarm entity is configured or its value is null', async () => {
+    getEssState.mockResolvedValue({
+      batteries: [battery('NoAlarm'), battery('NullAlarm', { alarm: { entity: 'sensor.e', value: null } })],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+    const chips = document.querySelectorAll('#ess-batteries [data-alarm]');
+    expect(chips[0].classList.contains('hidden')).toBe(true);
+    expect(chips[1].classList.contains('hidden')).toBe(true);
+  });
+
+  it('clears the chip when a poll reports the alarm resolved', async () => {
+    vi.useFakeTimers();
+    getEssState.mockResolvedValueOnce(stateWith({ entity: 'sensor.bms0_errors', value: 'Wire resistance' }));
+    getEssHistory.mockResolvedValue(emptyHistory);
+    await initEssTab();
+    const chip = document.querySelector('#ess-batteries [data-alarm]');
+    expect(chip.classList.contains('hidden')).toBe(false);
+
+    getEssState.mockResolvedValueOnce(stateWith({ entity: 'sensor.bms0_errors', value: '' }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(chip.classList.contains('hidden')).toBe(true);
+  });
+
+  it('activeAlarmText trims surrounding whitespace from the alarm text', () => {
+    expect(activeAlarmText({ entity: 'e', value: '  Wire resistance  ' })).toBe('Wire resistance');
+    expect(activeAlarmText(undefined)).toBeNull();
+  });
+});
+
+describe('SoC calibration widget', () => {
+  const flush = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+  function calibratableState(overrides = {}) {
+    return {
+      batteries: [battery('B0', {
+        socCalibration: { entity: 'number.bms0_soc_calibration', value: 80 },
+        ...overrides,
+      })],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    };
+  }
+
+  async function initCalibratable(overrides) {
+    getEssState.mockResolvedValue(calibratableState(overrides));
+    getEssHistory.mockResolvedValue(emptyHistory);
+    await initEssTab();
+    return {
+      wrap: document.querySelector('#ess-batteries [data-calibrate]'),
+      current: document.querySelector('#ess-batteries [data-calibrate-current]'),
+      input: document.querySelector('#ess-batteries [data-calibrate-input]'),
+      send: document.querySelector('#ess-batteries [data-calibrate-send]'),
+      status: document.querySelector('#ess-batteries [data-calibrate-status]'),
+    };
+  }
+
+  it('stays hidden when the battery has no calibration entity configured', async () => {
+    getEssState.mockResolvedValue({
+      batteries: [battery('B0')],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+
+    await initEssTab();
+    expect(document.querySelector('#ess-batteries [data-calibrate]').classList.contains('hidden')).toBe(true);
+  });
+
+  it('shows the widget with the actual SoC when a calibration entity is configured', async () => {
+    const { wrap, current } = await initCalibratable();
+    expect(wrap.classList.contains('hidden')).toBe(false);
+    expect(current.textContent).toBe('Actual 80 % →');
+  });
+
+  it('renders a dash for the actual SoC when the SoC sensor is unavailable', async () => {
+    const { current } = await initCalibratable({ scalars: { soc: { entity: 'B0.soc', value: null } } });
+    expect(current.textContent).toBe('Actual — →');
+  });
+
+  it('sends the entered SoC for the clicked battery and reports success', async () => {
+    sendEssSocCalibration.mockResolvedValue({ entity: 'number.bms0_soc_calibration', value: 85 });
+    const { input, send, status } = await initCalibratable();
+
+    input.value = '85';
+    send.click();
+    await flush();
+
+    expect(sendEssSocCalibration).toHaveBeenCalledWith(0, 85);
+    expect(status.textContent).toBe('Sent 85 % to the BMS.');
+    expect(status.classList.contains('text-red-600')).toBe(false);
+    expect(send.disabled).toBe(false);
+  });
+
+  it('uses the battery index of the clicked card', async () => {
+    sendEssSocCalibration.mockResolvedValue({ entity: 'number.bms1_soc_calibration', value: 42 });
+    getEssState.mockResolvedValue({
+      batteries: [
+        battery('B0', { socCalibration: { entity: 'number.bms0_soc_calibration', value: 80 } }),
+        battery('B1', { socCalibration: { entity: 'number.bms1_soc_calibration', value: 70 } }),
+      ],
+      system: null,
+      refreshIntervalSeconds: 30,
+      fetchedAtMs: 0,
+    });
+    getEssHistory.mockResolvedValue(emptyHistory);
+    await initEssTab();
+
+    const cards = document.querySelectorAll('#ess-batteries section.card');
+    cards[1].querySelector('[data-calibrate-input]').value = '42';
+    cards[1].querySelector('[data-calibrate-send]').click();
+    await flush();
+
+    expect(sendEssSocCalibration).toHaveBeenCalledWith(1, 42);
+  });
+
+  it('disables the Send button while the write is in flight', async () => {
+    let resolveSend;
+    sendEssSocCalibration.mockReturnValue(new Promise((resolve) => { resolveSend = resolve; }));
+    const { input, send } = await initCalibratable();
+
+    input.value = '50';
+    send.click();
+    expect(send.disabled).toBe(true);
+
+    resolveSend({ entity: 'number.bms0_soc_calibration', value: 50 });
+    await flush();
+    expect(send.disabled).toBe(false);
+  });
+
+  it('shows the API error message and red styling when the write fails', async () => {
+    sendEssSocCalibration.mockRejectedValue(new Error('HA service number.set_value returned 500'));
+    const { input, send, status } = await initCalibratable();
+
+    input.value = '50';
+    send.click();
+    await flush();
+
+    expect(status.textContent).toContain('number.set_value returned 500');
+    expect(status.classList.contains('text-red-600')).toBe(true);
+    expect(send.disabled).toBe(false);
+  });
+
+  it('falls back to a generic error message when the rejection has none', async () => {
+    sendEssSocCalibration.mockRejectedValue({});
+    const { input, send, status } = await initCalibratable();
+
+    input.value = '50';
+    send.click();
+    await flush();
+
+    expect(status.textContent).toBe('Failed to send the SoC calibration.');
+  });
+
+  it.each(['', '   ', '1e999', '-5', '150'])(
+    'rejects the input %j client-side without calling the API', async (value) => {
+      const { input, send, status } = await initCalibratable();
+
+      input.value = value;
+      send.click();
+      await flush();
+
+      expect(sendEssSocCalibration).not.toHaveBeenCalled();
+      expect(status.textContent).toBe('Enter a SoC between 0 and 100 %.');
+      expect(status.classList.contains('text-red-600')).toBe(true);
+    });
+
+  it('clears the error styling on a subsequent valid send', async () => {
+    sendEssSocCalibration.mockResolvedValue({ entity: 'number.bms0_soc_calibration', value: 60 });
+    const { input, send, status } = await initCalibratable();
+
+    input.value = '150';
+    send.click();
+    await flush();
+    expect(status.classList.contains('text-red-600')).toBe(true);
+
+    input.value = '60';
+    send.click();
+    await flush();
+    expect(status.classList.contains('text-red-600')).toBe(false);
+    expect(status.textContent).toBe('Sent 60 % to the BMS.');
   });
 });
 

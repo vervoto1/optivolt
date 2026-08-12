@@ -247,6 +247,13 @@ export interface EssBatteryConfig {
   balanceStartVoltageEntity?: string;
   /** number.* — JK BMS balance trigger/delta voltage (write target for the balance tuner). */
   balanceTriggerVoltageEntity?: string;
+  /**
+   * sensor.* — BMS alarm/errors text sensor (e.g. the JK BMS "errors" text
+   * sensor). Any state other than empty/idle is shown as an active alarm.
+   */
+  alarmEntity?: string;
+  /** number.* — SoC calibration write target (write-through to the BMS SoC register). */
+  socCalibrationEntity?: string;
   /** Free-form extra entities, e.g. calibration numbers. */
   extraEntities?: { entity: string; name?: string }[];
 }

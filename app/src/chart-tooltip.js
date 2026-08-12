@@ -49,6 +49,7 @@ export function injectTooltipStyles() {
     .dark .ov-tt-val { color:#f1f5f9; }
     .ov-tt-div { border-top:1px solid #e2e8f0; margin:5px 0; }
     .dark .ov-tt-div { border-color:rgba(255,255,255,0.08); }
+    .ov-tt-cols { display:grid; grid-auto-flow:column; column-gap:16px; }
     .ov-tt-prices { display:flex; justify-content:space-between; align-items:center;
                     font-size:11px; color:#64748b; padding:1px 0; }
     .dark .ov-tt-prices { color:#94a3b8; }

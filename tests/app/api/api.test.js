@@ -27,6 +27,9 @@ import {
   resetCalibrationData,
   triggerCalibration,
   fetchShoreOptimizerStatus,
+  getEssState,
+  getEssHistory,
+  sendEssSocCalibration,
 } from '../../../app/src/api/api.js';
 
 beforeEach(() => {
@@ -100,6 +103,30 @@ describe('api.js wrappers', () => {
     getJson.mockResolvedValue({});
     await fetchShoreOptimizerStatus();
     expect(getJson).toHaveBeenCalledWith('/shore-optimizer/status');
+  });
+
+  it('getEssState calls getJson', async () => {
+    getJson.mockResolvedValue({ batteries: [] });
+    await getEssState();
+    expect(getJson).toHaveBeenCalledWith('/ess/state');
+  });
+
+  it('getEssHistory builds the query string from hours and period', async () => {
+    getJson.mockResolvedValue({ series: {} });
+    await getEssHistory({ hours: 12, period: 'hour' });
+    expect(getJson).toHaveBeenCalledWith('/ess/history?hours=12&period=hour');
+  });
+
+  it('getEssHistory omits the query string when no options are given', async () => {
+    getJson.mockResolvedValue({ series: {} });
+    await getEssHistory();
+    expect(getJson).toHaveBeenCalledWith('/ess/history');
+  });
+
+  it('sendEssSocCalibration posts the SoC to the indexed battery route', async () => {
+    postJson.mockResolvedValue({ entity: 'number.bms0_soc_calibration', value: 85 });
+    await sendEssSocCalibration(0, 85);
+    expect(postJson).toHaveBeenCalledWith('/ess/battery/0/soc-calibration', { socPercent: 85 });
   });
 
   it('fetchPredictionConfig calls getJson', async () => {

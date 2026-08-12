@@ -12,7 +12,7 @@
  * the tab.
  */
 
-import { getEssState, getEssHistory } from "./api/api.js";
+import { getEssState, getEssHistory, sendEssSocCalibration } from "./api/api.js";
 import {
   renderCellSnapshot,
   renderLineChart,
@@ -69,6 +69,16 @@ function formatBalancing(value) {
   return `<span class="${cls}">${on ? "On" : "Off"}</span>`;
 }
 
+/** Alarm text-sensor states that mean "no active alarm". */
+const ALARM_IDLE_VALUES = new Set(["", "ok", "none", "off", "unavailable", "unknown"]);
+
+/** The alarm text to display, or null when the sensor reports no active alarm. */
+export function activeAlarmText(alarm) {
+  if (!alarm || alarm.value == null) return null;
+  const text = String(alarm.value).trim();
+  return ALARM_IDLE_VALUES.has(text.toLowerCase()) ? null : text;
+}
+
 function tileHtml(label, valueHtml) {
   return `<div><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${valueHtml}</div></div>`;
 }
@@ -107,12 +117,30 @@ function setChartMessage(canvas, message) {
 function buildBatteryCard(name) {
   return el(`
     <section class="card revealed">
-      <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center justify-between mb-3 gap-2">
         <h3 class="sidebar-label">${escapeHtml(name)}</h3>
-        <span data-soc class="hidden rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 px-2.5 py-0.5 text-sm font-semibold"></span>
+        <div class="flex items-center gap-2 min-w-0">
+          <span data-alarm class="hidden truncate rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 px-2.5 py-0.5 text-sm font-semibold"></span>
+          <span data-soc class="hidden rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 px-2.5 py-0.5 text-sm font-semibold"></span>
+        </div>
       </div>
       <div class="grid gap-6 lg:grid-cols-3">
-        <div data-overview class="lg:col-span-1 grid grid-cols-2 gap-x-4 gap-y-2.5 self-start"></div>
+        <div class="lg:col-span-1 self-start space-y-4">
+          <div data-overview class="grid grid-cols-2 gap-x-4 gap-y-2.5"></div>
+          <div data-calibrate class="hidden">
+            <div class="stat-label mb-1">SoC calibration</div>
+            <div class="flex items-center gap-2">
+              <span data-calibrate-current class="whitespace-nowrap text-sm text-slate-600 dark:text-slate-300"></span>
+              <input data-calibrate-input type="number" min="0" max="100" step="1" inputmode="numeric" placeholder="%"
+                class="form-input !mt-0 !w-20" aria-label="New SoC in percent">
+              <button data-calibrate-send
+                class="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-sky-400/50 transition-all disabled:opacity-50">
+                Send
+              </button>
+            </div>
+            <div data-calibrate-status class="mt-1 min-h-4 text-xs text-slate-500 dark:text-slate-400"></div>
+          </div>
+        </div>
         <div class="lg:col-span-2 space-y-4 min-w-0">
           <div>
             <div class="stat-label mb-1">Cell voltages — now</div>
@@ -145,18 +173,56 @@ function buildSkeleton(batteries) {
   const container = byId("ess-batteries");
   if (!container) return;
   container.innerHTML = "";
-  views = batteries.map((battery) => {
+  views = batteries.map((battery, index) => {
     const card = buildBatteryCard(battery.name);
     container.appendChild(card);
-    return {
+    const view = {
       card,
       socChip: card.querySelector("[data-soc]"),
+      alarmChip: card.querySelector("[data-alarm]"),
       overviewEl: card.querySelector("[data-overview]"),
+      calibrateWrap: card.querySelector("[data-calibrate]"),
+      calibrateCurrent: card.querySelector("[data-calibrate-current]"),
+      calibrateInput: card.querySelector("[data-calibrate-input]"),
+      calibrateSend: card.querySelector("[data-calibrate-send]"),
+      calibrateStatus: card.querySelector("[data-calibrate-status]"),
       snapshotCanvas: card.querySelector("[data-snapshot]"),
       trendCanvas: card.querySelector("[data-trend]"),
       tempCanvas: card.querySelector("[data-temp]"),
     };
+    view.calibrateSend.addEventListener("click", () => { void submitSocCalibration(index, view); });
+    return view;
   });
+}
+
+// ---------- SoC calibration ----------
+function setCalibrateStatus(view, message, isError) {
+  view.calibrateStatus.textContent = message;
+  view.calibrateStatus.classList.toggle("text-red-600", isError);
+  view.calibrateStatus.classList.toggle("dark:text-red-400", isError);
+}
+
+/**
+ * Send the entered SoC percent to the battery's calibration entity. The button
+ * is disabled while the write is in flight so a double-click cannot fire two
+ * BMS register writes.
+ */
+async function submitSocCalibration(index, view) {
+  const soc = Number(view.calibrateInput.value);
+  if (view.calibrateInput.value.trim() === "" || !Number.isFinite(soc) || soc < 0 || soc > 100) {
+    setCalibrateStatus(view, "Enter a SoC between 0 and 100 %.", true);
+    return;
+  }
+  view.calibrateSend.disabled = true;
+  setCalibrateStatus(view, "Sending…", false);
+  try {
+    const result = await sendEssSocCalibration(index, soc);
+    setCalibrateStatus(view, `Sent ${result.value} % to the BMS.`, false);
+  } catch (err) {
+    setCalibrateStatus(view, err?.message || "Failed to send the SoC calibration.", true);
+  } finally {
+    view.calibrateSend.disabled = false;
+  }
 }
 
 // ---------- State rendering ----------
@@ -171,6 +237,25 @@ function renderBatteryState(battery, view, index) {
     } else {
       view.socChip.classList.add("hidden");
     }
+  }
+
+  // Alarm chip — visible only while the alarm text sensor reports an active alarm.
+  const alarmText = activeAlarmText(battery.alarm);
+  if (alarmText) {
+    view.alarmChip.textContent = `⚠ ${alarmText}`;
+    view.alarmChip.title = alarmText;
+    view.alarmChip.classList.remove("hidden");
+  } else {
+    view.alarmChip.classList.add("hidden");
+  }
+
+  // SoC calibration widget — only for batteries with a configured write target.
+  if (battery.socCalibration) {
+    const socValue = soc && soc.value != null && Number.isFinite(soc.value) ? `${formatNumber(soc.value)} %` : "—";
+    view.calibrateCurrent.textContent = `Actual ${socValue} →`;
+    view.calibrateWrap.classList.remove("hidden");
+  } else {
+    view.calibrateWrap.classList.add("hidden");
   }
 
   // Overview tiles
@@ -236,15 +321,18 @@ function renderHistory(state, history) {
     if (!view) return;
 
     // Cell voltage trends — one thin line per cell, legend hidden. Pin the axis
-    // to the LiFePO4 operating window (~2.75–3.75 V) so normal cell variation is
-    // visible instead of being flattened against a 0–4 V auto-range.
+    // to the full JK protection window (2.6–3.7 V: UV protection trips at
+    // 2.60 V, OVP at 3.65 V) so bottom-balancing dips and over-voltage
+    // excursions stay on-scale instead of clipping at the chart edge.
     const cells = battery.cells ?? [];
     const cellEntries = cells.map((cell, idx) => ({
       label: `Cell ${idx + 1}`,
       color: cellColor(idx, cells.length),
       points: pointsFor(history, cell.entity),
     }));
-    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, { yTitle: "V", yMin: 2.75, yMax: 3.75, showLegend: false });
+    const cellsDrawn = renderLineChart(view.trendCanvas, cellEntries, {
+      yTitle: "V", yMin: 2.6, yMax: 3.7, showLegend: false, tooltip: { unit: "V", decimals: 3 },
+    });
     if (!cellsDrawn) setChartMessage(view.trendCanvas, "No trend data");
 
     // Temperature trends — legend shown, y pinned to the 20–80 °C operating band.
@@ -255,7 +343,7 @@ function renderHistory(state, history) {
       points: pointsFor(history, temp.entity),
     }));
     const tempsDrawn = renderLineChart(view.tempCanvas, tempEntries, {
-      yTitle: "°C", yMin: 20, yMax: 80, showLegend: true,
+      yTitle: "°C", yMin: 20, yMax: 80, showLegend: true, tooltip: { unit: "°C", decimals: 1 },
     });
     if (!tempsDrawn) setChartMessage(view.tempCanvas, "No trend data");
   });
@@ -273,7 +361,9 @@ function renderHistory(state, history) {
       return entity ? { label: battery.name, color: batteryColor(i), points: pointsFor(history, entity) } : null;
     })
     .filter(Boolean);
-  const socDrawn = renderLineChart(socCanvas, socEntries, { yTitle: "%", yMin: 0, yMax: 100, showLegend: true });
+  const socDrawn = renderLineChart(socCanvas, socEntries, {
+    yTitle: "%", yMin: 0, yMax: 100, showLegend: true, tooltip: { unit: "%", decimals: 1 },
+  });
   if (!socDrawn) setChartMessage(socCanvas, "No SoC history");
 }
 
