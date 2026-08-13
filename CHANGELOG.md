@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.53 - 2026-08-13
+
+- **ESS tab: the BMS alarm chip and per-battery SoC-calibration widget are now actually enabled.** They shipped in 0.7.50 gated on per-battery `alarmEntity` / `socCalibrationEntity` settings, but ESS config is loaded exclusively from the seeded defaults (persisted/POSTed `essConfig` is intentionally ignored, and there is no settings UI for it yet), and those two keys were never added to the defaults — so the widgets stayed dark on every install. Both entities are now seeded for the JK BMS batteries (`bms0`/`bms1`): the SoC-calibration widget appears immediately, and the alarm chip appears the next time a BMS raises an alarm (it stays hidden for a healthy pack by design).
+
 ## 0.7.52 - 2026-08-13
 
 - **ESS tab: a dropped BMS alarm sensor now shows a distinct "offline" chip instead of reading as all-clear.** When the alarm entity is configured but the sensor is `unavailable`/`unknown` (or missing from the state read), the card shows an amber **⚠ Alarm sensor offline** chip rather than hiding the chip — a dead alarm channel is no longer indistinguishable from a healthy pack. An active fault still shows the red chip; a healthy pack still shows nothing.
