@@ -140,7 +140,9 @@
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms0_balancing",
         "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms0_balancing_current",
         "balanceStartVoltageEntity": "number.jk_bms_jk_bms_bms0_balance_starting_voltage",
-        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms0_balance_trigger_voltage"
+        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms0_balance_trigger_voltage",
+        "alarmEntity": "sensor.jk_bms_jk_bms_bms0_errors",
+        "socCalibrationEntity": "number.equipment_room_jk_bms_jk_bms_bms0_soc_calibration"
       },
       {
         "name": "Gobel Power",
@@ -165,7 +167,9 @@
         "balancingBinaryEntity": "binary_sensor.jk_bms_jk_bms_bms1_balancing",
         "balancingCurrentEntity": "sensor.jk_bms_jk_bms_bms1_balancing_current",
         "balanceStartVoltageEntity": "number.jk_bms_jk_bms_bms1_balance_starting_voltage",
-        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms1_balance_trigger_voltage"
+        "balanceTriggerVoltageEntity": "number.jk_bms_jk_bms_bms1_balance_trigger_voltage",
+        "alarmEntity": "sensor.jk_bms_jk_bms_bms1_errors",
+        "socCalibrationEntity": "number.equipment_room_jk_bms_jk_bms_bms1_soc_calibration"
       }
     ],
     "system": {
