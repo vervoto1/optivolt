@@ -37,8 +37,8 @@ Vitest test suite for OptiVolt. 17 test files with 192+ tests mirroring the sour
 
 ### External
 
-- `vitest` (v4.0.18) — test runner and assertion library
-- `supertest` (v7.2.2) — HTTP integration testing
-- `jsdom` (v28.0.0) — DOM simulation for frontend tests
+- `vitest` — test runner and assertion library
+- `supertest` — HTTP integration testing
+- `jsdom` — DOM simulation for frontend tests
 
 <!-- MANUAL: -->
