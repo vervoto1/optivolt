@@ -10,6 +10,9 @@
        `npm run build:css` after adding new Tailwind classes under app/) -->
   <link href="vendor/tailwind.css" rel="stylesheet">
   <style>
+    /* These rules are unlayered, so since Tailwind v4 (whose utilities live in
+       @layer) they beat ANY utility class regardless of specificity — a utility
+       can only override them with the important prefix (e.g. !mt-0). */
     :root {
       color-scheme: light;
     }
