@@ -524,14 +524,14 @@ function drawSeriesLane(chart, index, series, draw) {
 
 function activeSegmentClass(isActive) {
   return isActive
-    ? 'bg-white text-sky-700 shadow-sm dark:bg-slate-700 dark:text-sky-200'
+    ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-700 dark:text-sky-200'
     : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100';
 }
 
 function seriesSegmentClass(series, isActive) {
   if (!isActive) return 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100';
-  if (series === 'pv') return 'bg-amber-100 text-amber-800 shadow-sm dark:bg-amber-400/20 dark:text-amber-200';
-  return 'bg-rose-100 text-rose-800 shadow-sm dark:bg-rose-400/20 dark:text-rose-200';
+  if (series === 'pv') return 'bg-amber-100 text-amber-800 shadow-xs dark:bg-amber-400/20 dark:text-amber-200';
+  return 'bg-rose-100 text-rose-800 shadow-xs dark:bg-rose-400/20 dark:text-rose-200';
 }
 
 function setPopoverError(message = '') {

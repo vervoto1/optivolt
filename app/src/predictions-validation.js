@@ -92,7 +92,7 @@ function renderSensorTabs(sensorNames, deps) {
     btn.dataset.sensor = name;
     btn.className =
       'px-3 py-1.5 text-sm rounded-pill border border-slate-300 dark:border-white/10 ' +
-      'focus:outline-none focus:ring-2 focus:ring-sky-400/30 transition-colors';
+      'focus:outline-hidden focus:ring-2 focus:ring-sky-400/30 transition-colors';
     btn.addEventListener('click', () => {
       _activeSensor = name;
       renderMetricsTable(validationResults.results, name, deps);

@@ -18,7 +18,7 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 - **Run a single test file:** `npx vitest run tests/lib/build-lp.test.js`
 - **Typecheck:** `npm run typecheck`
 - **Lint:** `npm run lint`
-- **Rebuild Tailwind CSS:** `npm run build:css` — regenerates `app/vendor/tailwind.css` from `tailwind.config.js`. Run after adding new Tailwind classes anywhere under `app/` and commit the result (CI fails if it is stale).
+- **Rebuild Tailwind CSS:** `npm run build:css` — regenerates `app/vendor/tailwind.css` from `tailwind.source.css` (Tailwind v4, CSS-first config: theme tokens, `@source` globs, dark variant, and v3-parity preflight overrides all live in that file). Run after adding new Tailwind classes anywhere under `app/` and commit the result (CI fails if it is stale).
 
 ## Architecture
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.54 - 2026-08-21
+
+- **Dependency refresh: everything current, `npm audit` clean.** `npm audit fix` cleared two high-severity advisories in transitive dependencies (`brace-expansion` DoS, `nanoid` infinite-loop), and in-range updates brought `highs` 1.15.2 (solver), `mqtt` 5.15.2, `eslint` 10.9.0, `vitest` 4.1.11, and `globals` 17.11.0. Two major bumps were drop-in: `typescript` 7.0.2 (typecheck-only — runtime stays Node/tsx) and `jsdom` 30.0.1 (test-only).
+
+- **Tailwind CSS 3 → 4.** The stylesheet now compiles with the v4 CLI from a CSS-first config, `tailwind.source.css`, which replaces `tailwind.config.js` (same content globs via `@source`, the class-based dark variant, and the custom card/ink/shadow-soft/pill theme tokens). Visual output is unchanged by construction:
+  - v4 repointed `shadow-sm` at the old (stronger) `shadow` value and turned `outline-none` into a real `outline: none`, so markup was migrated to the utilities that kept the v3 values: 19× `shadow-sm` → `shadow-xs`, 25× `focus:outline-none` → `focus:outline-hidden`.
+  - v4 changed three preflight defaults the UI relies on — default border color (gray-200 → currentColor), button cursor (pointer → default), and placeholder color (gray-400 → currentColor at 50%); `tailwind.source.css` restores the v3 behavior in a base layer.
+  - A selector-coverage audit against the compiled output confirms all 376 utility classes used under `app/` survive the migration (the only two dropped selectors were v3 scanner artifacts harvested from JS negations like `if (!container)`, never used in markup).
+  - `npm run build:css` works as before (the CLI moved to the `@tailwindcss/cli` package but keeps the `tailwindcss` binary), and CI's stale-CSS check is unchanged. The compiled file grows ~26KB → ~42KB from v4's `@property` registrations, and colors are now defined in OKLCH, which can shift rendering imperceptibly on wide-gamut displays.
+
 ## 0.7.53 - 2026-08-13
 
 - **ESS tab: the BMS alarm chip and per-battery SoC-calibration widget are now actually enabled.** They shipped in 0.7.50 gated on per-battery `alarmEntity` / `socCalibrationEntity` settings, but ESS config is loaded exclusively from the seeded defaults (persisted/POSTed `essConfig` is intentionally ignored, and there is no settings UI for it yet), and those two keys were never added to the defaults — so the widgets stayed dark on every install. Both entities are now seeded for the JK BMS batteries (`bms0`/`bms1`): the SoC-calibration widget appears immediately, and the alarm chip appears the next time a BMS raises an alarm (it stays hidden for a healthy pack by design).
