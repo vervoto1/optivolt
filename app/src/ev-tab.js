@@ -17,11 +17,14 @@ const DECISION_BADGE = {
 };
 
 // ---- Manual charging override (Auto / Charge / Stop) ----------------------
-const OVERRIDE_BASE_CLS = 'rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/50';
+// The #ev-override-* buttons in index.html repeat these classes for the first
+// paint only; wireEvOverrideControls reapplies them from here at boot, so the
+// markup copies are non-authoritative and self-heal if they drift.
+const OVERRIDE_BASE_CLS = 'rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-hidden focus:ring-2 focus:ring-sky-400/50';
 const OVERRIDE_ACTIVE_CLS = {
-  auto:   'bg-white text-ink shadow-sm dark:bg-slate-600 dark:text-slate-100',
-  charge: 'bg-emerald-500 text-white shadow-sm',
-  stop:   'bg-rose-500 text-white shadow-sm',
+  auto:   'bg-white text-ink shadow-xs dark:bg-slate-600 dark:text-slate-100',
+  charge: 'bg-emerald-500 text-white shadow-xs',
+  stop:   'bg-rose-500 text-white shadow-xs',
 };
 const OVERRIDE_INACTIVE_CLS = 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200';
 const OVERRIDE_HINT = { auto: '', charge: 'forcing charge', stop: 'charging blocked' };
@@ -65,6 +68,9 @@ export function wireEvOverrideControls(els) {
       void updateEvModeBadge(els); // reflect the override in the live mode badge
     });
   }
+  // Make the JS constants authoritative from boot (markup only covers the
+  // pre-boot flash); the async refresh below corrects to server truth.
+  applyOverrideHighlight(els, 'auto');
   void refreshEvOverrideState(els);
 }
 

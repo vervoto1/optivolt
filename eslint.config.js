@@ -5,8 +5,10 @@ import css from "@eslint/css";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig([
-  // Ignore generated files in app/lib and vendor directories
-  { ignores: ["app/lib/**", "vendor/**", "app/vendor/**", "coverage/**"] },
+  // Ignore generated files in app/lib and vendor directories, plus the
+  // Tailwind v4 source (its @theme/@source/@custom-variant at-rules aren't
+  // parseable standard CSS; the Tailwind compiler validates it on build).
+  { ignores: ["app/lib/**", "vendor/**", "app/vendor/**", "coverage/**", "tailwind.source.css"] },
   {
     files: ["**/*.{js,mjs,cjs}"],
     plugins: { js },

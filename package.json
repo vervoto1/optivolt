@@ -1,6 +1,6 @@
 {
   "name": "optivolt",
-  "version": "0.7.53",
+  "version": "0.7.54",
   "description": "Optivolt is a linear and mixed-integer optimizer for home energy systems.",
   "homepage": "https://github.com/bmesuere/optivolt#readme",
   "bugs": {
@@ -22,30 +22,30 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "npx eslint .",
-    "build:css": "tailwindcss -c tailwind.config.js -o app/vendor/tailwind.css --minify"
+    "build:css": "tailwindcss -i tailwind.source.css -o app/vendor/tailwind.css --minify"
   },
   "engines": {
     "node": "^22.13.0 || >=24"
   },
   "dependencies": {
     "express": "^5.2.1",
-    "highs": "^1.14.2",
     "mqtt": "^5.15.1"
   },
   "devDependencies": {
     "@eslint/css": "^1.4.0",
     "@eslint/js": "^10.0.1",
     "@eslint/markdown": "^8.0.3",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/express": "^5.0.6",
     "@vitest/coverage-v8": "^4.1.9",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.6.0",
     "globals": "^17.7.0",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^6.0.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   }
 }

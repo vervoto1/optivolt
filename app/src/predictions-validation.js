@@ -92,7 +92,7 @@ function renderSensorTabs(sensorNames, deps) {
     btn.dataset.sensor = name;
     btn.className =
       'px-3 py-1.5 text-sm rounded-pill border border-slate-300 dark:border-white/10 ' +
-      'focus:outline-none focus:ring-2 focus:ring-sky-400/30 transition-colors';
+      'focus:outline-hidden focus:ring-2 focus:ring-sky-400/30 transition-colors';
     btn.addEventListener('click', () => {
       _activeSensor = name;
       renderMetricsTable(validationResults.results, name, deps);
@@ -110,6 +110,10 @@ function updateTabActive(container, activeName) {
     btn.classList.toggle('bg-sky-600', isActive);
     btn.classList.toggle('text-white', isActive);
     btn.classList.toggle('border-sky-600', isActive);
+    // Toggle the base border class off in the active state: at equal
+    // specificity the later-in-sheet slate-300 would otherwise win and hide
+    // the sky border (same pitfall as the ess-tab calibrate status colours).
+    btn.classList.toggle('border-slate-300', !isActive);
     btn.classList.toggle('hover:bg-sky-700', isActive);
     btn.classList.toggle('bg-white', !isActive);
     btn.classList.toggle('dark:bg-slate-800', !isActive);

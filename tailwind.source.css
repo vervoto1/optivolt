@@ -1,0 +1,44 @@
+/* Tailwind CSS v4 source (replaces the old tailwind.config.js).
+   `npm run build:css` compiles app/vendor/tailwind.css from this file —
+   re-run after adding new Tailwind classes anywhere under app/. */
+@import "tailwindcss" source(none);
+
+/* Only scan the browser UI (mirrors the old `content` globs). */
+@source "./app/index.html";
+@source "./app/main.js";
+@source "./app/src/**/*.js";
+
+/* Class-based dark mode — app/src/theme.js toggles `dark` on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-card: #ffffff;
+  --color-card-dark: #111827;
+  --color-ink: #0f172a;
+  --color-ink-soft: #475569;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.06);
+  --radius-pill: 9999px;
+}
+
+/* Tailwind v4 changed these preflight defaults; restore v3 behavior so the
+   existing markup keeps its look (default gray-200 borders, pointer cursor
+   on buttons, gray-400 placeholders). */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-gray-400, #9ca3af);
+  }
+}

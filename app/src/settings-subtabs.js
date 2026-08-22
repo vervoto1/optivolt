@@ -2,8 +2,7 @@
 // sub-panels. All live inside #panel-settings, so the main tab switcher already
 // reveals their cards; here we just toggle which sub-panel is visible.
 
-const ACTIVE_CLS = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium bg-white text-ink shadow-sm dark:bg-slate-700 dark:text-slate-100 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400/50';
-const INACTIVE_CLS = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400/50';
+import { TAB_PILL_ACTIVE_CLS as ACTIVE_CLS, TAB_PILL_INACTIVE_CLS as INACTIVE_CLS } from './tab-classes.js';
 
 export function setupSettingsSubtabs(doc = document) {
   const subtabs = [
