@@ -33,8 +33,12 @@ export function rerenderTable(deps) {
   }
 }
 
+// The comparison table renders one tab per sensor, so a strategy only matches a
+// row when the sensor matches too — otherwise the same 8w/all/median row gets
+// badged "active"/"best" on every sensor's tab.
 function sameStrategy(row, strategy) {
   return !!strategy
+    && row.sensor === strategy.sensor
     && row.lookbackWeeks === strategy.lookbackWeeks
     && row.dayFilter === strategy.dayFilter
     && row.aggregation === strategy.aggregation;

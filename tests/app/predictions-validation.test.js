@@ -331,8 +331,8 @@ describe('predictions-validation', () => {
     runValidation.mockResolvedValue({ sensorNames: ['s1'], results });
 
     const highlights = {
-      active: { lookbackWeeks: 23, dayFilter: 'all', aggregation: 'median' }, // beyond the top 20
-      best: { lookbackWeeks: 1, dayFilter: 'all', aggregation: 'median' },
+      active: { sensor: 's1', lookbackWeeks: 23, dayFilter: 'all', aggregation: 'median' }, // beyond the top 20
+      best: { sensor: 's1', lookbackWeeks: 1, dayFilter: 'all', aggregation: 'median' },
     };
     initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn(), getHighlights: () => highlights });
     document.getElementById('pred-run-validation').click();
@@ -372,7 +372,7 @@ describe('predictions-validation', () => {
       ],
     });
 
-    let active = { lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+    let active = { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
     const renderLoadConfig = vi.fn(cfg => { active = cfg; });
     initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig, setComparisonStatus: vi.fn(), getHighlights: () => ({ active, best: null }) });
     document.getElementById('pred-run-validation').click();
@@ -391,5 +391,35 @@ describe('predictions-validation', () => {
       expect(rows[1].textContent).toContain('active');
     });
     expect(rows[0].textContent).not.toContain('active');
+  });
+
+  it('does not badge an identical strategy on a different sensor tab', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    // The same 8w/all/median strategy exists for both sensors.
+    const mk = (sensor, mae) => ({
+      sensor, lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median',
+      mae, rmse: 120, mape: 10, n: 672, validationPredictions: [],
+    });
+    runValidation.mockResolvedValue({
+      sensorNames: ['Total Load', 'Load without EV'],
+      results: [mk('Total Load', 500), mk('Load without EV', 300)],
+    });
+
+    // Both the active predictor and the last run's best belong to "Load without EV".
+    const highlights = {
+      active: { sensor: 'Load without EV', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median' },
+      best: { sensor: 'Load without EV', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median' },
+    };
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn(), getHighlights: () => highlights });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('#pred-metrics-body tr').length).toBe(1);
+    });
+
+    // The first tab rendered is "Total Load" — a different sensor, so neither badge applies.
+    const row = document.querySelector('#pred-metrics-body tr');
+    expect(row.textContent).not.toContain('active');
+    expect(row.textContent).not.toContain('best');
   });
 });

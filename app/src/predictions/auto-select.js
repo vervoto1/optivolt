@@ -166,7 +166,15 @@ function renderRun(run) {
       setOutcome(`Skipped: ${run.skipReason ?? 'unknown reason'}`, 'warn');
       break;
     case 'applied':
-      setOutcome(`Switched to best (−${(pct ?? 0).toFixed(1)} %)`, 'good');
+      // pct is null on the `incumbent-unscored` path — the switch happened
+      // because the current strategy could not be scored, not because of a
+      // measured gain, so don't report it as "−0.0 %".
+      setOutcome(
+        pct == null
+          ? 'Switched — current strategy could not be scored'
+          : `Switched to best (−${pct.toFixed(1)} %)`,
+        'good',
+      );
       break;
     case 'suggested':
       if (alreadyApplied) {

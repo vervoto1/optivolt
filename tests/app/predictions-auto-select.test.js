@@ -202,7 +202,10 @@ describe('auto-select.js', () => {
 
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'applied', best: BEST, improvement_percent: null, reason: 'incumbent-unscored', incumbent: null, metric: undefined }) });
       await refreshAutoSelectStatus();
-      expect(text('autosel-outcome')).toBe('Switched to best (−0.0 %)');
+      // improvement_percent is null on the incumbent-unscored path: the switch
+      // happened because the current strategy could not be scored, so reporting
+      // a measured "−0.0 %" gain would be wrong.
+      expect(text('autosel-outcome')).toBe('Switched — current strategy could not be scored');
       expect(text('autosel-current-metric')).toBe('');
     });
 
