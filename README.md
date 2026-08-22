@@ -144,6 +144,25 @@ rest_command:
     method: GET
 ```
 
+### 3a. Automatic Strategy Selection (Optional)
+The historical load predictor has a grid of strategies (lookback 1–26 weeks × day filter × mean/median). Instead of comparing them by hand on the Predictions tab, OptiVolt can backtest all of them for the active sensor once a day and keep, suggest, or apply the winner:
+
+- `suggest` (default) records the best strategy; the Strategy Selection card shows it with an **Apply suggestion** button.
+- `auto` rewrites the lookback / day filter / aggregation of `historicalPredictor` when the best beats the current strategy by at least `minImprovement_percent`. The sensor, predictor type, and PV config are never touched, and the next auto-calculate tick forecasts with the new strategy.
+
+Enable it in the settings block (or from the Predictions tab):
+```json
+"predictionAutoSelect": {
+  "enabled": true,
+  "mode": "suggest",
+  "time": "03:30",
+  "metric": "mae",
+  "minImprovement_percent": 10,
+  "windowDays": 28
+}
+```
+The defaults are deliberately conservative: on real data the weekly "winner" jumps between 1 and 26 weeks and all strategies sit within a few percent of each other over long windows, so a short window or a small margin would just chase noise. `GET /predictions/auto-select` returns the last runs (`kept`, `suggested`, `applied`, or `skipped` with a reason); `POST /predictions/auto-select/run` runs one immediately (`{"apply": false}` for a dry run).
+
 ### 4. Push Custom Pricing / Sensor Data (Optional)
 > **Note:** OptiVolt can now read prices directly from Home Assistant sensors. Set `dataSources.prices` to `'ha'` in **Settings → HA Price Sensor** and configure the entity ID (e.g., a GE Spot sensor). Both hourly and 15-minute price intervals are supported. The manual push example below remains available as an alternative.
 
@@ -284,7 +303,9 @@ The **API** exposes:
 - `POST /predictions/adjustments` — Creates a manual forecast adjustment for `load` or `pv`.
 - `PATCH /predictions/adjustments/:id` — Updates a manual forecast adjustment.
 - `DELETE /predictions/adjustments/:id` — Deletes a manual forecast adjustment.
-- `POST /predictions/validate` — Runs load-predictor validation against Home Assistant history.
+- `POST /predictions/validate` — Runs load-predictor validation (all strategies × all sensors, 7-day window) against Home Assistant history.
+- `GET /predictions/auto-select` — Auto-select settings plus the last run and run history.
+- `POST /predictions/auto-select/run` — Runs strategy selection now; body `{"apply": false}` forces a dry run (send it with `Content-Type: application/json`, otherwise the body is not parsed and the run defaults to `apply: true`). `apply` must be a boolean; anything else is a 400. 409 while a run is in flight.
 - `POST /predictions/load/forecast` — Runs the active load forecast and returns adjusted forecast data with `rawForecast` when adjustments apply.
 - `POST /predictions/pv/forecast` — Runs the PV forecast when PV configuration is complete.
 - `POST /predictions/forecast` — Runs load and PV forecasts together, persists raw forecasts according to data-source settings, and returns adjusted forecasts.

@@ -1,6 +1,26 @@
 import { fetchPredictionConfig, savePredictionConfig } from '../api/api.js';
 import { debounce } from '../utils.js';
-import { initValidation } from '../predictions-validation.js';
+import { initValidation, rerenderTable } from '../predictions-validation.js';
+import { getLastAutoSelectRun, initAutoSelect } from './auto-select.js';
+
+/** Form fields whose values make up `historicalPredictor`. */
+const STRATEGY_FIELD_IDS = ['pred-active-sensor', 'pred-active-lookback', 'pred-active-filter', 'pred-active-agg'];
+
+/**
+ * True once the user has changed a strategy field since the last hydrate/save.
+ *
+ * The form hydrates once per page load, but the auto-selector rewrites
+ * `historicalPredictor` server-side on its own schedule. A dashboard tab left
+ * open across a run therefore holds a stale strategy, and because every
+ * predictions field triggers a debounced whole-config save, editing an
+ * unrelated field would push that stale strategy back and silently revert the
+ * switch. Only send the strategy when the user actually chose it.
+ */
+let strategyDirty = false;
+
+function markStrategyDirty() {
+  strategyDirty = true;
+}
 
 export async function hydratePredictionForm() {
   try {
@@ -34,6 +54,8 @@ export function applyPredictionConfigToForm(config) {
   renderHistoricalConfig(config.historicalPredictor ?? null);
   renderPvConfig(config.pvConfig ?? null);
   updatePredictorFieldVisibility();
+  // The form now mirrors the server, so nothing local is pending.
+  strategyDirty = false;
 }
 
 export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastResolutionChange }) {
@@ -44,10 +66,48 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
     el.addEventListener('change', debouncedSave);
   }
 
+  for (const id of STRATEGY_FIELD_IDS) {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', markStrategyDirty);
+    el?.addEventListener('change', markStrategyDirty);
+  }
+
   document.getElementById('pred-active-type')
     ?.addEventListener('change', updatePredictorFieldVisibility);
 
-  initValidation({ readFormValues: readPredictionFormValues, renderHistoricalConfig, setComparisonStatus });
+  const validationDeps = {
+    readFormValues: readPredictionFormValues,
+    renderHistoricalConfig,
+    setComparisonStatus,
+    getHighlights: () => {
+      // The run record's top-level `sensor` is the declared field; best.sensor
+      // is an undeclared ValidationEntry leftover, so don't depend on it.
+      const run = getLastAutoSelectRun();
+      return {
+        active: readPredictionFormValues().historicalPredictor ?? null,
+        best: run?.best ? { ...run.best, sensor: run.sensor } : null,
+      };
+    },
+  };
+  initValidation(validationDeps);
+
+  void initAutoSelect({
+    getCurrentStrategy: () => readPredictionFormValues().historicalPredictor ?? null,
+    applyStrategy: applyStrategyToForm,
+    onRunComplete: (run) => {
+      // In auto mode the run may have just rewritten historicalPredictor
+      // server-side; pull it into the form so the display matches and the next
+      // save does not carry the pre-switch strategy.
+      if (run?.action === 'applied' && run.best) {
+        const { lookbackWeeks, dayFilter, aggregation } = run.best;
+        // Keep the form's sensor: the selector never moves between sensors, and
+        // run.best carries the one it scored.
+        renderHistoricalConfig({ sensor: getVal('pred-active-sensor'), lookbackWeeks, dayFilter, aggregation });
+        strategyDirty = false;
+      }
+      rerenderTable(validationDeps);
+    },
+  });
 
   document.getElementById('pred-load-forecast')
     ?.addEventListener('click', onForecastAll);
@@ -71,9 +131,32 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
   }
 }
 
+/**
+ * Apply a strategy (from the auto-selector) the same way the comparison
+ * table's "Use" button does: push it into the form, force the historical
+ * predictor type, and persist. The sensor stays whatever the form has —
+ * destructure the three strategy fields explicitly, because the run record's
+ * `best` is a ValidationEntry that also carries `sensor` (and would otherwise
+ * silently move the active predictor to whichever sensor the run scored).
+ */
+export async function applyStrategyToForm({ lookbackWeeks, dayFilter, aggregation }) {
+  const current = readPredictionFormValues().historicalPredictor ?? {};
+  renderHistoricalConfig({ ...current, lookbackWeeks, dayFilter, aggregation });
+  setVal('pred-active-type', 'historical');
+  updatePredictorFieldVisibility();
+  // An explicit user choice, so this save must carry the strategy.
+  markStrategyDirty();
+  await savePredictionFormToServer();
+  setComparisonStatus(`Active config updated: ${lookbackWeeks}w / ${dayFilter} / ${aggregation}`);
+}
+
 export async function savePredictionFormToServer() {
   const partial = readPredictionFormValues();
+  // Omitting the key leaves the server's stored value alone: POST
+  // /predictions/config merges `{ ...prev, ...body }`.
+  if (!strategyDirty) delete partial.historicalPredictor;
   await savePredictionConfig(partial);
+  strategyDirty = false;
 }
 
 async function savePredictionFormSilently() {

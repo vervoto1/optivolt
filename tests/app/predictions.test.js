@@ -26,6 +26,8 @@ vi.mock('../../app/src/api/api.js', () => ({
   triggerCalibration: vi.fn(),
   fetchStoredData: vi.fn(),
   fetchPredictionAdjustments: vi.fn(),
+  fetchAutoSelect: vi.fn(),
+  runAutoSelect: vi.fn(),
 }));
 
 vi.mock('../../app/src/predictions-validation.js', () => ({

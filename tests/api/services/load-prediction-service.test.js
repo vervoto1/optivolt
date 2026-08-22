@@ -8,7 +8,8 @@ vi.mock('../../../lib/ha-postprocess.ts', async (importOriginal) => {
 });
 
 import { fetchHaStats } from '../../../api/services/ha-client.ts';
-import { runForecast, runValidation } from '../../../api/services/load-prediction-service.ts';
+import { runForecast, runValidation, scoreStrategies, fetchHorizonWeeks } from '../../../api/services/load-prediction-service.ts';
+import { DEFAULT_LOOKBACK_WEEKS, generateAllConfigs } from '../../../lib/load-predictor-historical.ts';
 
 // ---------------------------------------------------------------------------
 // Shared test data
@@ -48,7 +49,9 @@ function buildHaHistory() {
     new Date('2026-02-23T10:00:00.000Z'),
   ];
   for (const d of mondays) {
-    readings.push({ start: d.getTime(), change: 500 });
+    // 0.5 kWh per hour → 500 Wh after unit scaling (a 500 kWh/h sample would be
+    // dropped by postprocess as an implausible counter jump).
+    readings.push({ start: d.getTime(), change: 0.5 });
   }
   result['sensor.load'] = readings;
   return result;
@@ -162,15 +165,26 @@ describe('runValidation', () => {
     vi.useRealTimers();
   });
 
-  it('calls fetchHaStats once with a lookback of at least 9 weeks', async () => {
+  it('calls fetchHaStats once with the longest grid lookback plus the validation week', async () => {
     await runValidation(baseConfig);
 
     expect(fetchHaStats).toHaveBeenCalledOnce();
     const call = fetchHaStats.mock.calls[0][0];
     const startMs = new Date(call.startTime).getTime();
-    // MAX_LOOKBACK_WEEKS=8 + 1 validation week → 9 weeks
-    const nineWeeksAgo = NOW_MS - 9 * 7 * 24 * 60 * 60 * 1000;
-    expect(Math.abs(startMs - nineWeeksAgo)).toBeLessThan(60_000);
+    // max(DEFAULT_LOOKBACK_WEEKS)=26 + 1 validation week → 27 weeks
+    const expected = NOW_MS - 27 * 7 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(startMs - expected)).toBeLessThan(60_000);
+    expect(Math.max(...DEFAULT_LOOKBACK_WEEKS)).toBe(26);
+  });
+
+  it('scores the 7-day window only: every validationPrediction lies inside the window', async () => {
+    const result = await runValidation(baseConfig);
+    const ws = new Date(baseConfig.validationWindow.start).getTime();
+    const we = new Date(baseConfig.validationWindow.end).getTime();
+    expect(result.results.length).toBeGreaterThan(0);
+    for (const entry of result.results) {
+      expect(entry.validationPredictions.every(p => p.time >= ws && p.time < we)).toBe(true);
+    }
   });
 
   it('returns sensorNames array containing the configured sensor', async () => {
@@ -211,6 +225,90 @@ describe('runValidation', () => {
     expect(Array.isArray(result.results)).toBe(true);
     if (result.results.length > 0) {
       expect(result.results.every(r => r.n === 0)).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchHorizonWeeks / scoreStrategies
+// ---------------------------------------------------------------------------
+
+describe('fetchHorizonWeeks', () => {
+  const window7 = { start: '2026-03-14T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+  const window28 = { start: '2026-02-21T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+
+  it('adds the window length (in whole weeks) to the longest lookback', () => {
+    expect(fetchHorizonWeeks([1, 2, 8], window7)).toBe(9);
+    expect(fetchHorizonWeeks([26, 4], window28)).toBe(30);
+  });
+
+  it('rounds partial weeks up and never adds less than one week', () => {
+    const window10 = { start: '2026-03-11T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+    expect(fetchHorizonWeeks([4], window10)).toBe(6);
+    const window0 = { start: '2026-03-21T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+    expect(fetchHorizonWeeks([4], window0)).toBe(5);
+    expect(fetchHorizonWeeks([], window7)).toBe(1);
+  });
+});
+
+describe('scoreStrategies', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    fetchHaStats.mockResolvedValue(buildHaHistory());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const window = { start: '2026-03-14T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+  const strategies = [
+    { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+    { sensor: 'Load', lookbackWeeks: 5, dayFilter: 'all', aggregation: 'median' }, // off-grid
+  ];
+
+  it('fetches max lookback + window weeks of history once', async () => {
+    await scoreStrategies(baseConfig, strategies, window);
+
+    expect(fetchHaStats).toHaveBeenCalledOnce();
+    const call = fetchHaStats.mock.calls[0][0];
+    expect(call.entityIds).toEqual(['sensor.load']);
+    const startMs = new Date(call.startTime).getTime();
+    expect(Math.abs(startMs - (NOW_MS - 6 * 7 * 24 * 60 * 60 * 1000))).toBeLessThan(60_000);
+  });
+
+  it('returns one entry per strategy, without predictions by default', async () => {
+    const results = await scoreStrategies(baseConfig, strategies, window);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(results[1]).toMatchObject({ lookbackWeeks: 5 });
+    // Monday 2026-03-16 10:00 is the only in-window point; predicted from the 3 earlier Mondays (500 each)
+    expect(results[0].n).toBe(1);
+    expect(results[0].mae).toBe(0);
+    expect(results[0].validationPredictions).toEqual([]);
+  });
+
+  it('includes in-window predictions when asked', async () => {
+    const results = await scoreStrategies(baseConfig, strategies, window, { includePredictions: true });
+    expect(results[0].validationPredictions).toHaveLength(1);
+    expect(results[0].validationPredictions[0]).toMatchObject({ actual: 500, predicted: 500 });
+  });
+
+  it('agrees with runValidation for the same strategy (shared scoring core)', async () => {
+    const grid = generateAllConfigs(['Load']);
+    const scored = await scoreStrategies(baseConfig, grid, baseConfig.validationWindow, { includePredictions: true });
+    fetchHaStats.mockResolvedValue(buildHaHistory());
+    const validation = await runValidation(baseConfig);
+
+    expect(scored).toHaveLength(grid.length);
+    const byKey = new Map(validation.results.map(r => [`${r.lookbackWeeks}/${r.dayFilter}/${r.aggregation}`, r]));
+    for (const entry of scored) {
+      const twin = byKey.get(`${entry.lookbackWeeks}/${entry.dayFilter}/${entry.aggregation}`);
+      expect(twin).toBeDefined();
+      expect(twin).toEqual(entry);
     }
   });
 });

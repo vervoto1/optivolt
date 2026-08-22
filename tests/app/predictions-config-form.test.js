@@ -8,11 +8,19 @@ vi.mock('../../app/src/api/api.js', () => ({
 
 vi.mock('../../app/src/predictions-validation.js', () => ({
   initValidation: vi.fn(),
+  rerenderTable: vi.fn(),
+}));
+
+vi.mock('../../app/src/predictions/auto-select.js', () => ({
+  initAutoSelect: vi.fn(),
+  getLastAutoSelectRun: vi.fn(),
 }));
 
 import { fetchPredictionConfig, savePredictionConfig } from '../../app/src/api/api.js';
-import { initValidation } from '../../app/src/predictions-validation.js';
+import { initValidation, rerenderTable } from '../../app/src/predictions-validation.js';
+import { initAutoSelect, getLastAutoSelectRun } from '../../app/src/predictions/auto-select.js';
 import {
+  applyStrategyToForm,
   applyPredictionConfigToForm,
   hydratePredictionForm,
   readPredictionFormValues,
@@ -135,7 +143,12 @@ describe('prediction config form', () => {
       },
     });
     expect(values).not.toHaveProperty('derived');
-    expect(savePredictionConfig).toHaveBeenCalledWith(values);
+    // The form was never edited, so the save leaves historicalPredictor to the
+    // server (which the auto-selector may have rewritten since this page loaded).
+    // Everything else the form owns is still sent.
+    const { historicalPredictor: _hp, ...withoutStrategy } = values;
+    expect(savePredictionConfig).toHaveBeenCalledWith(withoutStrategy);
+    expect(savePredictionConfig.mock.calls[0][0]).not.toHaveProperty('historicalPredictor');
   });
 
   it('wires prediction-owned controls, buttons, and settings toggle', async () => {
@@ -391,5 +404,172 @@ describe('prediction config form', () => {
     // Missing element -> no throw.
     el.remove();
     expect(() => setComparisonStatus('ignored')).not.toThrow();
+  });
+
+  describe('auto-select wiring', () => {
+    function selectSensor(name) {
+      const sel = document.getElementById('pred-active-sensor');
+      sel.innerHTML = `<option value="${name}">${name}</option>`;
+      sel.value = name;
+    }
+
+    it('wires initAutoSelect and initValidation with form-aware deps', () => {
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      document.getElementById('pred-active-filter').value = 'weekday-weekend';
+      document.getElementById('pred-active-agg').value = 'median';
+
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+
+      expect(initAutoSelect).toHaveBeenCalledOnce();
+      const autoDeps = initAutoSelect.mock.calls[0][0];
+      const expected = { sensor: 'Load', lookbackWeeks: 8, dayFilter: 'weekday-weekend', aggregation: 'median' };
+      expect(autoDeps.getCurrentStrategy()).toEqual(expected);
+      expect(autoDeps.applyStrategy).toBe(applyStrategyToForm);
+
+      const validationDeps = initValidation.mock.calls[0][0];
+      const best = { lookbackWeeks: 26, dayFilter: 'all', aggregation: 'median' };
+      getLastAutoSelectRun.mockReturnValue({ best });
+      expect(validationDeps.getHighlights()).toEqual({ active: expected, best });
+      getLastAutoSelectRun.mockReturnValue(null);
+      expect(validationDeps.getHighlights().best).toBeNull();
+
+      autoDeps.onRunComplete();
+      expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
+
+      // No sensor selected → no historical predictor in the form
+      document.getElementById('pred-active-sensor').innerHTML = '';
+      expect(autoDeps.getCurrentStrategy()).toBeNull();
+      expect(validationDeps.getHighlights().active).toBeNull();
+    });
+
+    it('applyStrategyToForm pushes the strategy into the form, forces historical, saves and reports', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      document.getElementById('pred-active-type').value = 'fixed';
+      document.getElementById('pred-historical-fields').classList.add('hidden');
+
+      await applyStrategyToForm({ lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' });
+
+      expect(document.getElementById('pred-active-lookback').value).toBe('26');
+      expect(document.getElementById('pred-active-filter').value).toBe('weekday-weekend');
+      expect(document.getElementById('pred-active-agg').value).toBe('median');
+      expect(document.getElementById('pred-active-type').value).toBe('historical');
+      expect(document.getElementById('pred-historical-fields').classList.contains('hidden')).toBe(false);
+      expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({
+        activeType: 'historical',
+        historicalPredictor: { sensor: 'Load', lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' },
+      }));
+      expect(document.getElementById('pred-status').textContent).toBe('Active config updated: 26w / weekday-weekend / median');
+    });
+
+    it('applyStrategyToForm keeps the form sensor when the run record names another one', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      selectSensor('Total Load');
+      document.getElementById('pred-active-lookback').value = '8';
+
+      // The real payload: lastRun.best is a ValidationEntry, so it carries the
+      // sensor the run scored plus its metrics. Neither may reach the form —
+      // moving between sensors is a semantic choice the selector never makes.
+      await applyStrategyToForm({
+        sensor: 'Load without EV',
+        lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median',
+        mae: 455, rmse: 690, mape: 30, n: 672, nSkipped: 0, validationPredictions: [],
+      });
+
+      expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({
+        historicalPredictor: { sensor: 'Total Load', lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' },
+      }));
+    });
+
+    it('does not push a stale strategy back when only an unrelated field is edited', async () => {
+      // The form hydrates once per page load; the auto-selector rewrites
+      // historicalPredictor server-side on its own schedule. A tab left open
+      // across a run must not revert that switch on the next PV edit.
+      savePredictionConfig.mockResolvedValue({});
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+
+      const pvLat = document.getElementById('pred-pv-lat');
+      pvLat.value = '51.2';
+      pvLat.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+
+      expect(savePredictionConfig).toHaveBeenCalledTimes(1);
+      expect(savePredictionConfig.mock.calls[0][0]).not.toHaveProperty('historicalPredictor');
+      expect(savePredictionConfig.mock.calls[0][0].pvConfig.latitude).toBe(51.2);
+    });
+
+    it('sends the strategy when the user edits it, then stops resending it once saved', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+
+      const lookback = document.getElementById('pred-active-lookback');
+      lookback.value = '26';
+      lookback.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+
+      expect(savePredictionConfig.mock.calls[0][0].historicalPredictor).toMatchObject({
+        sensor: 'Load', lookbackWeeks: 26,
+      });
+
+      // The flag resets on a successful save, so a later unrelated edit does not
+      // resend a strategy that may have been superseded in the meantime.
+      const pvLon = document.getElementById('pred-pv-lon');
+      pvLon.value = '4.4';
+      pvLon.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+
+      expect(savePredictionConfig).toHaveBeenCalledTimes(2);
+      expect(savePredictionConfig.mock.calls[1][0]).not.toHaveProperty('historicalPredictor');
+    });
+
+    it('re-syncs the form when a run reports the server already applied a switch', () => {
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      document.getElementById('pred-active-filter').value = 'same';
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+      const autoDeps = initAutoSelect.mock.calls.at(-1)[0];
+
+      autoDeps.onRunComplete({
+        action: 'applied',
+        // The server-side record carries its own sensor; it must not move the form.
+        best: { sensor: 'Some other sensor', lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' },
+      });
+
+      expect(document.getElementById('pred-active-lookback').value).toBe('26');
+      expect(document.getElementById('pred-active-filter').value).toBe('weekday-weekend');
+      expect(document.getElementById('pred-active-agg').value).toBe('median');
+      expect(document.getElementById('pred-active-sensor').value).toBe('Load');
+      expect(rerenderTable).toHaveBeenCalled();
+    });
+
+    it('leaves the form alone when a run did not apply anything', () => {
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+      const autoDeps = initAutoSelect.mock.calls.at(-1)[0];
+
+      autoDeps.onRunComplete({ action: 'suggested', best: { lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' } });
+      expect(document.getElementById('pred-active-lookback').value).toBe('8');
+
+      autoDeps.onRunComplete(undefined);
+      expect(document.getElementById('pred-active-lookback').value).toBe('8');
+      expect(rerenderTable).toHaveBeenCalledTimes(2);
+    });
+
+    it('applyStrategyToForm works when the form has no active sensor yet', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      await applyStrategyToForm({ lookbackWeeks: 12, dayFilter: 'same', aggregation: 'mean' });
+      expect(document.getElementById('pred-active-lookback').value).toBe('12');
+      expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({ activeType: 'historical' }));
+    });
   });
 });

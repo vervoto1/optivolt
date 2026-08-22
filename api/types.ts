@@ -1,6 +1,7 @@
 import type { TimeSeries, PlanRow, DessSlot, TerminalSocValuation } from '../lib/types.ts';
 import type { PvCurtailmentSlot } from '../lib/pv-curtailment.ts';
 import type { DayFilter, Aggregation } from '../lib/load-predictor-historical.ts';
+import type { SelectionMetric, SelectionReason, StrategyScore } from '../lib/strategy-selector.ts';
 import type { HaSensor, HaDerivedSensor } from '../lib/ha-postprocess.ts';
 
 export type { TimeSeries };
@@ -55,6 +56,7 @@ export interface Settings {
   batteryChargeControl?: BatteryChargeControlConfig;
   batteryBalanceControl?: BatteryBalanceControlConfig;
   adaptiveLearning?: AdaptiveLearningConfig;
+  predictionAutoSelect?: PredictionAutoSelectConfig;
   essConfig?: EssConfig;
   evEnabled: boolean;
   evMinChargeCurrent_A: number;
@@ -386,6 +388,44 @@ export interface AdaptiveLearningConfig {
   mode: 'suggest' | 'auto';
   /** Minimum days of data before calibration is applied */
   minDataDays: number;
+}
+
+export type AutoSelectMode = 'suggest' | 'auto';
+
+/** Daily load-predictor strategy auto-selection (see plans/load-strategy-auto-select-plan.md). */
+export interface PredictionAutoSelectConfig {
+  enabled: boolean;
+  /** `suggest` records the winner for the UI; `auto` rewrites historicalPredictor when it clears the margin. */
+  mode: AutoSelectMode;
+  /** HH:MM local time of the daily run. */
+  time: string;
+  metric: SelectionMetric;
+  /** Hysteresis: a candidate must beat the incumbent by at least this relative %. */
+  minImprovement_percent: number;
+  /** Backtest window length in full UTC days (14–56). */
+  windowDays: number;
+}
+
+export type AutoSelectAction = 'kept' | 'suggested' | 'applied' | 'skipped';
+export type AutoSelectTrigger = 'scheduled' | 'catch-up' | 'manual';
+
+/** One persisted auto-select run (ring-buffered in DATA_DIR/prediction-auto-select.json). */
+export interface AutoSelectRun {
+  at: string;
+  trigger: AutoSelectTrigger;
+  sensor: string | null;
+  windowDays: number;
+  metric: SelectionMetric;
+  mode: AutoSelectMode;
+  minImprovement_percent: number;
+  incumbent: StrategyScore | null;
+  best: StrategyScore | null;
+  improvement_percent: number | null;
+  reason: SelectionReason | null;
+  action: AutoSelectAction;
+  skipReason?: string;
+  /** Top eligible scores, ascending by metric (capped for file size). */
+  ranking: StrategyScore[];
 }
 
 export interface PlanSnapshot {
