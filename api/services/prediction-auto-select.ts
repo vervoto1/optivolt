@@ -264,8 +264,18 @@ async function catchUp(): Promise<void> {
 
 /**
  * Start the daily timer. Idempotent — stops any existing timer first.
+ *
+ * `runCatchUp` arms the post-boot catch-up and must only be set by the boot
+ * path in `api/index.ts`. `POST /settings` restarts every timer service on each
+ * save, so arming it here unconditionally would fire an unrequested run two
+ * minutes after any settings save — in `auto` mode that is a live rewrite of
+ * `historicalPredictor`, and the card's debounced per-keystroke save would
+ * re-arm the fuse on every edit.
  */
-export function startPredictionAutoSelect(settings: Settings): void {
+export function startPredictionAutoSelect(
+  settings: Settings,
+  { runCatchUp = false }: { runCatchUp?: boolean } = {},
+): void {
   stopPredictionAutoSelect();
 
   const cfg = settings.predictionAutoSelect;
@@ -277,10 +287,12 @@ export function startPredictionAutoSelect(settings: Settings): void {
   console.log(`[auto-select] started (daily at ${configTime}, mode ${cfg.mode ?? DEFAULT_AUTO_SELECT_CONFIG.mode})`);
 
   intervalHandle = setInterval(() => { void tick(); }, CHECK_INTERVAL_MS);
-  catchUpHandle = setTimeout(() => {
-    catchUpHandle = null;
-    void catchUp();
-  }, BOOT_CATCH_UP_DELAY_MS);
+  if (runCatchUp) {
+    catchUpHandle = setTimeout(() => {
+      catchUpHandle = null;
+      void catchUp();
+    }, BOOT_CATCH_UP_DELAY_MS);
+  }
 }
 
 /**

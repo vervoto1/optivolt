@@ -41,7 +41,8 @@ app.listen(port, host, () => {
       startEvActuator(settings);
       startBatteryChargeController(settings);
       startBalanceTuner(settings);
-      startPredictionAutoSelect(settings);
+      // Only the boot path arms the catch-up run (see startPredictionAutoSelect).
+      startPredictionAutoSelect(settings, { runCatchUp: true });
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });

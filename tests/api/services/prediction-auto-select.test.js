@@ -327,7 +327,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('runs a catch-up 2 minutes after boot when there is no run in the last 24 h', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
-    startPredictionAutoSelect(enabled());
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(scoreStrategies).not.toHaveBeenCalled();
@@ -339,19 +339,31 @@ describe('startPredictionAutoSelect timer', () => {
   it('runs a catch-up when the last run is older than 24 h but not when it is recent', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     getLatestAutoSelectRun.mockResolvedValue({ at: new Date('2026-08-23T11:00:00').toISOString() });
-    startPredictionAutoSelect(enabled());
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(scoreStrategies).not.toHaveBeenCalled();
 
     getLatestAutoSelectRun.mockResolvedValue({ at: new Date('2026-08-22T06:00:00').toISOString() });
-    startPredictionAutoSelect(enabled());
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
   });
 
-  it('stop cancels both the interval and the pending catch-up', async () => {
+  it('does not arm the catch-up when restarted from a settings save', async () => {
+    // POST /settings stops and restarts every timer service on each save. Without
+    // the boot gate, ticking "enabled" in auto mode would rewrite the live
+    // prediction config two minutes later, and every keystroke in the card would
+    // re-arm that fuse.
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     startPredictionAutoSelect(enabled());
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(scoreStrategies).not.toHaveBeenCalled();
+    expect(isAutoSelectScheduled()).toBe(true);
+  });
+
+  it('stop cancels both the interval and the pending catch-up', async () => {
+    vi.setSystemTime(new Date('2026-08-23T12:00:00'));
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
     stopPredictionAutoSelect();
     expect(isAutoSelectScheduled()).toBe(false);
     await vi.advanceTimersByTimeAsync(5 * 60_000);
@@ -391,7 +403,7 @@ describe('startPredictionAutoSelect timer', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     getLatestAutoSelectRun.mockRejectedValue(new Error('corrupt'));
-    startPredictionAutoSelect(enabled());
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(2 * 60_000);
     expect(warn).toHaveBeenCalledWith('[auto-select] Failed to read run history:', 'corrupt');
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
