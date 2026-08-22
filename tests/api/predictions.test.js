@@ -108,6 +108,17 @@ describe('Prediction route contracts', () => {
       expect(runAutoSelect).toHaveBeenCalledWith({ apply: false, trigger: 'manual' });
     });
 
+    it('POST /predictions/auto-select/run rejects a non-boolean apply instead of coercing it', async () => {
+      // "false"/0 mean a dry run to the caller; silently reading them as
+      // apply=true would rewrite prediction-config.json in auto mode.
+      for (const apply of ['false', 0, 'true', null]) {
+        const res = await post(predictionsRouter, '/auto-select/run', { apply });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('auto-select "apply" must be a boolean');
+      }
+      expect(runAutoSelect).not.toHaveBeenCalled();
+    });
+
     it('POST /predictions/auto-select/run passes HttpErrors through (409 while running)', async () => {
       // importRouter() resets the module registry, so use the HttpError class the router sees
       const { HttpError: RouterHttpError } = await import('../../api/http-errors.ts');

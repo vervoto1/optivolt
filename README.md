@@ -305,7 +305,7 @@ The **API** exposes:
 - `DELETE /predictions/adjustments/:id` — Deletes a manual forecast adjustment.
 - `POST /predictions/validate` — Runs load-predictor validation (all strategies × all sensors, 7-day window) against Home Assistant history.
 - `GET /predictions/auto-select` — Auto-select settings plus the last run and run history.
-- `POST /predictions/auto-select/run` — Runs strategy selection now; body `{"apply": false}` forces a dry run. 409 while a run is in flight.
+- `POST /predictions/auto-select/run` — Runs strategy selection now; body `{"apply": false}` forces a dry run (send it with `Content-Type: application/json`, otherwise the body is not parsed and the run defaults to `apply: true`). `apply` must be a boolean; anything else is a 400. 409 while a run is in flight.
 - `POST /predictions/load/forecast` — Runs the active load forecast and returns adjusted forecast data with `rawForecast` when adjustments apply.
 - `POST /predictions/pv/forecast` — Runs the PV forecast when PV configuration is complete.
 - `POST /predictions/forecast` — Runs load and PV forecasts together, persists raw forecasts according to data-source settings, and returns adjusted forecasts.

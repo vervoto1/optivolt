@@ -136,6 +136,19 @@ router.post('/auto-select/run', async (req: Request, res: Response, next: NextFu
   try {
     // v8 ignore next — null path of ?? is untestable when req.body always exists
     const body = (req.body ?? {}) as { apply?: unknown };
+    assertCondition(
+      typeof body === 'object' && !Array.isArray(body),
+      400,
+      'auto-select payload must be an object',
+    );
+    // Reject anything that isn't a real boolean rather than coercing it: a
+    // caller who sends "false" or 0 means a dry run, and silently reading that
+    // as apply=true would rewrite prediction-config.json in auto mode.
+    assertCondition(
+      body.apply === undefined || typeof body.apply === 'boolean',
+      400,
+      'auto-select "apply" must be a boolean',
+    );
     // apply=false forces a dry run regardless of mode (score + record, never write)
     const apply = body.apply !== false;
     res.json(await runAutoSelect({ apply, trigger: 'manual' }));
