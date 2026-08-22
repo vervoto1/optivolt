@@ -208,8 +208,21 @@ Change the `generateAllConfigs` default lookbacks to
 filters and aggregations. Derive every fetch horizon from the grid instead of
 a hardcoded constant: `max(lookbackWeeks) + ceil(windowDays / 7)` weeks —
 27 weeks for the button's 7-day window, 30 weeks for the selector's default
-28-day window. A sensor with less history simply scores fewer samples and the
-`minSamples` guard handles it.
+28-day window.
+
+> **Correction (post-implementation review).** The original brief claimed here
+> that "a sensor with less history simply scores fewer samples and the
+> `minSamples` guard handles it". That is wrong. `predict` emits a prediction
+> whenever *at least one* past value falls inside the lookback, so a lookback
+> longer than the available history produces identical predictions at the *full*
+> sample count. Measured on 10 weeks of history over a 28-day window, `12w`,
+> `16w`, `20w` and `26w` all scored MAE `108.138242` with `n = 672`: the
+> `minSamples` floor never engages, because nothing is missing. Since the
+> selected lookback drives the live forecast's recurring HA query
+> (`lookbackWeeks + 1` weeks on every cycle), the tie-break in
+> `selectStrategy` now prefers the **shortest** lookback rather than the
+> longest, so a degenerate tie resolves to the honest answer instead of
+> inflating that query.
 
 ### Scoring (refactor in `api/services/load-prediction-service.ts`)
 

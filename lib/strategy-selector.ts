@@ -73,7 +73,15 @@ export function selectStrategy(
     const aInc = isSameStrategy(a, incumbent) ? 1 : 0;
     const bInc = isSameStrategy(b, incumbent) ? 1 : 0;
     if (aInc !== bInc) return bInc - aInc;
-    return b.lookbackWeeks - a.lookbackWeeks;
+    // Shorter lookback wins a tie. An exact tie on a float metric over hundreds
+    // of points effectively only happens when the strategies are producing the
+    // same predictions, which is what a lookback longer than the available
+    // history does: predict() aggregates whatever days it finds, so 12/16/20/26w
+    // all collapse onto the same numbers at full sample count and the minSamples
+    // floor never fires. Picking the longest there would report a lookback the
+    // data never supported and inflate the live forecast's HA query, which
+    // refetches lookbackWeeks + 1 weeks on every cycle.
+    return a.lookbackWeeks - b.lookbackWeeks;
   });
 
   if (ranking.length === 0) {

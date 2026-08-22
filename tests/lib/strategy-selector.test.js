@@ -58,15 +58,33 @@ describe('selectStrategy', () => {
     expect(result.ranking[0]).toMatchObject(INCUMBENT);
   });
 
-  it('breaks ties between non-incumbents by longer lookback', () => {
+  it('breaks ties between non-incumbents by shorter lookback', () => {
     const scores = [
       score(4, 'all', 'median', 300),
       score(16, 'all', 'median', 300),
       score(8, 'all', 'median', 350),
     ];
     const result = selectStrategy(scores, INCUMBENT, OPTS);
-    expect(result.ranking.map(r => r.lookbackWeeks)).toEqual([16, 4, 8]);
-    expect(result.best.lookbackWeeks).toBe(16);
+    expect(result.ranking.map(r => r.lookbackWeeks)).toEqual([4, 16, 8]);
+    expect(result.best.lookbackWeeks).toBe(4);
+  });
+
+  it('does not elevate a long lookback that only ties because history is short', () => {
+    // predict() aggregates whatever days exist inside the lookback, so once the
+    // lookback exceeds the available history every longer grid entry produces
+    // identical predictions at full sample count — the minSamples floor cannot
+    // separate them. The shortest of the tied group is the honest answer and
+    // keeps the live forecast's HA query small.
+    const scores = [
+      score(12, 'all', 'median', 108.138242),
+      score(16, 'all', 'median', 108.138242),
+      score(20, 'all', 'median', 108.138242),
+      score(26, 'all', 'median', 108.138242),
+      score(8, 'all', 'median', 120),
+    ];
+    const result = selectStrategy(scores, INCUMBENT, OPTS);
+    expect(result.best.lookbackWeeks).toBe(12);
+    expect(result.ranking.map(r => r.lookbackWeeks)).toEqual([12, 16, 20, 26, 8]);
   });
 
   it('keeps the incumbent when the improvement is below the threshold', () => {
