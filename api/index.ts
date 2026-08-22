@@ -6,6 +6,7 @@ import { startShoreOptimizer, stopShoreOptimizer } from './services/shore-optimi
 import { startEvActuator, stopEvActuator } from './services/ev-actuator-service.ts';
 import { startBatteryChargeController, stopBatteryChargeController } from './services/battery-charge-controller.ts';
 import { startBalanceTuner, stopBalanceTuner } from './services/balance-tuner.ts';
+import { startPredictionAutoSelect, stopPredictionAutoSelect } from './services/prediction-auto-select.ts';
 import { loadSettings } from './services/settings-store.ts';
 
 const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
@@ -20,6 +21,7 @@ async function shutdown() {
   stopEvActuator();
   stopBatteryChargeController();
   stopBalanceTuner();
+  stopPredictionAutoSelect();
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);
@@ -39,6 +41,7 @@ app.listen(port, host, () => {
       startEvActuator(settings);
       startBatteryChargeController(settings);
       startBalanceTuner(settings);
+      startPredictionAutoSelect(settings);
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });

@@ -7,7 +7,7 @@ vi.mock('../../app/src/api/api.js', () => ({
 }));
 
 import { runValidation, savePredictionConfig } from '../../app/src/api/api.js';
-import { initValidation } from '../../app/src/predictions-validation.js';
+import { initValidation, rerenderTable } from '../../app/src/predictions-validation.js';
 
 function setupDOM() {
   document.body.innerHTML = `
@@ -15,6 +15,7 @@ function setupDOM() {
     <div id="pred-results" hidden>
       <div id="pred-sensor-tabs"></div>
       <table><tbody id="pred-metrics-body"></tbody></table>
+      <button id="pred-show-all" hidden>Show all</button>
     </div>
     <div id="pred-no-results"></div>
     <div id="pred-chart-section" hidden>
@@ -34,6 +35,11 @@ describe('predictions-validation', () => {
       constructor() { this.data = {}; }
       destroy() {}
     });
+  });
+
+  it('rerenderTable is a no-op before any validation results exist', () => {
+    rerenderTable({});
+    expect(document.getElementById('pred-metrics-body').children.length).toBe(0);
   });
 
   it('initValidation wires the run button', () => {
@@ -315,5 +321,75 @@ describe('predictions-validation', () => {
     await vi.waitFor(() => {
       expect(runValidation).toHaveBeenCalled();
     });
+  });
+
+  it('badges the active and best strategies and collapses rows past the top 20', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    const results = Array.from({ length: 25 }, (_, i) => ({
+      sensor: 's1', lookbackWeeks: i + 1, dayFilter: 'all', aggregation: 'median', mae: 100 + i, rmse: 120, mape: 10, n: 96, validationPredictions: [],
+    }));
+    runValidation.mockResolvedValue({ sensorNames: ['s1'], results });
+
+    const highlights = {
+      active: { lookbackWeeks: 23, dayFilter: 'all', aggregation: 'median' }, // beyond the top 20
+      best: { lookbackWeeks: 1, dayFilter: 'all', aggregation: 'median' },
+    };
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn(), getHighlights: () => highlights });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('#pred-metrics-body tr').length).toBe(25);
+    });
+
+    const rows = [...document.querySelectorAll('#pred-metrics-body tr')];
+    expect(rows[0].textContent).toContain('best');
+    expect(rows[0].hidden).toBe(false);
+    expect(rows[22].textContent).toContain('active');
+    expect(rows[22].hidden).toBe(false);
+    expect(rows[19].hidden).toBe(false);
+    expect(rows[20].hidden).toBe(true);
+    expect(rows[24].hidden).toBe(true);
+
+    const showAll = document.getElementById('pred-show-all');
+    expect(showAll.hidden).toBe(false);
+    expect(showAll.textContent).toBe('Show all 25 strategies');
+
+    showAll.click();
+    expect([...document.querySelectorAll('#pred-metrics-body tr')].every(tr => !tr.hidden)).toBe(true);
+    expect(showAll.textContent).toBe('Show top 20');
+
+    showAll.click();
+    expect(document.querySelectorAll('#pred-metrics-body tr')[24].hidden).toBe(true);
+  });
+
+  it('hides the show-all toggle when the table fits and moves the active badge after Use', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 50, rmse: 60, mape: 10, n: 96, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median', mae: 70, rmse: 80, mape: 12, n: 96, validationPredictions: [] },
+      ],
+    });
+
+    let active = { lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+    const renderLoadConfig = vi.fn(cfg => { active = cfg; });
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig, setComparisonStatus: vi.fn(), getHighlights: () => ({ active, best: null }) });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('#pred-metrics-body tr').length).toBe(2);
+    });
+    expect(document.getElementById('pred-show-all').hidden).toBe(true);
+    let rows = document.querySelectorAll('#pred-metrics-body tr');
+    expect(rows[0].textContent).toContain('active');
+    expect(rows[1].textContent).not.toContain('active');
+
+    rows[1].querySelector('.btn-use').click();
+    await vi.waitFor(() => {
+      rows = document.querySelectorAll('#pred-metrics-body tr');
+      expect(rows[1].textContent).toContain('active');
+    });
+    expect(rows[0].textContent).not.toContain('active');
   });
 });

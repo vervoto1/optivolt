@@ -111,6 +111,14 @@
     "mode": "suggest",
     "minDataDays": 3
   },
+  "predictionAutoSelect": {
+    "enabled": false,
+    "mode": "suggest",
+    "time": "03:30",
+    "metric": "mae",
+    "minImprovement_percent": 10,
+    "windowDays": 28
+  },
   "essConfig": {
     "enabled": true,
     "historyWindowHours": 24,

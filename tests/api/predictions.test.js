@@ -6,12 +6,16 @@ vi.mock('../../api/services/load-prediction-service.ts');
 vi.mock('../../api/services/pv-prediction-service.ts');
 vi.mock('../../api/services/settings-store.ts');
 vi.mock('../../api/services/data-store.ts');
+vi.mock('../../api/services/prediction-auto-select.ts');
+vi.mock('../../api/services/prediction-auto-select-store.ts');
 
 import { loadPredictionConfig, savePredictionConfig } from '../../api/services/prediction-config-store.ts';
 import { runValidation, runForecast } from '../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../api/services/pv-prediction-service.ts';
 import { loadSettings } from '../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../api/services/data-store.ts';
+import { runAutoSelect } from '../../api/services/prediction-auto-select.ts';
+import { loadAutoSelectHistory } from '../../api/services/prediction-auto-select-store.ts';
 
 async function importRouter() {
   vi.resetModules();
@@ -57,6 +61,68 @@ describe('Prediction route contracts', () => {
     });
 
     predictionsRouter = await importRouter();
+  });
+
+  describe('auto-select', () => {
+    const autoSelectConfig = { enabled: true, mode: 'suggest', time: '03:30', metric: 'mae', minImprovement_percent: 10, windowDays: 28 };
+    const run = (at, action = 'kept') => ({ at, trigger: 'scheduled', sensor: 'Grid Import', windowDays: 28, metric: 'mae', mode: 'suggest', incumbent: null, best: null, improvement_percent: null, reason: 'incumbent-best', action, ranking: [] });
+
+    it('GET /predictions/auto-select returns config, lastRun and history', async () => {
+      loadSettings.mockResolvedValue({ ...mockSettings, predictionAutoSelect: autoSelectConfig });
+      loadAutoSelectHistory.mockResolvedValue([run('2026-08-22T01:30:00.000Z'), run('2026-08-23T01:30:00.000Z', 'suggested')]);
+
+      const res = await get(predictionsRouter, '/auto-select');
+      expect(res.status).toBe(200);
+      expect(res.body.config).toEqual(autoSelectConfig);
+      expect(res.body.lastRun.action).toBe('suggested');
+      expect(res.body.history).toHaveLength(2);
+    });
+
+    it('GET /predictions/auto-select reports null config and lastRun when nothing exists', async () => {
+      loadAutoSelectHistory.mockResolvedValue([]);
+
+      const res = await get(predictionsRouter, '/auto-select');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ config: null, lastRun: null, history: [] });
+    });
+
+    it('GET /predictions/auto-select maps store failures to 500', async () => {
+      loadAutoSelectHistory.mockRejectedValue(new Error('disk'));
+      const res = await get(predictionsRouter, '/auto-select');
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Failed to read auto-select state');
+    });
+
+    it('POST /predictions/auto-select/run runs with apply=true by default', async () => {
+      runAutoSelect.mockResolvedValue(run('2026-08-23T09:00:00.000Z', 'applied'));
+      const res = await post(predictionsRouter, '/auto-select/run', {});
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('applied');
+      expect(runAutoSelect).toHaveBeenCalledWith({ apply: true, trigger: 'manual' });
+    });
+
+    it('POST /predictions/auto-select/run honours apply=false (dry run)', async () => {
+      runAutoSelect.mockResolvedValue(run('2026-08-23T09:00:00.000Z', 'suggested'));
+      const res = await post(predictionsRouter, '/auto-select/run', { apply: false });
+      expect(res.status).toBe(200);
+      expect(runAutoSelect).toHaveBeenCalledWith({ apply: false, trigger: 'manual' });
+    });
+
+    it('POST /predictions/auto-select/run passes HttpErrors through (409 while running)', async () => {
+      // importRouter() resets the module registry, so use the HttpError class the router sees
+      const { HttpError: RouterHttpError } = await import('../../api/http-errors.ts');
+      runAutoSelect.mockRejectedValue(new RouterHttpError(409, 'Auto-select run already in progress'));
+      const res = await post(predictionsRouter, '/auto-select/run', {});
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('Auto-select run already in progress');
+    });
+
+    it('POST /predictions/auto-select/run maps other failures to 500', async () => {
+      runAutoSelect.mockRejectedValue(new Error('HA WebSocket timed out'));
+      const res = await post(predictionsRouter, '/auto-select/run', {});
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Auto-select run failed');
+    });
   });
 
   it('GET /predictions/config returns the config', async () => {

@@ -140,11 +140,18 @@ export function validate(
 }
 
 /**
+ * Default lookback grid (weeks). Extends past the historical 8-week cap: HA
+ * long-term statistics are kept indefinitely and the fetch is cheap, and on
+ * real data 12–26-week medians regularly score as well as or better than 8w.
+ */
+export const DEFAULT_LOOKBACK_WEEKS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 16, 20, 26];
+
+/**
  * Generate all combinations of prediction configurations.
  */
 export function generateAllConfigs(
   sensorNames: string[],
-  lookbacks: number[] = [1, 2, 3, 4, 6, 8],
+  lookbacks: readonly number[] = DEFAULT_LOOKBACK_WEEKS,
   dayFilters: DayFilter[] = ['same', 'all', 'weekday-weekend', 'weekday-sat-sun'],
   aggregations: Aggregation[] = ['mean', 'median'],
 ): PredictConfig[] {

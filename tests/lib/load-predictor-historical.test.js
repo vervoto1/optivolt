@@ -6,6 +6,7 @@ import {
   predict,
   validate,
   generateAllConfigs,
+  DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
 import { buildForecastSeries } from '../../lib/time-series-utils.ts';
 
@@ -285,8 +286,14 @@ describe('validate', () => {
 describe('generateAllConfigs', () => {
   it('generates correct count of combinations', () => {
     const configs = generateAllConfigs(['Load', 'Net']);
-    // 2 sensors × 6 lookbacks × 4 dayFilters × 2 aggregations = 96
-    expect(configs).toHaveLength(96);
+    // 2 sensors × 10 lookbacks × 4 dayFilters × 2 aggregations = 160
+    expect(configs).toHaveLength(160);
+  });
+
+  it('default grid extends past 8 weeks up to 26', () => {
+    expect(DEFAULT_LOOKBACK_WEEKS).toEqual([1, 2, 3, 4, 6, 8, 12, 16, 20, 26]);
+    const lookbacks = [...new Set(generateAllConfigs(['Load']).map(c => c.lookbackWeeks))];
+    expect(lookbacks).toEqual([...DEFAULT_LOOKBACK_WEEKS]);
   });
 
   it('includes all sensor names', () => {
@@ -300,6 +307,27 @@ describe('generateAllConfigs', () => {
     const configs = generateAllConfigs(['Load'], [1, 2]);
     const lookbacks = [...new Set(configs.map(c => c.lookbackWeeks))];
     expect(lookbacks).toEqual([1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// predict — targets equivalence
+// ---------------------------------------------------------------------------
+
+describe('predict with explicit targets', () => {
+  it('matches the window-filtered all-history predictions for the same strategy', () => {
+    const cfg = { sensor: 'Load', lookbackWeeks: 2, dayFilter: 'weekday-weekend', aggregation: 'median' };
+    // Window: the third week of history (week index 2)
+    const windowStart = BASE_TIME + 2 * 7 * 24 * 60 * 60 * 1000;
+    const windowEnd = windowStart + 7 * 24 * 60 * 60 * 1000;
+
+    const full = predict(history, cfg).filter(p => p.time >= windowStart && p.time < windowEnd);
+    const targets = history.filter(d => d.sensor === 'Load' && d.time >= windowStart && d.time < windowEnd);
+    const targeted = predict(history, cfg, targets);
+
+    expect(targeted).toHaveLength(5);
+    expect(targeted).toEqual(full);
+    expect(targeted.every(p => p.actual !== null)).toBe(true);
   });
 });
 

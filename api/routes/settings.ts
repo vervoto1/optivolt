@@ -9,6 +9,7 @@ import { startShoreOptimizer, stopShoreOptimizer } from '../services/shore-optim
 import { startEvActuator, stopEvActuator } from '../services/ev-actuator-service.ts';
 import { startBatteryChargeController, stopBatteryChargeController } from '../services/battery-charge-controller.ts';
 import { startBalanceTuner, stopBalanceTuner } from '../services/balance-tuner.ts';
+import { startPredictionAutoSelect, stopPredictionAutoSelect } from '../services/prediction-auto-select.ts';
 import { mergeSettings, normalizeSettings, sanitizeSettingsResponse } from '../services/settings-schema.ts';
 import type { SettingsPatch } from '../services/settings-schema.ts';
 
@@ -52,6 +53,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     startBatteryChargeController(mergedSettings);
     stopBalanceTuner();
     startBalanceTuner(mergedSettings);
+    stopPredictionAutoSelect();
+    startPredictionAutoSelect(mergedSettings);
 
     res.json({ message: 'Settings saved successfully.', settings: sanitizeSettingsResponse(mergedSettings) });
   } catch (error) {

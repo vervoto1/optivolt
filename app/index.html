@@ -1109,18 +1109,101 @@
         </div>
       </section>
 
-      <!-- Full Comparison -->
+      <!-- Strategy Selection -->
       <section class="card">
         <div class="mb-4">
-          <h2 class="sidebar-label">Compare Strategies</h2>
+          <h2 class="sidebar-label">Strategy Selection</h2>
         </div>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Run full validation on all combinations for the last
-          7 days.</p>
-        <button id="pred-run-validation" type="button"
-          class="w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 focus:outline-hidden focus:ring-2 focus:ring-sky-400/50 transition-colors">
-          Run Comparison
-        </button>
-        <p id="pred-status" class="mt-3 text-sm text-ink-soft dark:text-slate-400"></p>
+        <div class="space-y-3">
+          <label class="flex items-center gap-2 text-sm">
+            <input id="autosel-enabled" type="checkbox" class="form-checkbox">
+            <span>Auto-select the best strategy daily</span>
+          </label>
+
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Mode</span>
+              <select id="autosel-mode" class="form-select">
+                <option value="suggest">Suggest (record only)</option>
+                <option value="auto">Auto (apply)</option>
+              </select>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Daily at</span>
+              <input id="autosel-time" type="time" class="form-input" value="03:30">
+            </label>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Metric</span>
+              <select id="autosel-metric" class="form-select">
+                <option value="mae">MAE</option>
+                <option value="rmse">RMSE</option>
+              </select>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Min gain
+                (%)</span>
+              <input id="autosel-min-improvement" type="number" min="0" max="50" step="1" class="form-input" value="10">
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Window
+                (days)</span>
+              <input id="autosel-window-days" type="number" min="14" max="56" step="1" class="form-input" value="28">
+            </label>
+          </div>
+
+          <p class="text-xs text-slate-500 dark:text-slate-400">Selection scores every lookback / day-filter /
+            aggregation strategy for the active sensor over the window and only switches when the best beats the
+            current one by the minimum gain. Comparison runs the 7-day table for all sensors.</p>
+
+          <div class="grid grid-cols-2 gap-3">
+            <button id="autosel-run" type="button"
+              class="w-full rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white shadow-xs hover:bg-sky-700 active:scale-[0.99] focus:outline-hidden focus:ring-2 focus:ring-sky-400/50 transition-all">
+              Run Selection
+            </button>
+            <button id="pred-run-validation" type="button"
+              class="w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 focus:outline-hidden focus:ring-2 focus:ring-sky-400/50 transition-colors">
+              Run Comparison
+            </button>
+          </div>
+          <p id="pred-status" class="text-sm text-ink-soft dark:text-slate-400"></p>
+
+          <!-- Last run status -->
+          <div id="autosel-status" class="mt-3 summary-panel">
+            <div class="summary-row">
+              <span class="stat-label">Last run</span>
+              <span id="autosel-last-run" class="text-sm font-medium text-ink-soft dark:text-slate-400">--</span>
+            </div>
+            <div class="summary-row border-t border-slate-100 dark:border-white/5">
+              <span class="stat-label">Outcome</span>
+              <span id="autosel-outcome" class="text-sm font-medium text-ink-soft dark:text-slate-400">--</span>
+            </div>
+            <div class="grid grid-cols-3 border-t border-slate-100 dark:border-white/5">
+              <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
+                <div class="stat-label mb-0.5">Current</div>
+                <div class="text-xs font-semibold"><span id="autosel-current">--</span></div>
+                <div class="text-[10px] opacity-50"><span id="autosel-current-metric"></span></div>
+              </div>
+              <div class="px-3 py-2.5 border-r border-slate-100 dark:border-white/5">
+                <div class="stat-label mb-0.5">Best</div>
+                <div class="text-xs font-semibold"><span id="autosel-best">--</span></div>
+                <div class="text-[10px] opacity-50"><span id="autosel-best-metric"></span></div>
+              </div>
+              <div class="px-3 py-2.5">
+                <div class="stat-label mb-0.5">Gain</div>
+                <div class="stat-value"><span id="autosel-delta">--</span></div>
+              </div>
+            </div>
+            <div id="autosel-apply-row" class="px-3 py-2.5 border-t border-slate-100 dark:border-white/5" hidden>
+              <button id="autosel-apply" type="button"
+                class="w-full rounded-lg border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-600 hover:bg-sky-50 dark:text-sky-400 dark:border-sky-400 dark:hover:bg-sky-900/30 transition-colors">
+                Apply suggestion
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
     </aside>
@@ -1408,6 +1491,10 @@
             </thead>
             <tbody id="pred-metrics-body"></tbody>
           </table>
+          <button id="pred-show-all" type="button" hidden
+            class="mt-3 text-xs font-medium text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300">
+            Show all strategies
+          </button>
         </section>
       </div>
 

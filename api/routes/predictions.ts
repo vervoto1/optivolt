@@ -2,6 +2,9 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError, assertCondition, toHttpError } from '../http-errors.ts';
 import { loadPredictionConfig, savePredictionConfig } from '../services/prediction-config-store.ts';
+import { loadSettings } from '../services/settings-store.ts';
+import { runAutoSelect } from '../services/prediction-auto-select.ts';
+import { loadAutoSelectHistory } from '../services/prediction-auto-select-store.ts';
 import type { PredictionAdjustmentInput } from '../services/prediction-adjustments.ts';
 import {
   createStoredPredictionAdjustment,
@@ -111,6 +114,33 @@ router.post('/validate', async (_req: Request, res: Response, next: NextFunction
     res.json(await executePredictionValidation(config));
   } catch (error) {
     next(error instanceof HttpError ? error : toHttpError(error, 500, 'Validation failed'));
+  }
+});
+
+// ----------------------------- Strategy auto-select -----------------------
+
+router.get('/auto-select', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const [settings, history] = await Promise.all([loadSettings(), loadAutoSelectHistory()]);
+    res.json({
+      config: settings.predictionAutoSelect ?? null,
+      lastRun: history.length > 0 ? history[history.length - 1] : null,
+      history,
+    });
+  } catch (error) {
+    next(toHttpError(error, 500, 'Failed to read auto-select state'));
+  }
+});
+
+router.post('/auto-select/run', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // v8 ignore next — null path of ?? is untestable when req.body always exists
+    const body = (req.body ?? {}) as { apply?: unknown };
+    // apply=false forces a dry run regardless of mode (score + record, never write)
+    const apply = body.apply !== false;
+    res.json(await runAutoSelect({ apply, trigger: 'manual' }));
+  } catch (error) {
+    next(error instanceof HttpError ? error : toHttpError(error, 500, 'Auto-select run failed'));
   }
 });
 

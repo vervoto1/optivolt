@@ -15,6 +15,7 @@ vi.mock('../../api/services/shore-optimizer.ts');
 vi.mock('../../api/services/planner-service.ts');
 vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/prediction-config-store.ts');
+vi.mock('../../api/services/prediction-auto-select.ts');
 
 import { loadSettings, saveSettings } from '../../api/services/settings-store.ts';
 import { refreshSettingsFromVrmAndPersist } from '../../api/services/vrm-refresh.ts';
@@ -27,6 +28,7 @@ import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/
 import { startPvCurtailment, stopPvCurtailment } from '../../api/services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
 import { planAndMaybeWrite, getLastPlan, getLastEvPreview } from '../../api/services/planner-service.ts';
+import { startPredictionAutoSelect, stopPredictionAutoSelect } from '../../api/services/prediction-auto-select.ts';
 
 async function importRoutes() {
   vi.resetModules();
@@ -128,6 +130,8 @@ describe('Route contracts', () => {
     stopPvCurtailment.mockReturnValue();
     startShoreOptimizer.mockReturnValue();
     stopShoreOptimizer.mockReturnValue();
+    startPredictionAutoSelect.mockReturnValue();
+    stopPredictionAutoSelect.mockReturnValue();
     evaluateRecentPlans.mockResolvedValue([]);
     loadCalibration.mockResolvedValue(null);
     loadPlanHistory.mockResolvedValue([]);
@@ -185,6 +189,8 @@ describe('Route contracts', () => {
     expect(startPvCurtailment).toHaveBeenCalled();
     expect(stopShoreOptimizer).toHaveBeenCalled();
     expect(startShoreOptimizer).toHaveBeenCalled();
+    expect(stopPredictionAutoSelect).toHaveBeenCalled();
+    expect(startPredictionAutoSelect).toHaveBeenCalledWith(expect.objectContaining({ haToken: 'secret-token' }));
   });
 
   it('POST /calculate forwards parsed flags to planner-service', async () => {

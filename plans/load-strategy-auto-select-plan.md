@@ -2,8 +2,12 @@
 
 ## Status
 
-Planned. Not started. This document is a self-contained build brief: a fresh
-Claude Code session can implement the feature from this file alone.
+Phases 1 and 2 implemented in v0.7.55 (`lib/strategy-selector.ts`,
+`api/services/prediction-auto-select.ts`, `api/services/prediction-auto-select-store.ts`,
+`scoreStrategies` in `api/services/load-prediction-service.ts`, the
+`predictionAutoSelect` settings block, `GET/POST /predictions/auto-select`, and
+the Strategy Selection card on the Predictions tab). Phase 3 items remain
+open. The rest of this document is the build brief the implementation followed.
 
 ## Goal
 

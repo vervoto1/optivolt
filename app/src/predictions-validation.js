@@ -2,20 +2,50 @@
 import { runValidation, savePredictionConfig } from './api/api.js';
 import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from './chart-tooltip.js';
 
+/** Rows shown per sensor before the "show all" toggle (the grid has 80 strategies per sensor). */
+const TOP_ROWS = 20;
+const ACTIVE_BADGE = 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300';
+const BEST_BADGE = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
+
 let validationResults = null;
 let _activeSensor = null;
 let accuracyChart = null;
 let diffChart = null;
+let showAllRows = false;
 
-export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus }) {
+export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights }) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
+  const deps = { readFormValues, renderHistoricalConfig: renderFn, setComparisonStatus, getHighlights };
   const runBtn = document.getElementById('pred-run-validation');
   if (runBtn) {
-    runBtn.addEventListener('click', () => onRunValidation({ readFormValues, renderHistoricalConfig: renderFn, setComparisonStatus }));
+    runBtn.addEventListener('click', () => onRunValidation(deps));
+  }
+  document.getElementById('pred-show-all')?.addEventListener('click', () => {
+    showAllRows = !showAllRows;
+    rerenderTable(deps);
+  });
+}
+
+/** Re-render the current sensor's table (after a strategy change or the show-all toggle). */
+export function rerenderTable(deps) {
+  if (validationResults && _activeSensor) {
+    renderMetricsTable(validationResults.results, _activeSensor, deps);
   }
 }
 
-async function onRunValidation({ readFormValues, renderHistoricalConfig, setComparisonStatus }) {
+function sameStrategy(row, strategy) {
+  return !!strategy
+    && row.lookbackWeeks === strategy.lookbackWeeks
+    && row.dayFilter === strategy.dayFilter
+    && row.aggregation === strategy.aggregation;
+}
+
+function badge(label, tone) {
+  return `<span class="ml-1 rounded-pill px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}">${label}</span>`;
+}
+
+async function onRunValidation(deps) {
+  const { readFormValues, setComparisonStatus } = deps;
   const runBtn = document.getElementById('pred-run-validation');
   // v8 ignore next — null path of ternary (runBtn always present in jsdom) is untestable
   const originalText = runBtn ? runBtn.textContent : '';
@@ -47,7 +77,7 @@ async function onRunValidation({ readFormValues, renderHistoricalConfig, setComp
     try {
       const result = await runValidation();
       validationResults = result;
-      renderResults(result, { readFormValues, renderHistoricalConfig, setComparisonStatus });
+      renderResults(result, deps);
       setComparisonStatus(`Validation complete — ${result.results.length} combinations evaluated`);
     } catch (err) {
       setComparisonStatus(`Error: ${err.message}`, true);
@@ -132,12 +162,17 @@ function renderMetricsTable(results, sensorName, deps) {
     .filter(r => r.sensor === sensorName)
     .sort((a, b) => (isNaN(a.mae) ? 1 : isNaN(b.mae) ? -1 : a.mae - b.mae));
 
+  const highlights = deps.getHighlights?.() ?? {};
+
   tbody.innerHTML = '';
-  for (const row of rows) {
+  rows.forEach((row, index) => {
+    const isActive = sameStrategy(row, highlights.active);
+    const isBest = sameStrategy(row, highlights.best);
     const tr = document.createElement('tr');
     tr.className = 'border-t border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-slate-800/50';
+    tr.hidden = !showAllRows && index >= TOP_ROWS && !isActive && !isBest;
     tr.innerHTML = `
-      <td class="px-3 py-2 font-mono text-xs">${row.lookbackWeeks}w</td>
+      <td class="px-3 py-2 font-mono text-xs whitespace-nowrap">${row.lookbackWeeks}w${isActive ? badge('active', ACTIVE_BADGE) : ''}${isBest ? badge('best', BEST_BADGE) : ''}</td>
       <td class="px-3 py-2 text-xs">${row.dayFilter}</td>
       <td class="px-3 py-2 text-xs">${row.aggregation}</td>
       <td class="px-3 py-2 font-mono text-xs text-right">${isNaN(row.mae) ? '—' : row.mae.toFixed(1)}</td>
@@ -156,10 +191,17 @@ function renderMetricsTable(results, sensorName, deps) {
     tr.querySelector('.btn-chart').addEventListener('click', () => onShowChart(row));
 
     tbody.appendChild(tr);
+  });
+
+  const showAllBtn = document.getElementById('pred-show-all');
+  if (showAllBtn) {
+    showAllBtn.hidden = rows.length <= TOP_ROWS;
+    showAllBtn.textContent = showAllRows ? `Show top ${TOP_ROWS}` : `Show all ${rows.length} strategies`;
   }
 }
 
-async function onUseConfig(row, { readFormValues, renderHistoricalConfig, setComparisonStatus }) {
+async function onUseConfig(row, deps) {
+  const { readFormValues, renderHistoricalConfig, setComparisonStatus } = deps;
   const historicalPredictor = {
     sensor: row.sensor,
     lookbackWeeks: row.lookbackWeeks,
@@ -174,6 +216,7 @@ async function onUseConfig(row, { readFormValues, renderHistoricalConfig, setCom
     const partial = readFormValues();
     await savePredictionConfig(partial);
     setComparisonStatus(`Active config updated: ${row.sensor} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.aggregation}`);
+    rerenderTable(deps);
   } catch (err) {
     setComparisonStatus(`Failed to save active config: ${err.message}`, true);
   }

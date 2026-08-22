@@ -11,14 +11,15 @@ import {
   predict,
   validate,
   generateAllConfigs,
+  DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
-import type { DayFilter, Aggregation } from '../../lib/load-predictor-historical.ts';
+import type { DayFilter, Aggregation, PredictConfig } from '../../lib/load-predictor-historical.ts';
 import type { PredictionRunConfig } from '../types.ts';
 import { getForecastTimeRange, buildForecastSeries, computeErrorMetrics, type ForecastSeries, type PredictionResult } from '../../lib/time-series-utils.ts';
 
 type PredictTarget = Pick<StatRecord, 'date' | 'time' | 'hour' | 'dayOfWeek'> & { value?: number | null };
 
-interface ValidationEntry {
+export interface ValidationEntry {
   sensor: string;
   lookbackWeeks: number;
   dayFilter: DayFilter;
@@ -45,40 +46,61 @@ export interface ForecastRunResult {
   metrics: { mae: number; rmse: number; mape: number; n: number };
 }
 
+export interface ValidationWindow {
+  start: string;
+  end: string;
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
- * Run full validation across all config combinations.
+ * Weeks of HA history needed to backtest strategies with the given lookbacks
+ * over `validationWindow`: the longest lookback plus the window itself.
  */
-export async function runValidation(config: PredictionRunConfig): Promise<ValidationRunResult> {
-  const { haUrl, haToken, sensors, derived, validationWindow } = config;
-  const entityIds = sensors.map(s => s.id);
+export function fetchHorizonWeeks(lookbackWeeks: readonly number[], validationWindow: ValidationWindow): number {
+  const maxLookback = lookbackWeeks.reduce((max, weeks) => Math.max(max, weeks), 0);
+  const windowMs = new Date(validationWindow.end).getTime() - new Date(validationWindow.start).getTime();
+  return maxLookback + Math.max(1, Math.ceil(windowMs / WEEK_MS));
+}
 
-  // Max lookback tested by generateAllConfigs is 8 weeks; +1 week for the validation window
-  const MAX_LOOKBACK_WEEKS = 8;
-  const startTime = new Date(Date.now() - (MAX_LOOKBACK_WEEKS + 1) * 7 * 24 * 60 * 60 * 1000).toISOString();
-
+async function fetchHistory(config: PredictionRunConfig, weeks: number): Promise<StatRecord[]> {
+  const { haUrl, haToken, sensors, derived } = config;
+  const startTime = new Date(Date.now() - weeks * WEEK_MS).toISOString();
   const rawData = await fetchHaStats({
     haUrl,
     haToken,
-    entityIds,
+    entityIds: sensors.map(s => s.id),
     startTime,
   });
+  return postprocess(rawData, sensors, derived);
+}
 
-  const data = postprocess(rawData, sensors, derived);
-  const sensorNames = getSensorNames(data);
-  const allConfigs = generateAllConfigs(sensorNames);
+/**
+ * Score strategies against already-fetched history. Only the entries inside
+ * the validation window are predicted (passed as `targets`): predicting the
+ * whole history is the dominant cost of a validation run and grows with the
+ * lookback grid, while everything outside the window is discarded anyway.
+ */
+function scoreOnData(
+  data: StatRecord[],
+  strategies: PredictConfig[],
+  validationWindow: ValidationWindow,
+  includePredictions: boolean,
+): ValidationEntry[] {
+  const windowStart = new Date(validationWindow.start).getTime();
+  const windowEnd = new Date(validationWindow.end).getTime();
+  const targetsBySensor = new Map<string, StatRecord[]>();
 
   const results: ValidationEntry[] = [];
-  for (const cfg of allConfigs) {
-    const predictions = predict(data, cfg);
-    // validationWindow is always set by loadPredictionConfig()
-    const metrics = validate(predictions, validationWindow!);
+  for (const cfg of strategies) {
+    let targets = targetsBySensor.get(cfg.sensor);
+    if (!targets) {
+      targets = data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd);
+      targetsBySensor.set(cfg.sensor, targets);
+    }
 
-    const windowStart = new Date(validationWindow!.start).getTime();
-    const windowEnd = new Date(validationWindow!.end).getTime();
-
-    const validationPredictions = predictions.filter(
-      p => p.time >= windowStart && p.time < windowEnd
-    );
+    const predictions = predict(data, cfg, targets);
+    const metrics = validate(predictions, validationWindow);
 
     results.push({
       sensor: cfg.sensor,
@@ -90,10 +112,38 @@ export async function runValidation(config: PredictionRunConfig): Promise<Valida
       mape: metrics.mape,
       n: metrics.n,
       nSkipped: metrics.nSkipped,
-      validationPredictions,
+      validationPredictions: includePredictions ? predictions : [],
     });
   }
 
+  return results;
+}
+
+/**
+ * Fetch history once and score an explicit list of strategies over a window.
+ * Used by the auto-selector; `runValidation` (the UI comparison) shares the
+ * same scoring core so both always agree on the numbers.
+ */
+export async function scoreStrategies(
+  config: PredictionRunConfig,
+  strategies: PredictConfig[],
+  validationWindow: ValidationWindow,
+  { includePredictions = false }: { includePredictions?: boolean } = {},
+): Promise<ValidationEntry[]> {
+  const weeks = fetchHorizonWeeks(strategies.map(s => s.lookbackWeeks), validationWindow);
+  const data = await fetchHistory(config, weeks);
+  return scoreOnData(data, strategies, validationWindow, includePredictions);
+}
+
+/**
+ * Run full validation across all config combinations.
+ */
+export async function runValidation(config: PredictionRunConfig): Promise<ValidationRunResult> {
+  // validationWindow is always set by loadPredictionConfig()
+  const validationWindow = config.validationWindow!;
+  const data = await fetchHistory(config, fetchHorizonWeeks(DEFAULT_LOOKBACK_WEEKS, validationWindow));
+  const sensorNames = getSensorNames(data);
+  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow, true);
   return { sensorNames, results };
 }
 

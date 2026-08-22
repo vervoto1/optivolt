@@ -8,11 +8,19 @@ vi.mock('../../app/src/api/api.js', () => ({
 
 vi.mock('../../app/src/predictions-validation.js', () => ({
   initValidation: vi.fn(),
+  rerenderTable: vi.fn(),
+}));
+
+vi.mock('../../app/src/predictions/auto-select.js', () => ({
+  initAutoSelect: vi.fn(),
+  getLastAutoSelectRun: vi.fn(),
 }));
 
 import { fetchPredictionConfig, savePredictionConfig } from '../../app/src/api/api.js';
-import { initValidation } from '../../app/src/predictions-validation.js';
+import { initValidation, rerenderTable } from '../../app/src/predictions-validation.js';
+import { initAutoSelect, getLastAutoSelectRun } from '../../app/src/predictions/auto-select.js';
 import {
+  applyStrategyToForm,
   applyPredictionConfigToForm,
   hydratePredictionForm,
   readPredictionFormValues,
@@ -391,5 +399,71 @@ describe('prediction config form', () => {
     // Missing element -> no throw.
     el.remove();
     expect(() => setComparisonStatus('ignored')).not.toThrow();
+  });
+
+  describe('auto-select wiring', () => {
+    function selectSensor(name) {
+      const sel = document.getElementById('pred-active-sensor');
+      sel.innerHTML = `<option value="${name}">${name}</option>`;
+      sel.value = name;
+    }
+
+    it('wires initAutoSelect and initValidation with form-aware deps', () => {
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      document.getElementById('pred-active-filter').value = 'weekday-weekend';
+      document.getElementById('pred-active-agg').value = 'median';
+
+      wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+
+      expect(initAutoSelect).toHaveBeenCalledOnce();
+      const autoDeps = initAutoSelect.mock.calls[0][0];
+      const expected = { sensor: 'Load', lookbackWeeks: 8, dayFilter: 'weekday-weekend', aggregation: 'median' };
+      expect(autoDeps.getCurrentStrategy()).toEqual(expected);
+      expect(autoDeps.applyStrategy).toBe(applyStrategyToForm);
+
+      const validationDeps = initValidation.mock.calls[0][0];
+      const best = { lookbackWeeks: 26, dayFilter: 'all', aggregation: 'median' };
+      getLastAutoSelectRun.mockReturnValue({ best });
+      expect(validationDeps.getHighlights()).toEqual({ active: expected, best });
+      getLastAutoSelectRun.mockReturnValue(null);
+      expect(validationDeps.getHighlights().best).toBeNull();
+
+      autoDeps.onRunComplete();
+      expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
+
+      // No sensor selected → no historical predictor in the form
+      document.getElementById('pred-active-sensor').innerHTML = '';
+      expect(autoDeps.getCurrentStrategy()).toBeNull();
+      expect(validationDeps.getHighlights().active).toBeNull();
+    });
+
+    it('applyStrategyToForm pushes the strategy into the form, forces historical, saves and reports', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      selectSensor('Load');
+      document.getElementById('pred-active-lookback').value = '8';
+      document.getElementById('pred-active-type').value = 'fixed';
+      document.getElementById('pred-historical-fields').classList.add('hidden');
+
+      await applyStrategyToForm({ lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' });
+
+      expect(document.getElementById('pred-active-lookback').value).toBe('26');
+      expect(document.getElementById('pred-active-filter').value).toBe('weekday-weekend');
+      expect(document.getElementById('pred-active-agg').value).toBe('median');
+      expect(document.getElementById('pred-active-type').value).toBe('historical');
+      expect(document.getElementById('pred-historical-fields').classList.contains('hidden')).toBe(false);
+      expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({
+        activeType: 'historical',
+        historicalPredictor: { sensor: 'Load', lookbackWeeks: 26, dayFilter: 'weekday-weekend', aggregation: 'median' },
+      }));
+      expect(document.getElementById('pred-status').textContent).toBe('Active config updated: 26w / weekday-weekend / median');
+    });
+
+    it('applyStrategyToForm works when the form has no active sensor yet', async () => {
+      savePredictionConfig.mockResolvedValue({});
+      await applyStrategyToForm({ lookbackWeeks: 12, dayFilter: 'same', aggregation: 'mean' });
+      expect(document.getElementById('pred-active-lookback').value).toBe('12');
+      expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({ activeType: 'historical' }));
+    });
   });
 });

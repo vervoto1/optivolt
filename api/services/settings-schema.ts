@@ -11,6 +11,7 @@ import type {
   BatteryChargeControlConfig,
   BatteryBalanceControlConfig,
   AdaptiveLearningConfig,
+  PredictionAutoSelectConfig,
   EssConfig,
   EssBatteryConfig,
   EssSystemConfig,
@@ -30,6 +31,7 @@ export type SettingsPatch = Partial<Settings> & {
   batteryChargeControl?: Partial<BatteryChargeControlConfig>;
   batteryBalanceControl?: Partial<BatteryBalanceControlConfig>;
   adaptiveLearning?: Partial<AdaptiveLearningConfig>;
+  predictionAutoSelect?: Partial<PredictionAutoSelectConfig>;
   essConfig?: Partial<EssConfig>;
 };
 
@@ -174,6 +176,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     batteryChargeControl: patch.batteryChargeControl ? { ...base.batteryChargeControl, ...patch.batteryChargeControl } as BatteryChargeControlConfig : base.batteryChargeControl,
     batteryBalanceControl: patch.batteryBalanceControl ? { ...base.batteryBalanceControl, ...patch.batteryBalanceControl } as BatteryBalanceControlConfig : base.batteryBalanceControl,
     adaptiveLearning: patch.adaptiveLearning ? { ...base.adaptiveLearning, ...patch.adaptiveLearning } as AdaptiveLearningConfig : base.adaptiveLearning,
+    predictionAutoSelect: patch.predictionAutoSelect ? { ...base.predictionAutoSelect, ...patch.predictionAutoSelect } as PredictionAutoSelectConfig : base.predictionAutoSelect,
     // Deep-merge essConfig so a PATCH of one scalar (e.g. historyWindowHours)
     // does not shallow-replace the whole block and wipe `batteries`.
     essConfig: patch.essConfig ? { ...base.essConfig, ...patch.essConfig } as EssConfig : base.essConfig,
@@ -289,6 +292,9 @@ export function normalizeSettings(settings: Settings): Settings {
   }
   if (normalized.adaptiveLearning) {
     normalized.adaptiveLearning = normalizeAdaptiveLearning(normalized.adaptiveLearning);
+  }
+  if (normalized.predictionAutoSelect) {
+    normalized.predictionAutoSelect = normalizePredictionAutoSelect(normalized.predictionAutoSelect);
   }
   if (normalized.essConfig) {
     normalized.essConfig = normalizeEssConfig(normalized.essConfig);
@@ -568,6 +574,24 @@ function normalizeAdaptiveLearning(adaptiveLearning: AdaptiveLearningConfig): Ad
     enabled: expectBoolean(adaptiveLearning.enabled, 'adaptiveLearning.enabled'),
     mode: expectEnum(adaptiveLearning.mode, ['suggest', 'auto'], 'adaptiveLearning.mode'),
     minDataDays: Math.max(1, Math.round(expectFiniteNumber(adaptiveLearning.minDataDays, 'adaptiveLearning.minDataDays'))),
+  };
+}
+
+function normalizePredictionAutoSelect(cfg: PredictionAutoSelectConfig): PredictionAutoSelectConfig {
+  assertObject(cfg, 'predictionAutoSelect');
+  const time = expectString(cfg.time, 'predictionAutoSelect.time').trim();
+  if (!HH_MM.test(time)) {
+    throw new HttpError(400, 'predictionAutoSelect.time must be in HH:MM format');
+  }
+  return {
+    enabled: expectBoolean(cfg.enabled, 'predictionAutoSelect.enabled'),
+    mode: expectEnum(cfg.mode, ['suggest', 'auto'], 'predictionAutoSelect.mode'),
+    time,
+    metric: expectEnum(cfg.metric, ['mae', 'rmse'], 'predictionAutoSelect.metric'),
+    minImprovement_percent: Math.max(0, Math.min(50,
+      expectFiniteNumber(cfg.minImprovement_percent, 'predictionAutoSelect.minImprovement_percent'))),
+    windowDays: Math.max(14, Math.min(56,
+      Math.round(expectFiniteNumber(cfg.windowDays, 'predictionAutoSelect.windowDays')))),
   };
 }
 

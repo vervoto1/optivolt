@@ -274,6 +274,66 @@ describe('settings-schema', () => {
       expect(() => normalizeSettings(s)).toThrow('adaptiveLearning.minDataDays must be a finite number');
     });
 
+    describe('predictionAutoSelect', () => {
+      const block = () => ({ enabled: true, mode: 'auto', time: '03:30', metric: 'rmse', minImprovement_percent: 12.5, windowDays: 21 });
+
+      it('is optional (absent block passes through)', () => {
+        const result = normalizeSettings(validSettings());
+        expect(result.predictionAutoSelect).toBeUndefined();
+      });
+
+      it('round-trips a valid block', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = block();
+        expect(normalizeSettings(s).predictionAutoSelect).toEqual(block());
+      });
+
+      it('trims the time and clamps the numeric fields', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = { ...block(), time: ' 04:00 ', minImprovement_percent: 80, windowDays: 3 };
+        let r = normalizeSettings(s).predictionAutoSelect;
+        expect(r.time).toBe('04:00');
+        expect(r.minImprovement_percent).toBe(50);
+        expect(r.windowDays).toBe(14);
+
+        s.predictionAutoSelect = { ...block(), minImprovement_percent: -5, windowDays: 100.4 };
+        r = normalizeSettings(s).predictionAutoSelect;
+        expect(r.minImprovement_percent).toBe(0);
+        expect(r.windowDays).toBe(56);
+
+        s.predictionAutoSelect = { ...block(), windowDays: 27.6 };
+        expect(normalizeSettings(s).predictionAutoSelect.windowDays).toBe(28);
+      });
+
+      it('rejects a non-object block', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = 'x';
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect must be an object');
+      });
+
+      it('rejects a malformed time', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = { ...block(), time: '3:30' };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.time must be in HH:MM format');
+        s.predictionAutoSelect = { ...block(), time: 330 };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.time must be a string');
+      });
+
+      it('rejects bad enums, booleans, and numbers', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = { ...block(), mode: 'manual' };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.mode must be one of');
+        s.predictionAutoSelect = { ...block(), metric: 'mape' };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.metric must be one of');
+        s.predictionAutoSelect = { ...block(), enabled: 'yes' };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.enabled must be a boolean');
+        s.predictionAutoSelect = { ...block(), windowDays: 'x' };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.windowDays must be a finite number');
+        s.predictionAutoSelect = { ...block(), minImprovement_percent: null };
+        expect(() => normalizeSettings(s)).toThrow('predictionAutoSelect.minImprovement_percent must be a finite number');
+      });
+    });
+
     describe('autoSplitLegacyEfficiency migration', () => {
       it('back-solves a symmetric inverter+battery split for legacy 95/95 settings', () => {
         // Pre-v0.7.20 settings lack inverterEfficiency_percent. 95/95 → sqrt(0.95)≈0.9747
@@ -353,6 +413,16 @@ describe('settings-schema', () => {
       const base = validSettings();
       const merged = mergeSettings(base, { stepSize_m: 30 });
       expect(merged.haToken).toBe('secret');
+    });
+
+    it('deep-merges predictionAutoSelect patches and keeps the base block when absent', () => {
+      const base = validSettings();
+      base.predictionAutoSelect = { enabled: false, mode: 'suggest', time: '03:30', metric: 'mae', minImprovement_percent: 10, windowDays: 28 };
+      const merged = mergeSettings(base, { predictionAutoSelect: { enabled: true, mode: 'auto' } });
+      expect(merged.predictionAutoSelect).toEqual({ ...base.predictionAutoSelect, enabled: true, mode: 'auto' });
+
+      const untouched = mergeSettings(base, { stepSize_m: 30 });
+      expect(untouched.predictionAutoSelect).toEqual(base.predictionAutoSelect);
     });
 
     it('keeps existing haToken when patch sends empty string', () => {

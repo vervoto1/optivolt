@@ -1,6 +1,7 @@
 import { fetchPredictionConfig, savePredictionConfig } from '../api/api.js';
 import { debounce } from '../utils.js';
-import { initValidation } from '../predictions-validation.js';
+import { initValidation, rerenderTable } from '../predictions-validation.js';
+import { getLastAutoSelectRun, initAutoSelect } from './auto-select.js';
 
 export async function hydratePredictionForm() {
   try {
@@ -47,7 +48,22 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
   document.getElementById('pred-active-type')
     ?.addEventListener('change', updatePredictorFieldVisibility);
 
-  initValidation({ readFormValues: readPredictionFormValues, renderHistoricalConfig, setComparisonStatus });
+  const validationDeps = {
+    readFormValues: readPredictionFormValues,
+    renderHistoricalConfig,
+    setComparisonStatus,
+    getHighlights: () => ({
+      active: readPredictionFormValues().historicalPredictor ?? null,
+      best: getLastAutoSelectRun()?.best ?? null,
+    }),
+  };
+  initValidation(validationDeps);
+
+  void initAutoSelect({
+    getCurrentStrategy: () => readPredictionFormValues().historicalPredictor ?? null,
+    applyStrategy: applyStrategyToForm,
+    onRunComplete: () => rerenderTable(validationDeps),
+  });
 
   document.getElementById('pred-load-forecast')
     ?.addEventListener('click', onForecastAll);
@@ -69,6 +85,20 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
       }
     });
   }
+}
+
+/**
+ * Apply a strategy (from the auto-selector) the same way the comparison
+ * table's "Use" button does: push it into the form, force the historical
+ * predictor type, and persist. The sensor stays whatever the form has.
+ */
+export async function applyStrategyToForm(strategy) {
+  const current = readPredictionFormValues().historicalPredictor ?? {};
+  renderHistoricalConfig({ ...current, ...strategy });
+  setVal('pred-active-type', 'historical');
+  updatePredictorFieldVisibility();
+  await savePredictionFormToServer();
+  setComparisonStatus(`Active config updated: ${strategy.lookbackWeeks}w / ${strategy.dayFilter} / ${strategy.aggregation}`);
 }
 
 export async function savePredictionFormToServer() {
