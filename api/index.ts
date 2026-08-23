@@ -8,6 +8,7 @@ import { startBatteryChargeController, stopBatteryChargeController } from './ser
 import { startBalanceTuner, stopBalanceTuner } from './services/balance-tuner.ts';
 import { startPredictionAutoSelect, stopPredictionAutoSelect } from './services/prediction-auto-select.ts';
 import { loadSettings } from './services/settings-store.ts';
+import { resolveDataDir, sweepTempFiles } from './services/json-store.ts';
 
 const rawPort = Number.parseInt(process.env.PORT ?? '', 10);
 const port = Number.isFinite(rawPort) ? rawPort : 3000;
@@ -30,6 +31,9 @@ process.on('SIGINT', shutdown);
 app.listen(port, host, () => {
   console.log(`Server listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
   console.log(`Node version: ${process.version}`);
+
+  // Temp files left by a write that a hard kill interrupted (non-blocking).
+  void sweepTempFiles(resolveDataDir());
 
   // Start timers (non-blocking)
   loadSettings()

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { writeJson, readJson, withJsonLock } from '../../../api/services/json-store.ts';
+import { writeJson, readJson, withJsonLock, sweepTempFiles } from '../../../api/services/json-store.ts';
 import fs from 'node:fs/promises';
 
 vi.mock('node:fs/promises');
@@ -140,5 +140,46 @@ describe('json-store — withJsonLock', () => {
   it('rejects a failing caller without breaking the chain for the next one', async () => {
     await expect(withJsonLock('/tmp/a.json', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
     expect(await withJsonLock('/tmp/a.json', async () => 'ok')).toBe('ok');
+  });
+});
+
+describe('json-store — sweepTempFiles', () => {
+  const NOW = 1_700_000_000_000;
+  const file = (mtimeMs, isFile = true) => ({ isFile: () => isFile, mtimeMs });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fs.unlink.mockResolvedValue(undefined);
+  });
+
+  it('removes only stale writeJson temp files, leaving young ones and everything else alone', async () => {
+    fs.readdir.mockResolvedValue(['settings.json', 'data.json.1234.7.tmp', 'data.json.99.1.tmp', 'notes.tmp', 'prediction-config.json.5.2.tmp']);
+    fs.stat.mockImplementation(async (p) => {
+      if (p.endsWith('data.json.1234.7.tmp')) return file(NOW - 60 * 60_000);
+      if (p.endsWith('data.json.99.1.tmp')) return file(NOW - 30_000); // a write in progress
+      if (p.endsWith('prediction-config.json.5.2.tmp')) return file(NOW - 10 * 60_000, false); // a directory, oddly
+      throw new Error(`unexpected stat ${p}`);
+    });
+
+    const removed = await sweepTempFiles('/data', { now: NOW });
+
+    expect(removed).toEqual(['/data/data.json.1234.7.tmp']);
+    expect(fs.unlink).toHaveBeenCalledTimes(1);
+    expect(fs.unlink).toHaveBeenCalledWith('/data/data.json.1234.7.tmp');
+    expect(console.log).toHaveBeenCalledWith('[json-store] removed 1 stale temp file(s) from /data');
+  });
+
+  it('never throws: a missing directory is an empty sweep and an unlink failure is logged', async () => {
+    fs.readdir.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await sweepTempFiles('/nope', { now: NOW })).toEqual([]);
+
+    fs.readdir.mockResolvedValue(['a.json.1.1.tmp']);
+    fs.stat.mockResolvedValue(file(NOW - 60 * 60_000));
+    fs.unlink.mockRejectedValueOnce(new Error('EACCES'));
+    expect(await sweepTempFiles('/data', { now: NOW })).toEqual([]);
+    expect(console.warn).toHaveBeenCalledWith('[json-store] could not remove stale temp file /data/a.json.1.1.tmp:', 'EACCES');
+    expect(console.log).not.toHaveBeenCalled();
   });
 });

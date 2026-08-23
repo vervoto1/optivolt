@@ -10,6 +10,11 @@ let tmpCounter = 0;
 /** Tail of the update chain per resolved path (see `withJsonLock`). */
 const locks = new Map<string, Promise<unknown>>();
 
+/** The temp names `writeJson` produces: `<file>.<pid>.<n>.tmp`. */
+const TEMP_FILE = /\.\d+\.\d+\.tmp$/;
+/** A temp file younger than this may still belong to a write in progress. */
+const TEMP_FILE_MIN_AGE_MS = 5 * 60_000;
+
 export function resolveDataDir(envVar = 'DATA_DIR'): string {
   return path.resolve(process.env[envVar] ?? DEFAULT_DATA_DIR);
 }
@@ -65,4 +70,40 @@ export async function withJsonLock<T>(filePath: string, fn: () => Promise<T>): P
     // grow with every path ever written.
     if (locks.get(key) === settled) locks.delete(key);
   }
+}
+
+/**
+ * Remove temp files that an interrupted `writeJson` left behind.
+ *
+ * The temp name is unique per write, so a hard kill (OOM, power loss)
+ * between `writeFile` and `rename` leaves a new `<file>.<pid>.<n>.tmp`
+ * every time, and nothing else ever touches them: on the add-on's
+ * persistent `/data` volume they would accumulate for the life of the
+ * install. Called once at boot for `DATA_DIR`; only files older than a few
+ * minutes are removed, so a write in progress in this process is never hit.
+ * Returns the paths removed. Never throws — a missing directory or an
+ * unreadable entry is not worth failing startup over.
+ */
+export async function sweepTempFiles(dir: string, { now = Date.now() }: { now?: number } = {}): Promise<string[]> {
+  const removed: string[] = [];
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!TEMP_FILE.test(name)) continue;
+    const filePath = path.join(dir, name);
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile() || now - stat.mtimeMs < TEMP_FILE_MIN_AGE_MS) continue;
+      await fs.unlink(filePath);
+      removed.push(filePath);
+    } catch (err) {
+      console.warn(`[json-store] could not remove stale temp file ${filePath}:`, (err as Error).message);
+    }
+  }
+  if (removed.length > 0) console.log(`[json-store] removed ${removed.length} stale temp file(s) from ${dir}`);
+  return removed;
 }

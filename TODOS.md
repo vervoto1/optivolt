@@ -1,56 +1,6 @@
 # TODOS
 
-Open items are the findings the v0.7.56 review rated *plausible* but did not confirm; everything it confirmed is closed below. New findings go in a new section above the **Completed** line, using the same **What / Why / Context / Effort / Priority / Depends on** shape.
-
-## Predictions / auto-select
-
-### Collapse consecutive failed auto-select records
-
-**What:** When a scheduled run fails on every retry tick, update the latest `failed` record's `at`/`error` instead of appending one per tick.
-
-**Why:** The retry-per-tick is intentional (a transient HA hiccup recovers a minute later), but a persistently broken selector — an expired token fails in under a second — appends up to five `failed` records per night into the 60-slot ring buffer and evicts the last `applied`/`suggested` record in roughly twelve nights, so `?history=1` loses the outcome that matters.
-
-**Context:** `api/services/prediction-auto-select.ts` `runAutoSelect` catch block + `appendAutoSelectRun`. A tick no longer races the timer's own in-flight run (v0.7.56), so only real failures reach this path.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
-## Storage
-
-### Sweep orphaned `*.tmp` files from `DATA_DIR` at boot
-
-**What:** On startup, `readdir` the data directory and unlink `<file>.<pid>.<n>.tmp` entries older than a few minutes.
-
-**Why:** `writeJson` uses a unique temp name per write (so concurrent writers cannot tear each other), which means a hard kill between `writeFile` and `rename` leaves a new orphan every time; nothing sweeps them. Slow but unbounded growth on the persistent `/data` volume, and untracked files in a dev checkout.
-
-**Context:** `api/services/json-store.ts`. Now that every store's writers go through `withJsonLock`, an alternative is a fixed `${file}.tmp` name for locked paths (at most one orphan per target) and unique names only for unlocked writers.
-
-**Effort:** S
-**Priority:** P3
-**Depends on:** None
-
-## Settings / tooling
-
-### Make `normalizeClockTime` clamp consistently
-
-**What:** Decide whether an out-of-range minute (`12:75`) should clamp to `12:59` (current) or the hour should roll like `24:00` → `23:59` does, and apply one rule.
-
-**Why:** The two clamps in `api/services/settings-schema.ts` follow different logic; unreachable from `<input type=time>` but reachable from the API.
-
-**Effort:** XS
-**Priority:** P4
-**Depends on:** None
-
-### Let the solver-refresh gate run the planner's full input pipeline
-
-**What:** `scripts/compare-highs-builds.ts` builds its LP from `buildSolverConfigFromSettings` directly; `getSolverInputs` additionally applies adaptive-learning calibration and prediction adjustments.
-
-**Why:** A production `data.json` + `settings.json` snapshot is therefore compared on a slightly different LP than the one the box solves. Representativeness only — the gate's pass/fail is about solver drift, not plan content.
-
-**Effort:** S
-**Priority:** P4
-**Depends on:** None
+No open items. Everything the v0.7.54, v0.7.55 and v0.7.56 reviews found is closed below; the v0.7.56 review's remaining *plausible-only* findings (collapsing consecutive `failed` selector records, a consistent minute clamp in `normalizeClockTime`, running the solver-refresh gate through the full `getSolverInputs` pipeline) were judged cosmetic and dropped rather than carried. New findings go in a new section above the **Completed** line, using the **What / Why / Context / Effort / Priority / Depends on** shape.
 
 ## Completed
 
@@ -64,6 +14,7 @@ Open items are the findings the v0.7.56 review rated *plausible* but did not con
 - **`settings.json` read-modify-write lock** — generic `withJsonLock` in `json-store.ts`; `updateSettings()` in `settings-store.ts`; `POST /settings`, the EV override, the rebalance auto-disable and both VRM refresh writers go through it (the series refresh patches only `stepSize_m`).
 - **One HA-guard wrapper in `prediction-forecast-runner.ts`** — `runWithHaGuards` holds the connection/sensor asserts, the log line and the single `mapPredictionError` mapping (`connection refused` is a 502 on the validation and chart paths too).
 - **Shared schema validators** — `api/services/schema-validators.ts` replaces the duplicated `expect*`/`assertObject`/`clampInt` helpers in the settings and prediction-config schemas.
+- **Boot-time sweep of orphaned `*.tmp` files** — `sweepTempFiles(DATA_DIR)` in `json-store.ts`, called from `api/index.ts`; removes `<file>.<pid>.<n>.tmp` entries older than five minutes that a hard kill between `writeFile` and `rename` left behind.
 - **Shared MIP solve options** — `lib/solve-options.ts` (`MIP_SOLVE_OPTIONS`, `solveOptionsFor`) used by the planner and the solver-refresh gate; the gate's objective tolerance derives from the same constants.
 - **Single-sensor scoring fetches only the entities it needs** — `entityIdsForSensors()` is same-name-merge- and derived-formula-aware (nested derived sensors included); used by the selector, the live forecast and the fixed predictor's accuracy read.
 
