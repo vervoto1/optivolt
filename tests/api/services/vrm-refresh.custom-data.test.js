@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
-import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
+import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
+import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import * as mqttService from '../../../api/services/mqtt-service.ts';
 
@@ -41,6 +42,7 @@ describe('vrm-refresh logic with custom data', () => {
       dataSources: { prices: 'vrm', load: 'vrm', pv: 'vrm', soc: 'mqtt' }
     });
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
 
     // Default Data
     loadData.mockResolvedValue({

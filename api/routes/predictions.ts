@@ -1,10 +1,12 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError, assertCondition, toHttpError } from '../http-errors.ts';
-import { loadPredictionConfig, savePredictionConfig } from '../services/prediction-config-store.ts';
+import { loadPredictionConfig, updatePredictionConfig } from '../services/prediction-config-store.ts';
+import { normalizePredictionConfigPatch } from '../services/prediction-config-schema.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import { runAutoSelect } from '../services/prediction-auto-select.ts';
-import { loadAutoSelectHistory } from '../services/prediction-auto-select-store.ts';
+import { getLatestAutoSelectRun, loadAutoSelectHistory } from '../services/prediction-auto-select-store.ts';
+import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import type { PredictionAdjustmentInput } from '../services/prediction-adjustments.ts';
 import {
   createStoredPredictionAdjustment,
@@ -16,6 +18,7 @@ import {
   buildPredictionRunConfig,
   executeLoadForecast,
   executePredictionValidation,
+  executeStrategyPredictions,
   executePvForecast,
   persistForecastData,
   runCombinedPredictionForecast,
@@ -40,22 +43,14 @@ router.get('/config', async (_req: Request, res: Response, next: NextFunction) =
 router.post('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     // v8 ignore next — null path of ?? is untestable when req.body always exists
-    const incoming = req.body ?? {};
-    assertCondition(
-      incoming && typeof incoming === 'object' && !Array.isArray(incoming),
-      400,
-      'prediction config payload must be an object',
-    );
-
-    // haUrl/haToken are stored in settings, not prediction config.
-    const { haUrl: _haUrl, haToken: _haToken, ...rest } = incoming;
-    const prev = await loadPredictionConfig();
-    const merged = { ...prev, ...rest };
-    await savePredictionConfig(merged);
+    const patch = normalizePredictionConfigPatch(req.body ?? {});
+    // Merged under the store's update lock so a concurrent auto-select write
+    // cannot revert this save (or vice versa).
+    const merged = await updatePredictionConfig(prev => ({ ...prev, ...patch }));
 
     res.json({ message: 'Prediction config saved.', config: merged });
   } catch (error) {
-    next(toHttpError(error, 500, 'Failed to save prediction config'));
+    next(error instanceof HttpError ? error : toHttpError(error, 500, 'Failed to save prediction config'));
   }
 });
 
@@ -117,15 +112,33 @@ router.post('/validate', async (_req: Request, res: Response, next: NextFunction
   }
 });
 
+/** Per-hour predictions for one strategy (the comparison table's Chart button). */
+router.post('/validate/strategy', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Reuse the config validator: a strategy is exactly a historicalPredictor.
+    const { historicalPredictor } = normalizePredictionConfigPatch({ historicalPredictor: req.body ?? {} });
+    const config = await buildPredictionRunConfig();
+    res.json(await executeStrategyPredictions(config, historicalPredictor as PredictConfig));
+  } catch (error) {
+    next(error instanceof HttpError ? error : toHttpError(error, 500, 'Validation failed'));
+  }
+});
+
 // ----------------------------- Strategy auto-select -----------------------
 
-router.get('/auto-select', async (_req: Request, res: Response, next: NextFunction) => {
+/** Settings + last run; the full ring buffer only with `?history=1` (the card never needs it). */
+router.get('/auto-select', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const [settings, history] = await Promise.all([loadSettings(), loadAutoSelectHistory()]);
+    const withHistory = req.query.history === '1' || req.query.history === 'true';
+    const [settings, lastRun, history] = await Promise.all([
+      loadSettings(),
+      getLatestAutoSelectRun(),
+      withHistory ? loadAutoSelectHistory() : Promise.resolve(null),
+    ]);
     res.json({
       config: settings.predictionAutoSelect ?? null,
-      lastRun: history.length > 0 ? history[history.length - 1] : null,
-      history,
+      lastRun,
+      ...(history ? { history } : {}),
     });
   } catch (error) {
     next(toHttpError(error, 500, 'Failed to read auto-select state'));

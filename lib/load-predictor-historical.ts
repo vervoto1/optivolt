@@ -53,16 +53,72 @@ export function median(values: number[]): number {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+export type PredictTarget = Pick<StatRecord, 'date' | 'time' | 'hour' | 'dayOfWeek'> & { value?: number | null };
+
+/**
+ * Per-sensor lookup tables shared by every strategy scored against the same
+ * targets — see `buildPredictIndex`.
+ */
+export interface PredictIndex {
+  sensor: string;
+  valueByDate: Map<string, StatRecord>;
+  /** For each target date, the ISO keys of the days 1..N before it (N = the longest lookback the index was built for). */
+  pastDatesByTarget: Map<string, string[]>;
+}
+
+/**
+ * ISO key of the record `days` days before `date` at the same wall-clock
+ * hour. setDate() subtracts in local time, which preserves the hour across DST
+ * boundaries — the behaviour the DST tests pin.
+ */
+function isoDaysBefore(date: Date, days: number): string {
+  const past = new Date(date);
+  past.setDate(past.getDate() - days);
+  return past.toISOString();
+}
+
+/**
+ * Precompute what `predict()` would otherwise rebuild on every call: the
+ * sensor's history index and, per target, the chain of past-day keys up to
+ * `maxLookbackWeeks`. The chain is identical for every strategy of a sensor
+ * and each shorter lookback walks a prefix of it, so scoring an 80-strategy
+ * grid with the index does the date arithmetic once instead of 80 times.
+ * Strategies with a longer lookback than the index was built for still work —
+ * `predict()` falls back to computing the missing days itself.
+ */
+export function buildPredictIndex(
+  data: StatRecord[],
+  sensor: string,
+  targets: PredictTarget[],
+  maxLookbackWeeks: number,
+): PredictIndex {
+  const valueByDate = new Map(data.filter(d => d.sensor === sensor).map(d => [d.date, d]));
+  const maxDays = maxLookbackWeeks * 7;
+  const pastDatesByTarget = new Map<string, string[]>();
+  for (const target of targets) {
+    if (pastDatesByTarget.has(target.date)) continue;
+    const targetDate = new Date(target.date);
+    const chain: string[] = new Array(maxDays);
+    for (let d = 1; d <= maxDays; d++) chain[d - 1] = isoDaysBefore(targetDate, d);
+    pastDatesByTarget.set(target.date, chain);
+  }
+  return { sensor, valueByDate, pastDatesByTarget };
+}
+
 /**
  * Compute predictions for specific target points using history data.
+ * Pass a `PredictIndex` (built for the same sensor and targets) when scoring
+ * many strategies; the result is identical either way.
  */
 export function predict(
   data: StatRecord[],
   { sensor, lookbackWeeks, dayFilter, aggregation }: PredictConfig,
-  targets: Array<Pick<StatRecord, 'date' | 'time' | 'hour' | 'dayOfWeek'> & { value?: number | null }> | null = null,
+  targets: PredictTarget[] | null = null,
+  index: PredictIndex | null = null,
 ): PredictionResult[] {
-  const sensorHistory = data.filter(d => d.sensor === sensor);
-  const valueByDate = new Map(sensorHistory.map(d => [d.date, d]));
+  const useIndex = index !== null && index.sensor === sensor;
+  const sensorHistory = useIndex && targets ? [] : data.filter(d => d.sensor === sensor);
+  const valueByDate = useIndex ? index.valueByDate : new Map(sensorHistory.map(d => [d.date, d]));
   const aggregate = aggregation === 'median' ? median : mean;
 
   // Predict for explicit targets if provided, otherwise for all history entries
@@ -72,15 +128,13 @@ export function predict(
   for (const entry of entriesToPredict) {
     const entryDate = new Date(entry.date);
     const entryBucket = getDayBucket(entry.dayOfWeek, dayFilter);
+    const chain = useIndex ? index.pastDatesByTarget.get(entry.date) : undefined;
 
     const historicalValues: number[] = [];
     const maxDays = lookbackWeeks * 7;
 
     for (let d = 1; d <= maxDays; d++) {
-      // setDate() subtracts in local time, preserving the same wall-clock hour across DST boundaries
-      const pastDate = new Date(entryDate);
-      pastDate.setDate(pastDate.getDate() - d);
-      const pastISO = pastDate.toISOString();
+      const pastISO = chain && d <= chain.length ? chain[d - 1] : isoDaysBefore(entryDate, d);
       const pastEntry = valueByDate.get(pastISO);
 
       if (!pastEntry) continue;

@@ -406,7 +406,8 @@ export interface PredictionAutoSelectConfig {
   windowDays: number;
 }
 
-export type AutoSelectAction = 'kept' | 'suggested' | 'applied' | 'skipped';
+/** `failed` = the run threw (HA unreachable, scoring error); `error` carries the message. */
+export type AutoSelectAction = 'kept' | 'suggested' | 'applied' | 'skipped' | 'failed';
 export type AutoSelectTrigger = 'scheduled' | 'catch-up' | 'manual';
 
 /** One persisted auto-select run (ring-buffered in DATA_DIR/prediction-auto-select.json). */
@@ -424,6 +425,8 @@ export interface AutoSelectRun {
   reason: SelectionReason | null;
   action: AutoSelectAction;
   skipReason?: string;
+  /** Set when `action` is `failed`. */
+  error?: string;
   /** Top eligible scores, ascending by metric (capped for file size). */
   ranking: StrategyScore[];
 }

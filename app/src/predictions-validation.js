@@ -1,6 +1,8 @@
 /* global Chart */
-import { runValidation, savePredictionConfig } from './api/api.js';
+import { fetchStrategyPredictions, runValidation, savePredictionConfig } from './api/api.js';
 import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from './chart-tooltip.js';
+import { isSameStrategy } from './predictions/strategy.js';
+import { areRunButtonsDisabled, setRunButtonsDisabled } from './predictions/run-buttons.js';
 
 /** Rows shown per sensor before the "show all" toggle (the grid has 80 strategies per sensor). */
 const TOP_ROWS = 20;
@@ -12,6 +14,14 @@ let _activeSensor = null;
 let accuracyChart = null;
 let diffChart = null;
 let showAllRows = false;
+/**
+ * Per-hour predictions already fetched for the current comparison, keyed by
+ * strategy. Re-opening a chart is free, and the map is dropped with the
+ * results it belongs to (a new run scores a new window).
+ */
+let chartCache = new Map();
+/** Bumped per Chart click; a response for an older click is dropped. */
+let chartRequestSeq = 0;
 
 export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights }) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
@@ -37,11 +47,7 @@ export function rerenderTable(deps) {
 // row when the sensor matches too — otherwise the same 8w/all/median row gets
 // badged "active"/"best" on every sensor's tab.
 function sameStrategy(row, strategy) {
-  return !!strategy
-    && row.sensor === strategy.sensor
-    && row.lookbackWeeks === strategy.lookbackWeeks
-    && row.dayFilter === strategy.dayFilter
-    && row.aggregation === strategy.aggregation;
+  return isSameStrategy(row, strategy) && row.sensor === strategy.sensor;
 }
 
 function badge(label, tone) {
@@ -53,12 +59,9 @@ async function onRunValidation(deps) {
   const runBtn = document.getElementById('pred-run-validation');
   // v8 ignore next — null path of ternary (runBtn always present in jsdom) is untestable
   const originalText = runBtn ? runBtn.textContent : '';
+  setRunButtonsDisabled(true);
   /* v8 ignore next — runBtn always exists in production DOM; null branch is defensive */
-  if (runBtn) {
-    runBtn.disabled = true;
-    runBtn.textContent = 'Running...';
-    runBtn.classList.add('opacity-50', 'cursor-not-allowed');
-  }
+  if (runBtn) runBtn.textContent = 'Running...';
 
   try {
     const resultsEl = document.getElementById('pred-results');
@@ -81,6 +84,7 @@ async function onRunValidation(deps) {
     try {
       const result = await runValidation();
       validationResults = result;
+      chartCache = new Map();
       renderResults(result, deps);
       setComparisonStatus(`Validation complete — ${result.results.length} combinations evaluated`);
     } catch (err) {
@@ -88,11 +92,8 @@ async function onRunValidation(deps) {
     }
   } finally {
     /* v8 ignore start — empty finally block is a v8 counting artifact */
-    if (runBtn) {
-      runBtn.disabled = false;
-      runBtn.textContent = originalText;
-      runBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    }
+    if (runBtn) runBtn.textContent = originalText;
+    setRunButtonsDisabled(false);
   }
 }
 
@@ -192,15 +193,19 @@ function renderMetricsTable(results, sensorName, deps) {
     `;
 
     tr.querySelector('.btn-use').addEventListener('click', () => onUseConfig(row, deps));
-    tr.querySelector('.btn-chart').addEventListener('click', () => onShowChart(row));
+    tr.querySelector('.btn-chart').addEventListener('click', () => onShowChart(row, deps));
 
     tbody.appendChild(tr);
   });
+  // A re-render during a run (the Use button, a finished selection) must not
+  // hand out enabled Chart buttons while the others are locked.
+  if (areRunButtonsDisabled()) setRunButtonsDisabled(true);
 
   const showAllBtn = document.getElementById('pred-show-all');
   if (showAllBtn) {
     showAllBtn.hidden = rows.length <= TOP_ROWS;
     showAllBtn.textContent = showAllRows ? `Show top ${TOP_ROWS}` : `Show all ${rows.length} strategies`;
+    showAllBtn.setAttribute('aria-expanded', String(showAllRows));
   }
 }
 
@@ -226,15 +231,58 @@ async function onUseConfig(row, deps) {
   }
 }
 
-function onShowChart(row) {
+function chartKey(row) {
+  return `${row.sensor}|${row.lookbackWeeks}|${row.dayFilter}|${row.aggregation}`;
+}
+
+/**
+ * The validation response carries metrics only; the per-hour series behind a
+ * chart is fetched for the one strategy being opened (80 strategies × every
+ * window hour per sensor was ~15 MB per comparison run, 79 of them unused).
+ *
+ * A fetch is a multi-week HA history read on the server, so the run buttons
+ * lock while one is in flight, a strategy is fetched once per comparison, and
+ * only the most recent click gets to draw — two overlapping fetches used to
+ * render whichever response landed last, not the row last clicked.
+ */
+async function onShowChart(row, deps) {
+  const canvas = document.getElementById('pred-accuracy-chart');
+  if (!canvas) return;
+
+  const key = chartKey(row);
+  let preds = chartCache.get(key);
+  if (!preds) {
+    const seq = ++chartRequestSeq;
+    setRunButtonsDisabled(true);
+    try {
+      deps.setComparisonStatus?.('Loading chart…');
+      ({ validationPredictions: preds = [] } = await fetchStrategyPredictions({
+        sensor: row.sensor,
+        lookbackWeeks: row.lookbackWeeks,
+        dayFilter: row.dayFilter,
+        aggregation: row.aggregation,
+      }));
+      if (seq !== chartRequestSeq) return;
+      chartCache.set(key, preds);
+      deps.setComparisonStatus?.('');
+    } catch (err) {
+      if (seq !== chartRequestSeq) return;
+      deps.setComparisonStatus?.(`Chart failed: ${err.message}`, true);
+      return;
+    } finally {
+      if (seq === chartRequestSeq) setRunButtonsDisabled(false);
+    }
+  }
+
+  renderAccuracyCharts(row, preds);
+}
+
+function renderAccuracyCharts(row, preds) {
   const chartSection = document.getElementById('pred-chart-section');
   if (chartSection) chartSection.hidden = false;
 
   const canvas = document.getElementById('pred-accuracy-chart');
   const diffCanvas = document.getElementById('pred-accuracy-diff-chart');
-  if (!canvas) return;
-
-  const preds = row.validationPredictions ?? [];
   const labels = preds.map(p => {
     const d = new Date(p.date);
     return `${d.toISOString().slice(5, 10)} ${String(p.hour).padStart(2, '0')}h`;

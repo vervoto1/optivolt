@@ -20,14 +20,16 @@ import {
 } from '../../app/src/predictions/auto-select.js';
 
 function setupDom({ full = true } = {}) {
+  // Like the real markup, the inputs carry no values: the card populates them.
   document.body.innerHTML = full ? `
     <input id="autosel-enabled" type="checkbox">
     <select id="autosel-mode"><option value="suggest">suggest</option><option value="auto">auto</option></select>
-    <input id="autosel-time" value="03:30">
+    <input id="autosel-time">
     <select id="autosel-metric"><option value="mae">mae</option><option value="rmse">rmse</option></select>
-    <input id="autosel-min-improvement" value="10">
-    <input id="autosel-window-days" value="28">
+    <input id="autosel-min-improvement">
+    <input id="autosel-window-days">
     <button id="autosel-run">Run Selection</button>
+    <button id="pred-run-validation">Run Comparison</button>
     <span id="autosel-last-run"></span>
     <span id="autosel-outcome"></span>
     <span id="autosel-current"></span><span id="autosel-current-metric"></span>
@@ -113,15 +115,21 @@ describe('auto-select.js', () => {
       expect(getLastAutoSelectRun()).toBeNull();
     });
 
-    it('falls back to defaults when settings lack the block, and warns on load failure', async () => {
+    it('falls back to defaults when settings lack the block, and still populates them when the load fails', async () => {
       fetchStoredSettings.mockResolvedValue(undefined);
       await initAutoSelect();
       expect(document.getElementById('autosel-enabled').checked).toBe(false);
       expect(document.getElementById('autosel-window-days').value).toBe('28');
 
+      setupDom();
       fetchStoredSettings.mockRejectedValue(new Error('offline'));
       await initAutoSelect();
       expect(warn).toHaveBeenCalledWith('Failed to load auto-select settings:', 'offline');
+      // The markup carries no value= attributes any more, so the defaults must land here.
+      expect(document.getElementById('autosel-time').value).toBe('03:30');
+      expect(document.getElementById('autosel-min-improvement').value).toBe('10');
+      expect(document.getElementById('autosel-window-days').value).toBe('28');
+      expect(document.getElementById('autosel-mode').value).toBe('suggest');
     });
 
     it('survives a missing DOM', async () => {
@@ -162,15 +170,29 @@ describe('auto-select.js', () => {
       expect(text('autosel-current')).toBe('8w / all / median');
       expect(text('autosel-current-metric')).toBe('MAE 483 Wh');
       expect(text('autosel-best')).toBe('8w / all / median');
-      expect(text('autosel-delta')).toBe('0 %');
+      expect(text('autosel-delta')).toBe('0.0 %');
       expect(document.getElementById('autosel-apply-row').hidden).toBe(true);
+    });
+
+    it('renders a failed run with its error', async () => {
+      fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'failed', error: 'HA WebSocket timed out after 120000ms', incumbent: null, best: null, reason: null, improvement_percent: null }) });
+      await initAutoSelect();
+      expect(text('autosel-outcome')).toBe('Failed: HA WebSocket timed out after 120000ms');
+      expect(document.getElementById('autosel-outcome').className).toContain('red');
+      expect(text('autosel-last-run')).toBe('9 h ago · scheduled');
+      expect(document.getElementById('autosel-apply-row').hidden).toBe(true);
+
+      fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'failed', incumbent: null, best: null, reason: null, improvement_percent: null }) });
+      await refreshAutoSelectStatus();
+      expect(text('autosel-outcome')).toBe('Failed: unknown error');
     });
 
     it('renders below-threshold with the margin (default when the record lacks it)', async () => {
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ reason: 'below-threshold', best: BEST, improvement_percent: 5.38, minImprovement_percent: 8 }) });
       await initAutoSelect();
       expect(text('autosel-outcome')).toBe('Kept — best is only 5.4 % better (min 8 %)');
-      expect(text('autosel-delta')).toBe('−5.4 %');
+      // Gain is the error reduction, so it reads as a positive number under that label.
+      expect(text('autosel-delta')).toBe('5.4 %');
       expect(text('autosel-best-metric')).toBe('MAE 386 Wh');
 
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ reason: 'below-threshold', best: BEST, improvement_percent: null, minImprovement_percent: undefined }) });
@@ -197,7 +219,8 @@ describe('auto-select.js', () => {
 
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'applied', best: BEST, improvement_percent: 20.08, reason: 'switch', metric: 'rmse' }) });
       await refreshAutoSelectStatus();
-      expect(text('autosel-outcome')).toBe('Switched to best (−20.1 %)');
+      expect(text('autosel-outcome')).toBe('Switched to best (20.1 % lower RMSE)');
+      expect(text('autosel-delta')).toBe('20.1 %');
       expect(text('autosel-best-metric')).toBe('RMSE 600 Wh');
 
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'applied', best: BEST, improvement_percent: null, reason: 'incumbent-unscored', incumbent: null, metric: undefined }) });
@@ -216,7 +239,7 @@ describe('auto-select.js', () => {
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'suggested', best: BEST, improvement_percent: 20.08, reason: 'switch' }) });
       await initAutoSelect({ applyStrategy, getCurrentStrategy });
 
-      expect(text('autosel-outcome')).toBe('Suggested: switch to best (−20.1 %)');
+      expect(text('autosel-outcome')).toBe('Suggested: switch to best (20.1 % lower MAE)');
       expect(document.getElementById('autosel-outcome').className).toContain('sky');
       expect(document.getElementById('autosel-apply-row').hidden).toBe(false);
 
@@ -226,6 +249,30 @@ describe('auto-select.js', () => {
       expect(applyStrategy).toHaveBeenCalledWith(BEST);
       expect(text('autosel-outcome')).toBe('Suggestion applied');
       expect(document.getElementById('autosel-apply-row').hidden).toBe(true);
+    });
+
+    it('locks the Apply button while the save is in flight and notifies onApplied afterwards', async () => {
+      let release;
+      const applyStrategy = vi.fn(() => new Promise(resolve => { release = resolve; }));
+      const onApplied = vi.fn();
+      fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'suggested', best: BEST, improvement_percent: 20.08, reason: 'switch' }) });
+      await initAutoSelect({ applyStrategy, getCurrentStrategy: () => INC, onApplied });
+
+      const btn = document.getElementById('autosel-apply');
+      btn.click();
+      btn.click(); // a double-click must not post the save twice
+      await vi.advanceTimersByTimeAsync(0);
+      expect(btn.disabled).toBe(true);
+      expect(btn.textContent).toBe('Applying…');
+      expect(btn.classList.contains('opacity-50')).toBe(true);
+      expect(applyStrategy).toHaveBeenCalledTimes(1);
+      expect(onApplied).not.toHaveBeenCalled();
+
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(btn.disabled).toBe(false);
+      expect(btn.textContent).toBe('Apply suggestion');
+      expect(onApplied).toHaveBeenCalledOnce();
     });
 
     it('explains an unscored incumbent suggestion and reports apply failures', async () => {
@@ -245,7 +292,7 @@ describe('auto-select.js', () => {
       await initAutoSelect();
       document.getElementById('autosel-apply').click();
       await vi.advanceTimersByTimeAsync(0);
-      expect(text('autosel-outcome')).toBe('Suggested: switch to best (−20.0 %)');
+      expect(text('autosel-outcome')).toBe('Suggested: switch to best (20.0 % lower MAE)');
 
       fetchAutoSelect.mockResolvedValue({ lastRun: run({ action: 'suggested', best: null, improvement_percent: null, reason: 'no-eligible' }) });
       await initAutoSelect({ applyStrategy: vi.fn() });
@@ -254,14 +301,27 @@ describe('auto-select.js', () => {
       expect(text('autosel-outcome')).toBe('Suggested: current strategy could not be scored');
     });
 
-    it('treats a failed or empty status fetch as "no run"', async () => {
-      fetchAutoSelect.mockRejectedValue(new Error('500'));
+    it('shows a failed status fetch as unavailable, distinct from "no run yet"', async () => {
+      fetchAutoSelect.mockResolvedValue({ lastRun: run() });
       await initAutoSelect();
-      expect(warn).toHaveBeenCalledWith('Failed to load auto-select status:', '500');
-      expect(text('autosel-outcome')).toBe('No run yet');
+      expect(text('autosel-current')).toBe('8w / all / median');
 
-      fetchAutoSelect.mockResolvedValue(undefined);
+      fetchAutoSelect.mockRejectedValue(new Error('500'));
       await refreshAutoSelectStatus();
+      expect(warn).toHaveBeenCalledWith('Failed to load auto-select status:', '500');
+      expect(text('autosel-outcome')).toBe('Status unavailable: 500');
+      expect(document.getElementById('autosel-outcome').className).toContain('red');
+      expect(text('autosel-last-run')).toBe('Unknown');
+      // Stale cells from the previous render are cleared, not left standing.
+      expect(text('autosel-current')).toBe('--');
+      expect(document.getElementById('autosel-apply-row').hidden).toBe(true);
+      expect(getLastAutoSelectRun()).toBeNull();
+    });
+
+    it('treats an empty status response as "no run"', async () => {
+      fetchAutoSelect.mockResolvedValue(undefined);
+      await initAutoSelect();
+      expect(text('autosel-outcome')).toBe('No run yet');
       expect(getLastAutoSelectRun()).toBeNull();
     });
   });
@@ -274,11 +334,15 @@ describe('auto-select.js', () => {
       runAutoSelect.mockReturnValue(new Promise(resolve => { release = resolve; }));
 
       const btn = document.getElementById('autosel-run');
+      const comparisonBtn = document.getElementById('pred-run-validation');
       btn.click();
       await vi.advanceTimersByTimeAsync(0);
       expect(btn.disabled).toBe(true);
       expect(btn.textContent).toBe('Running…');
       expect(btn.classList.contains('opacity-50')).toBe(true);
+      // Both run buttons start a long backtest on the server: one locks the other.
+      expect(comparisonBtn.disabled).toBe(true);
+      expect(comparisonBtn.classList.contains('opacity-50')).toBe(true);
 
       const result = run({ action: 'suggested', best: BEST, improvement_percent: 20, reason: 'switch', trigger: 'manual', at: NOW.toISOString() });
       release(result);
@@ -286,6 +350,7 @@ describe('auto-select.js', () => {
       expect(runAutoSelect).toHaveBeenCalledWith(true);
       expect(btn.disabled).toBe(false);
       expect(btn.textContent).toBe('Run Selection');
+      expect(comparisonBtn.disabled).toBe(false);
       expect(text('autosel-last-run')).toBe('just now · manual');
       expect(onRunComplete).toHaveBeenCalledWith(result);
       expect(getLastAutoSelectRun()).toBe(result);

@@ -6,18 +6,17 @@
 
 import { fetchHaStats } from './ha-client.ts';
 import { postprocess, getSensorNames } from '../../lib/ha-postprocess.ts';
-import type { StatRecord } from '../../lib/ha-postprocess.ts';
+import type { HaDerivedSensor, HaSensor, StatRecord } from '../../lib/ha-postprocess.ts';
 import {
   predict,
   validate,
+  buildPredictIndex,
   generateAllConfigs,
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
-import type { DayFilter, Aggregation, PredictConfig } from '../../lib/load-predictor-historical.ts';
+import type { DayFilter, Aggregation, PredictConfig, PredictIndex, PredictTarget } from '../../lib/load-predictor-historical.ts';
 import type { PredictionRunConfig } from '../types.ts';
 import { getForecastTimeRange, buildForecastSeries, computeErrorMetrics, type ForecastSeries, type PredictionResult } from '../../lib/time-series-utils.ts';
-
-type PredictTarget = Pick<StatRecord, 'date' | 'time' | 'hour' | 'dayOfWeek'> & { value?: number | null };
 
 export interface ValidationEntry {
   sensor: string;
@@ -27,7 +26,9 @@ export interface ValidationEntry {
   mae: number;
   rmse: number;
   mape: number;
+  /** Window hours scored — the same for every strategy of a sensor that takes part in the common-hour intersection (see scoreOnData). */
   n: number;
+  /** Window hours this strategy could not predict at all (its own gaps, before the common-hour intersection). */
   nSkipped: number;
   validationPredictions: PredictionResult[];
 }
@@ -54,6 +55,13 @@ export interface ValidationWindow {
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * WebSocket timeout for the bulk backtest fetches. The 30 s client default was
+ * sized for the live forecast's few-week query; a 27–30-week grid fetch is a
+ * 4–5 MB recorder query running on the same host as OptiVolt.
+ */
+export const BACKTEST_FETCH_TIMEOUT_MS = 120_000;
+
+/**
  * Weeks of HA history needed to backtest strategies with the given lookbacks
  * over `validationWindow`: the longest lookback plus the window itself.
  */
@@ -63,46 +71,151 @@ export function fetchHorizonWeeks(lookbackWeeks: readonly number[], validationWi
   return maxLookback + Math.max(1, Math.ceil(windowMs / WEEK_MS));
 }
 
-async function fetchHistory(config: PredictionRunConfig, weeks: number): Promise<StatRecord[]> {
+/** The name `postprocess` files a sensor's readings under. */
+function sensorNameOf(sensor: HaSensor): string {
+  return sensor.name ?? sensor.id;
+}
+
+/**
+ * HA entity ids needed to build the named series: every configured sensor
+ * that maps onto the name (several entities can share one — DSMR tariff 1+2
+ * are summed into one "Grid Import") and, for a derived sensor, the ids
+ * behind each formula term, followed through nested derived sensors. A name
+ * nothing maps onto falls back to every configured entity, which yields the
+ * same "no data" result as today for a stale name. `postprocess` silently
+ * treats a missing formula reference as 0, so narrowing has to be exact: a
+ * derived series built from a partial fetch would be wrong, not empty.
+ */
+export function entityIdsForSensors(sensors: HaSensor[], derived: HaDerivedSensor[], names: readonly string[]): string[] {
+  const wanted = new Set<string>();
+  const visit = (name: string) => {
+    if (wanted.has(name)) return;
+    wanted.add(name);
+    const formula = derived.find(d => d.name === name)?.formula ?? [];
+    for (const term of formula) visit(term.slice(1));
+  };
+  names.forEach(visit);
+  const ids = sensors.filter(s => wanted.has(sensorNameOf(s))).map(s => s.id);
+  return ids.length > 0 ? ids : sensors.map(s => s.id);
+}
+
+/**
+ * Fetch `weeks` of history for the given entities (every configured sensor
+ * when `entityIds` is omitted) and postprocess it with the full sensor and
+ * derived config.
+ */
+async function fetchHistory(config: PredictionRunConfig, weeks: number, entityIds?: string[]): Promise<StatRecord[]> {
   const { haUrl, haToken, sensors, derived } = config;
   const startTime = new Date(Date.now() - weeks * WEEK_MS).toISOString();
   const rawData = await fetchHaStats({
     haUrl,
     haToken,
-    entityIds: sensors.map(s => s.id),
+    entityIds: entityIds ?? sensors.map(s => s.id),
     startTime,
+    timeoutMs: BACKTEST_FETCH_TIMEOUT_MS,
   });
   return postprocess(rawData, sensors, derived);
 }
 
 /**
+ * The history behind the last comparison run, kept so the table's Chart
+ * button can be served from it (see `scoreStrategyPredictions`). One entry:
+ * the UI holds one comparison at a time, and the records are a few hundred
+ * kilobytes. There is deliberately no TTL — the chart must agree with the
+ * table it was opened from, and the table is whatever the last run produced,
+ * however long ago; a new run replaces the entry.
+ */
+interface ValidationHistory {
+  /** Sensor/derived config + fetch horizon the history was built for. */
+  key: string;
+  weeks: number;
+  data: StatRecord[];
+  validationWindow: ValidationWindow;
+}
+
+let lastValidationHistory: ValidationHistory | null = null;
+
+function historyKey(config: PredictionRunConfig): string {
+  return JSON.stringify({ sensors: config.sensors, derived: config.derived });
+}
+
+/** Test hook: forget the history cached by the last `runValidation`. */
+export function clearValidationHistory(): void {
+  lastValidationHistory = null;
+}
+
+export interface ScoreOptions {
+  /** Return each strategy's per-hour predictions (the chart data) — off by default, they are large. */
+  includePredictions?: boolean;
+  /**
+   * Window hours a strategy must be able to predict on its own to take part
+   * in the common-hour intersection. Strategies below it are scored on their
+   * own hours instead, so their `n` stays below the floor and the selector
+   * drops them — without dragging every other strategy's `n` down with them.
+   * Defaults to 0 (every strategy takes part — the comparison table).
+   */
+  minCoverage?: number;
+}
+
+/**
  * Score strategies against already-fetched history. Only the entries inside
- * the validation window are predicted (passed as `targets`): predicting the
- * whole history is the dominant cost of a validation run and grows with the
- * lookback grid, while everything outside the window is discarded anyway.
+ * the validation window are predicted (passed as `predict()` targets):
+ * predicting the whole history is the dominant cost of a validation run and
+ * grows with the lookback grid, while everything outside the window is
+ * discarded anyway. The per-sensor history index and past-day chains are
+ * built once and shared by every strategy of that sensor.
+ *
+ * Every strategy of a sensor is scored on the same hours — the intersection
+ * of the window hours each of them could predict. Without that, a strategy
+ * that skipped 20 % of the window (a recorder gap exactly one of its lookback
+ * periods before the window) would be ranked head-to-head against one that
+ * scored every hour, on means computed over different hour sets. `nSkipped`
+ * still reports each strategy's own gaps so a shrunken `n` can be traced.
+ *
+ * The intersection is taken among the strategies that clear `minCoverage`
+ * on their own. Otherwise the most gap-sensitive strategy in the grid —
+ * `1w/same`, whose only source for a target hour is the same hour a week
+ * earlier — turns one recorder gap into every strategy of the sensor
+ * reporting the same shrunken `n`, and when that lands under the selector's
+ * floor the whole grid is "no-eligible" for as long as the gap sits inside
+ * the lookback.
  */
 function scoreOnData(
   data: StatRecord[],
   strategies: PredictConfig[],
   validationWindow: ValidationWindow,
-  includePredictions: boolean,
+  { includePredictions = false, minCoverage = 0 }: ScoreOptions = {},
 ): ValidationEntry[] {
   const windowStart = new Date(validationWindow.start).getTime();
   const windowEnd = new Date(validationWindow.end).getTime();
-  const targetsBySensor = new Map<string, StatRecord[]>();
+  const maxLookback = strategies.reduce((max, s) => Math.max(max, s.lookbackWeeks), 0);
+  const bySensor = new Map<string, { targets: PredictTarget[]; index: PredictIndex }>();
 
-  const results: ValidationEntry[] = [];
-  for (const cfg of strategies) {
-    let targets = targetsBySensor.get(cfg.sensor);
-    if (!targets) {
-      targets = data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd);
-      targetsBySensor.set(cfg.sensor, targets);
+  const predicted = strategies.map(cfg => {
+    let entry = bySensor.get(cfg.sensor);
+    if (!entry) {
+      const targets = data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd);
+      entry = { targets, index: buildPredictIndex(data, cfg.sensor, targets, maxLookback) };
+      bySensor.set(cfg.sensor, entry);
     }
+    const predictions = predict(data, cfg, entry.targets, entry.index);
+    const own = new Set(predictions.filter(p => p.predicted !== null).map(p => p.time));
+    return { cfg, predictions, own, covered: own.size >= minCoverage };
+  });
 
-    const predictions = predict(data, cfg, targets);
-    const metrics = validate(predictions, validationWindow);
+  // Hours every covering strategy of the sensor could predict.
+  const commonHoursBySensor = new Map<string, Set<number>>();
+  for (const { cfg, own, covered } of predicted) {
+    if (!covered) continue;
+    const common = commonHoursBySensor.get(cfg.sensor);
+    commonHoursBySensor.set(cfg.sensor, common ? new Set([...common].filter(t => own.has(t))) : own);
+  }
 
-    results.push({
+  return predicted.map(({ cfg, predictions, own, covered }) => {
+    const hours = covered ? commonHoursBySensor.get(cfg.sensor)! : own;
+    const metrics = validate(predictions.filter(p => hours.has(p.time)), validationWindow);
+
+    return {
       sensor: cfg.sensor,
       lookbackWeeks: cfg.lookbackWeeks,
       dayFilter: cfg.dayFilter,
@@ -111,12 +224,10 @@ function scoreOnData(
       rmse: metrics.rmse,
       mape: metrics.mape,
       n: metrics.n,
-      nSkipped: metrics.nSkipped,
+      nSkipped: predictions.filter(p => p.predicted === null).length,
       validationPredictions: includePredictions ? predictions : [],
-    });
-  }
-
-  return results;
+    };
+  });
 }
 
 /**
@@ -128,23 +239,65 @@ export async function scoreStrategies(
   config: PredictionRunConfig,
   strategies: PredictConfig[],
   validationWindow: ValidationWindow,
-  { includePredictions = false }: { includePredictions?: boolean } = {},
+  options: ScoreOptions = {},
 ): Promise<ValidationEntry[]> {
   const weeks = fetchHorizonWeeks(strategies.map(s => s.lookbackWeeks), validationWindow);
-  const data = await fetchHistory(config, weeks);
-  return scoreOnData(data, strategies, validationWindow, includePredictions);
+  // Only the entities behind the scored sensors — the selector scores one
+  // sensor, and a 27–30-week query for every configured entity is the
+  // dominant cost of a run.
+  const entityIds = entityIdsForSensors(config.sensors, config.derived, [...new Set(strategies.map(s => s.sensor))]);
+  const data = await fetchHistory(config, weeks, entityIds);
+  return scoreOnData(data, strategies, validationWindow, options);
 }
 
 /**
- * Run full validation across all config combinations.
+ * Run full validation across all config combinations. Returns metrics only:
+ * the per-hour predictions of a single strategy are fetched on demand with
+ * `scoreStrategyPredictions` (the UI opens one chart at a time, and shipping
+ * 80 strategies × every window hour per sensor was ~15 MB uncompressed).
  */
 export async function runValidation(config: PredictionRunConfig): Promise<ValidationRunResult> {
   // validationWindow is always set by loadPredictionConfig()
   const validationWindow = config.validationWindow!;
-  const data = await fetchHistory(config, fetchHorizonWeeks(DEFAULT_LOOKBACK_WEEKS, validationWindow));
+  const weeks = fetchHorizonWeeks(DEFAULT_LOOKBACK_WEEKS, validationWindow);
+  const data = await fetchHistory(config, weeks);
+  lastValidationHistory = { key: historyKey(config), weeks, data, validationWindow };
   const sensorNames = getSensorNames(data);
-  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow, true);
+  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow);
   return { sensorNames, results };
+}
+
+/**
+ * Per-hour actual vs predicted for one strategy over the comparison window
+ * (the data behind the comparison table's Chart button). Scored alone, so its
+ * metrics are not on the table's common-hour basis — only the predictions are
+ * returned.
+ *
+ * Served from the history of the last comparison run whenever that run used
+ * the same sensor config and fetched far enough back: the chart is then
+ * computed on exactly the data and window behind the row it was opened from
+ * (a fresh fetch after a UTC-midnight rollover would plot a different window
+ * than the row's metrics), and a click does not cost another multi-week
+ * recorder query on the host that is also driving MQTT. Anything else — no
+ * run yet in this process, a sensor edit since, a lookback past the grid —
+ * falls back to a fetch for the config's own window.
+ */
+export async function scoreStrategyPredictions(
+  config: PredictionRunConfig,
+  strategy: PredictConfig,
+): Promise<{ strategy: PredictConfig; validationPredictions: PredictionResult[] }> {
+  const cached = lastValidationHistory;
+  if (
+    cached &&
+    cached.key === historyKey(config) &&
+    fetchHorizonWeeks([strategy.lookbackWeeks], cached.validationWindow) <= cached.weeks
+  ) {
+    const [entry] = scoreOnData(cached.data, [strategy], cached.validationWindow, { includePredictions: true });
+    return { strategy, validationPredictions: entry.validationPredictions };
+  }
+  const validationWindow = config.validationWindow!;
+  const [entry] = await scoreStrategies(config, [strategy], validationWindow, { includePredictions: true });
+  return { strategy, validationPredictions: entry.validationPredictions };
 }
 
 /**
@@ -174,8 +327,7 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
     }
 
     const past7d = nowMs - 7 * 24 * 60 * 60 * 1000;
-    const matchingSensor = sensors.find(s => (s.name || s.id) === historicalPredictor!.sensor);
-    const entityIds = matchingSensor ? [matchingSensor.id] : sensors.map(s => s.id);
+    const entityIds = entityIdsForSensors(sensors, derived, [historicalPredictor!.sensor]);
     const rawData = await fetchHaStats({ haUrl, haToken, entityIds, startTime: new Date(past7d).toISOString() });
     const data = postprocess(rawData, sensors, derived);
 
@@ -194,7 +346,9 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
     return { forecast, recent, metrics };
   }
 
-  const entityIds = sensors.map(s => s.id);
+  // Every cycle refetches lookbackWeeks + 1 weeks; only the entities behind
+  // the predicted sensor are needed (merge- and derived-aware).
+  const entityIds = entityIdsForSensors(sensors, derived, [historicalPredictor!.sensor]);
 
   const extraWeeks = config.includeRecent !== false ? 1 : 0;
   const totalWeeks = historicalPredictor!.lookbackWeeks + extraWeeks;

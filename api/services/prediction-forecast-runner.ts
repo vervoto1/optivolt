@@ -1,7 +1,9 @@
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import type { PredictionAdjustmentSeries, PredictionRunConfig, TimeSeries } from '../types.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
-import { runValidation, runForecast as runLoadForecast } from './load-prediction-service.ts';
+import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from './load-prediction-service.ts';
+import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
+import { formatStrategy } from '../../lib/strategy-selector.ts';
 import type { ForecastRunResult } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import type { PvForecastRunResult } from './pv-prediction-service.ts';
@@ -15,21 +17,44 @@ export async function buildPredictionRunConfig(): Promise<PredictionRunConfig> {
   return { ...config, haUrl: settings.haUrl, haToken: settings.haToken };
 }
 
-export async function executePredictionValidation(config: PredictionRunConfig) {
+/**
+ * The guards every HA-backed prediction call shares: an HA connection and at
+ * least one sensor (400), a log line, and one error mapping — HA connection
+ * failures become a 502 so the UI can tell "HA is down" from a bug. The
+ * mapping lives in `mapPredictionError` only; the validation and chart paths
+ * used to carry their own copies that had already drifted from it.
+ */
+async function runWithHaGuards<T>(
+  config: PredictionRunConfig,
+  type: string,
+  meta: Record<string, unknown>,
+  fn: () => Promise<T>,
+  { isPv = false }: { isPv?: boolean } = {},
+): Promise<T> {
   assertHaConnection(config);
   assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
 
-  logPredictionCall('validate', { sensors: config.sensors.length });
+  logPredictionCall(type, meta);
 
   try {
-    return await runValidation(config);
+    return await fn();
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('auth') || msg.includes('WebSocket') || msg.includes('timed out')) {
-      throw toHttpError(err, 502, `HA connection error: ${msg}`);
-    }
-    throw err;
+    throw mapPredictionError(err, isPv);
   }
+}
+
+export function executePredictionValidation(config: PredictionRunConfig) {
+  return runWithHaGuards(config, 'validate', { sensors: config.sensors.length }, () => runValidation(config));
+}
+
+/** Per-hour predictions for one strategy (the comparison table's Chart button); same guards and HA error mapping as validation. */
+export function executeStrategyPredictions(config: PredictionRunConfig, strategy: PredictConfig) {
+  return runWithHaGuards(
+    config,
+    'validate/strategy',
+    { strategy: `${strategy.sensor}/${formatStrategy(strategy)}` },
+    () => scoreStrategyPredictions(config, strategy),
+  );
 }
 
 export async function runCombinedPredictionForecast(config: PredictionRunConfig, endpoint: string) {
@@ -83,16 +108,7 @@ export async function executePvForecast(config: PredictionRunConfig, logLabel: s
     return null;
   }
 
-  assertHaConnection(config);
-  assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
-
-  logPredictionCall(logLabel + ' (pv)', { pvConfig: config.pvConfig });
-
-  try {
-    return await runPvForecast(config);
-  } catch (err) {
-    throw mapPredictionError(err, true);
-  }
+  return runWithHaGuards(config, logLabel + ' (pv)', { pvConfig: config.pvConfig }, () => runPvForecast(config), { isPv: true });
 }
 
 export async function persistForecastData(updates: { load?: TimeSeries; pv?: TimeSeries }) {

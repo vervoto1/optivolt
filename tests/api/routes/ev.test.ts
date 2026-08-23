@@ -10,10 +10,17 @@ import { get, post } from '../helpers/express-test-client.js';
 // Mocks — only the deps the /override handlers touch need real behaviour; the
 // rest are stubbed so importing the router stays side-effect free.
 // ---------------------------------------------------------------------------
-vi.mock('../../../api/services/settings-store.ts', () => ({
-  loadSettings: vi.fn(),
-  saveSettings: vi.fn(),
-}));
+vi.mock('../../../api/services/settings-store.ts', () => {
+  const loadSettings = vi.fn();
+  const saveSettings = vi.fn();
+  // Same contract as the real locked update: load → mutate → save unless null.
+  const updateSettings = vi.fn(async (mutate: (s: unknown) => unknown) => {
+    const next = mutate(await loadSettings());
+    if (next) await saveSettings(next);
+    return next;
+  });
+  return { loadSettings, saveSettings, updateSettings };
+});
 vi.mock('../../../api/services/ev-actuator-service.ts', () => ({
   getLastActuation: vi.fn(() => ({})),
   runActuatorTick: vi.fn(async () => ({})),

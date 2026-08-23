@@ -5,6 +5,7 @@ import {
   median,
   predict,
   validate,
+  buildPredictIndex,
   generateAllConfigs,
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
@@ -381,6 +382,58 @@ describe('predict across DST boundary (CET→CEST)', () => {
     //                   March 30 04:00 CEST -14d → March 16 04:00 CET = 03:00 UTC ✓
     // Mean of 500 and 700 = 600
     expect(results[0].predicted).toBeCloseTo(600);
+  });
+
+  it('gives identical results through a shared PredictIndex, including across DST', () => {
+    // The index precomputes the same setDate() chain predict() builds inline,
+    // so the DST behaviour above is the acceptance gate for the shared path.
+    const cfg = { sensor: 'Load', lookbackWeeks: 3, dayFilter: 'all', aggregation: 'mean' };
+    const index = buildPredictIndex(dstHistory, 'Load', [dstTarget], 3);
+    expect(predict(dstHistory, cfg, [dstTarget], index)).toEqual(predict(dstHistory, cfg, [dstTarget]));
+    expect(index.pastDatesByTarget.get(dstTarget.date)).toHaveLength(21);
+    expect(index.pastDatesByTarget.get(dstTarget.date)[6]).toBe('2026-03-23T03:00:00.000Z');
+  });
+});
+
+describe('buildPredictIndex', () => {
+  const history = [];
+  for (let day = 1; day <= 28; day++) {
+    for (const hour of [6, 12]) {
+      const d = new Date(Date.UTC(2026, 1, day, hour));
+      history.push({ date: d.toISOString(), time: d.getTime(), hour, dayOfWeek: d.getUTCDay(), sensor: 'Load', value: day * 10 + hour });
+    }
+    const other = new Date(Date.UTC(2026, 1, day, 6));
+    history.push({ date: other.toISOString(), time: other.getTime(), hour: 6, dayOfWeek: other.getUTCDay(), sensor: 'Other', value: 1 });
+  }
+  const targets = history.filter(h => h.sensor === 'Load' && h.time >= Date.UTC(2026, 1, 22));
+
+  it('matches predict() without an index for every strategy of the grid', () => {
+    const grid = generateAllConfigs(['Load'], [1, 2, 3]);
+    const index = buildPredictIndex(history, 'Load', targets, 3);
+    for (const cfg of grid) {
+      expect(predict(history, cfg, targets, index)).toEqual(predict(history, cfg, targets));
+    }
+  });
+
+  it('indexes only the requested sensor and one chain per distinct target date', () => {
+    const index = buildPredictIndex(history, 'Load', [...targets, ...targets], 2);
+    expect(index.sensor).toBe('Load');
+    expect(index.valueByDate.size).toBe(56);
+    expect([...index.valueByDate.values()].every(r => r.sensor === 'Load')).toBe(true);
+    expect(index.pastDatesByTarget.size).toBe(targets.length);
+    for (const chain of index.pastDatesByTarget.values()) expect(chain).toHaveLength(14);
+  });
+
+  it('falls back to inline date math for a lookback longer than the index was built for', () => {
+    const cfg = { sensor: 'Load', lookbackWeeks: 3, dayFilter: 'all', aggregation: 'median' };
+    const shortIndex = buildPredictIndex(history, 'Load', targets, 1);
+    expect(predict(history, cfg, targets, shortIndex)).toEqual(predict(history, cfg, targets));
+  });
+
+  it('ignores an index built for another sensor', () => {
+    const cfg = { sensor: 'Load', lookbackWeeks: 2, dayFilter: 'same', aggregation: 'mean' };
+    const otherIndex = buildPredictIndex(history, 'Other', targets, 2);
+    expect(predict(history, cfg, targets, otherIndex)).toEqual(predict(history, cfg, targets));
   });
 });
 

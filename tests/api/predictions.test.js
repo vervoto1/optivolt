@@ -9,13 +9,13 @@ vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/prediction-auto-select.ts');
 vi.mock('../../api/services/prediction-auto-select-store.ts');
 
-import { loadPredictionConfig, savePredictionConfig } from '../../api/services/prediction-config-store.ts';
-import { runValidation, runForecast } from '../../api/services/load-prediction-service.ts';
+import { loadPredictionConfig, savePredictionConfig, updatePredictionConfig } from '../../api/services/prediction-config-store.ts';
+import { runValidation, runForecast, scoreStrategyPredictions } from '../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../api/services/pv-prediction-service.ts';
 import { loadSettings } from '../../api/services/settings-store.ts';
 import { loadData, saveData } from '../../api/services/data-store.ts';
 import { runAutoSelect } from '../../api/services/prediction-auto-select.ts';
-import { loadAutoSelectHistory } from '../../api/services/prediction-auto-select-store.ts';
+import { getLatestAutoSelectRun, loadAutoSelectHistory } from '../../api/services/prediction-auto-select-store.ts';
 
 async function importRouter() {
   vi.resetModules();
@@ -45,6 +45,13 @@ describe('Prediction route contracts', () => {
     vi.resetAllMocks();
     loadPredictionConfig.mockResolvedValue(structuredClone(mockConfig));
     savePredictionConfig.mockResolvedValue();
+    // Same contract as the real store lock: load → mutate → save unless null.
+    updatePredictionConfig.mockImplementation(async (mutate) => {
+      const next = mutate(await loadPredictionConfig());
+      if (next) await savePredictionConfig(next);
+      return next;
+    });
+    getLatestAutoSelectRun.mockResolvedValue(null);
     loadSettings.mockResolvedValue(structuredClone(mockSettings));
     loadData.mockResolvedValue({});
     saveData.mockResolvedValue();
@@ -67,27 +74,39 @@ describe('Prediction route contracts', () => {
     const autoSelectConfig = { enabled: true, mode: 'suggest', time: '03:30', metric: 'mae', minImprovement_percent: 10, windowDays: 28 };
     const run = (at, action = 'kept') => ({ at, trigger: 'scheduled', sensor: 'Grid Import', windowDays: 28, metric: 'mae', mode: 'suggest', incumbent: null, best: null, improvement_percent: null, reason: 'incumbent-best', action, ranking: [] });
 
-    it('GET /predictions/auto-select returns config, lastRun and history', async () => {
+    it('GET /predictions/auto-select returns config and lastRun, without the ring buffer', async () => {
       loadSettings.mockResolvedValue({ ...mockSettings, predictionAutoSelect: autoSelectConfig });
-      loadAutoSelectHistory.mockResolvedValue([run('2026-08-22T01:30:00.000Z'), run('2026-08-23T01:30:00.000Z', 'suggested')]);
+      getLatestAutoSelectRun.mockResolvedValue(run('2026-08-23T01:30:00.000Z', 'suggested'));
 
       const res = await get(predictionsRouter, '/auto-select');
       expect(res.status).toBe(200);
       expect(res.body.config).toEqual(autoSelectConfig);
       expect(res.body.lastRun.action).toBe('suggested');
+      expect(res.body).not.toHaveProperty('history');
+      expect(loadAutoSelectHistory).not.toHaveBeenCalled();
+    });
+
+    it('GET /predictions/auto-select?history=1 includes the run history', async () => {
+      getLatestAutoSelectRun.mockResolvedValue(run('2026-08-23T01:30:00.000Z', 'suggested'));
+      loadAutoSelectHistory.mockResolvedValue([run('2026-08-22T01:30:00.000Z'), run('2026-08-23T01:30:00.000Z', 'suggested')]);
+
+      let res = await get(predictionsRouter, '/auto-select?history=1');
+      expect(res.status).toBe(200);
+      expect(res.body.history).toHaveLength(2);
+      expect(res.body.lastRun.action).toBe('suggested');
+
+      res = await get(predictionsRouter, '/auto-select?history=true');
       expect(res.body.history).toHaveLength(2);
     });
 
     it('GET /predictions/auto-select reports null config and lastRun when nothing exists', async () => {
-      loadAutoSelectHistory.mockResolvedValue([]);
-
       const res = await get(predictionsRouter, '/auto-select');
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ config: null, lastRun: null, history: [] });
+      expect(res.body).toEqual({ config: null, lastRun: null });
     });
 
     it('GET /predictions/auto-select maps store failures to 500', async () => {
-      loadAutoSelectHistory.mockRejectedValue(new Error('disk'));
+      getLatestAutoSelectRun.mockRejectedValue(new Error('disk'));
       const res = await get(predictionsRouter, '/auto-select');
       expect(res.status).toBe(500);
       expect(res.body.error).toBe('Failed to read auto-select state');
@@ -157,15 +176,78 @@ describe('Prediction route contracts', () => {
     );
   });
 
-  it('merges and saves config (historicalPredictor)', async () => {
+  it('merges and saves config (historicalPredictor) under the store lock', async () => {
     loadPredictionConfig.mockResolvedValue({ ...structuredClone(mockConfig), activeType: 'historical' });
     savePredictionConfig.mockResolvedValue();
     const res = await post(predictionsRouter, '/config', {
       historicalPredictor: { sensor: 'Total Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+      haUrl: 'ws://should-be-stripped', validationWindow: { start: 'x', end: 'y' },
     });
 
     expect(res.status).toBe(200);
-    expect(savePredictionConfig).toHaveBeenCalled();
+    expect(updatePredictionConfig).toHaveBeenCalledOnce();
+    expect(savePredictionConfig).toHaveBeenCalledOnce();
+    const saved = savePredictionConfig.mock.calls[0][0];
+    expect(saved.historicalPredictor).toEqual({ sensor: 'Total Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(saved).not.toHaveProperty('haUrl');
+    // validationWindow is server-owned: the stored one survives, the posted one is dropped.
+    expect(saved.validationWindow).toEqual(mockConfig.validationWindow);
+  });
+
+  it('POST /predictions/config rejects an out-of-range lookbackWeeks with 400 before writing', async () => {
+    // lookbackWeeks reaches a synchronous day loop; 1e7 would hang the process.
+    for (const lookbackWeeks of [20000, 1e7, 0, 2.5, 'four']) {
+      const res = await post(predictionsRouter, '/config', {
+        historicalPredictor: { sensor: 'Total Load', lookbackWeeks, dayFilter: 'same', aggregation: 'mean' },
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('historicalPredictor.lookbackWeeks must be an integer between 1 and 52');
+    }
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+  });
+
+  it('POST /predictions/config rejects bad enums and a non-object payload', async () => {
+    let res = await post(predictionsRouter, '/config', { activeType: 'neural' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('activeType must be one of');
+    res = await post(predictionsRouter, '/config', [1, 2]);
+    expect(res.status).toBe(400);
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+  });
+
+  it('POST /predictions/validate/strategy returns the per-hour predictions of one strategy', async () => {
+    const strategy = { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+    scoreStrategyPredictions.mockResolvedValue({ strategy, validationPredictions: [{ time: 1, actual: 500, predicted: 480 }] });
+
+    const res = await post(predictionsRouter, '/validate/strategy', strategy);
+    expect(res.status).toBe(200);
+    expect(res.body.validationPredictions).toHaveLength(1);
+    expect(scoreStrategyPredictions).toHaveBeenCalledWith(
+      expect.objectContaining({ haUrl: mockSettings.haUrl, validationWindow: mockConfig.validationWindow }),
+      strategy,
+    );
+  });
+
+  it('POST /predictions/validate/strategy validates the strategy and requires HA credentials', async () => {
+    let res = await post(predictionsRouter, '/validate/strategy', { sensor: 'Grid Import', lookbackWeeks: 999, dayFilter: 'same', aggregation: 'mean' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('lookbackWeeks');
+    res = await post(predictionsRouter, '/validate/strategy', {});
+    expect(res.status).toBe(400);
+    expect(scoreStrategyPredictions).not.toHaveBeenCalled();
+
+    loadSettings.mockResolvedValue({ ...mockSettings, haUrl: '', haToken: '' });
+    res = await post(predictionsRouter, '/validate/strategy', { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(res.status).toBe(400);
+
+    loadSettings.mockResolvedValue(structuredClone(mockSettings));
+    scoreStrategyPredictions.mockRejectedValue(new Error('HA WebSocket timed out after 120000ms'));
+    res = await post(predictionsRouter, '/validate/strategy', { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(res.status).toBe(502);
+
+    scoreStrategyPredictions.mockRejectedValue(new Error('unexpected parse error'));
+    res = await post(predictionsRouter, '/validate/strategy', { sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(res.status).toBe(500);
   });
 
   it('POST /predictions/validate returns validation results', async () => {

@@ -8,6 +8,7 @@ vi.mock('../../../api/services/prediction-config-store.ts', () => ({
 vi.mock('../../../api/services/load-prediction-service.ts', () => ({
   runValidation: vi.fn(),
   runForecast: vi.fn(),
+  scoreStrategyPredictions: vi.fn(),
 }));
 vi.mock('../../../api/services/pv-prediction-service.ts', () => ({
   runPvForecast: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('../../../api/services/prediction-adjustment-store.ts', () => ({
 import {
   buildPredictionRunConfig,
   executePredictionValidation,
+  executeStrategyPredictions,
   runCombinedPredictionForecast,
   executeLoadForecast,
   executePvForecast,
@@ -42,7 +44,7 @@ import {
 } from '../../../api/services/prediction-forecast-runner.ts';
 
 import { loadPredictionConfig } from '../../../api/services/prediction-config-store.ts';
-import { runValidation, runForecast as runLoadForecast } from '../../../api/services/load-prediction-service.ts';
+import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from '../../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../../api/services/pv-prediction-service.ts';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
@@ -110,6 +112,52 @@ describe('buildPredictionRunConfig', () => {
       haUrl: 'ws://x',
       haToken: 'secret',
     });
+  });
+});
+
+describe('executeStrategyPredictions', () => {
+  const strategy = { sensor: 'House', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+
+  it('scores the one strategy and returns its predictions', async () => {
+    scoreStrategyPredictions.mockResolvedValue({ strategy, validationPredictions: [{ time: 1, actual: 1, predicted: 2 }] });
+    const result = await executeStrategyPredictions(makeConfig(), strategy);
+    expect(result.validationPredictions).toHaveLength(1);
+    expect(scoreStrategyPredictions).toHaveBeenCalledWith(expect.objectContaining(HA), strategy);
+  });
+
+  it('applies the same sensor and HA-connection guards as validation', async () => {
+    await expect(executeStrategyPredictions(makeConfig({ sensors: [] }), strategy))
+      .rejects.toMatchObject({ statusCode: 400, message: /At least one sensor/ });
+    await expect(executeStrategyPredictions(makeConfig({ haUrl: '', haToken: '' }), strategy))
+      .rejects.toMatchObject({ statusCode: 400, message: /haUrl and haToken are required/ });
+    expect(scoreStrategyPredictions).not.toHaveBeenCalled();
+  });
+
+  it('maps HA connection failures to 502 and passes other errors through', async () => {
+    scoreStrategyPredictions.mockRejectedValueOnce(new Error('HA WebSocket timed out after 120000ms'));
+    await expect(executeStrategyPredictions(makeConfig(), strategy))
+      .rejects.toMatchObject({ statusCode: 502, message: /HA connection error/ });
+    scoreStrategyPredictions.mockRejectedValueOnce(new Error('boom'));
+    await expect(executeStrategyPredictions(makeConfig(), strategy)).rejects.toThrow('boom');
+  });
+
+  it('shares one HA-error mapping with the forecast path — a refused connection is a 502 here too', async () => {
+    // The validation and chart paths used to carry their own copy of the
+    // heuristic, which had already drifted (no 'connection refused').
+    scoreStrategyPredictions.mockRejectedValueOnce(new Error('connection refused by host'));
+    await expect(executeStrategyPredictions(makeConfig(), strategy))
+      .rejects.toMatchObject({ statusCode: 502, message: /HA connection error/ });
+    runValidation.mockRejectedValueOnce(new Error('connection refused by host'));
+    await expect(executePredictionValidation(makeConfig()))
+      .rejects.toMatchObject({ statusCode: 502, message: /HA connection error/ });
+  });
+
+  it('logs the strategy with the shared server-side formatter', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    scoreStrategyPredictions.mockResolvedValue({ strategy, validationPredictions: [] });
+    await executeStrategyPredictions(makeConfig(), strategy);
+    expect(log).toHaveBeenCalledWith('[predict] validate/strategy', expect.objectContaining({ strategy: 'House/4w/same/mean' }));
+    log.mockRestore();
   });
 });
 

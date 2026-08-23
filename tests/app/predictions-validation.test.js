@@ -2,16 +2,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../app/src/api/api.js', () => ({
+  fetchStrategyPredictions: vi.fn(),
   runValidation: vi.fn(),
   savePredictionConfig: vi.fn(),
 }));
 
-import { runValidation, savePredictionConfig } from '../../app/src/api/api.js';
+import { fetchStrategyPredictions, runValidation, savePredictionConfig } from '../../app/src/api/api.js';
 import { initValidation, rerenderTable } from '../../app/src/predictions-validation.js';
 
 function setupDOM() {
   document.body.innerHTML = `
     <button id="pred-run-validation">Run Validation</button>
+    <button id="autosel-run">Run Selection</button>
     <div id="pred-results" hidden>
       <div id="pred-sensor-tabs"></div>
       <table><tbody id="pred-metrics-body"></tbody></table>
@@ -210,67 +212,203 @@ describe('predictions-validation', () => {
     });
   });
 
-  it('Chart button shows accuracy charts', async () => {
+  const PREDICTIONS = [
+    { date: '2024-01-15', hour: 8, actual: 1000, predicted: 1050 },
+    { date: '2024-01-15', hour: 9, actual: 1200, predicted: 1100 },
+  ];
+
+  async function renderOneRow(setComparisonStatus = vi.fn()) {
     savePredictionConfig.mockResolvedValue({});
     runValidation.mockResolvedValue({
       sensorNames: ['s1'],
-      results: [
-        {
-          sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean',
-          mae: 50, rmse: 60, mape: 10, n: 96,
-          validationPredictions: [
-            { date: '2024-01-15', hour: 8, actual: 1000, predicted: 1050 },
-            { date: '2024-01-15', hour: 9, actual: 1200, predicted: 1100 },
-          ],
-        },
-      ],
+      // Metrics only — the validate payload no longer carries per-hour predictions.
+      results: [{ sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 50, rmse: 60, mape: 10, n: 96, validationPredictions: [] }],
     });
-
-    const readFormValues = vi.fn(() => ({}));
-    initValidation({ readFormValues, renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus });
     document.getElementById('pred-run-validation').click();
-
     await vi.waitFor(() => {
       expect(document.querySelector('.btn-chart')).toBeTruthy();
     });
+    return setComparisonStatus;
+  }
+
+  it('Chart button fetches that strategy\'s predictions on demand and shows the charts', async () => {
+    const setComparisonStatus = await renderOneRow();
+    fetchStrategyPredictions.mockResolvedValue({ validationPredictions: PREDICTIONS });
 
     document.querySelector('.btn-chart').click();
-    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+    });
+    expect(fetchStrategyPredictions).toHaveBeenCalledWith({ sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' });
+    expect(setComparisonStatus).toHaveBeenCalledWith('Loading chart…');
+    expect(setComparisonStatus).toHaveBeenLastCalledWith('');
+    expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: s1 / 4w / same / mean');
   });
 
-  it('Chart button clicked twice destroys previous charts before recreating', async () => {
-    // Setup: mock data with validationPredictions so charts get created
-    savePredictionConfig.mockResolvedValue({});
-    runValidation.mockResolvedValue({
-      sensorNames: ['s1'],
-      results: [
-        {
-          sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean',
-          mae: 50, rmse: 60, mape: 10, n: 96,
-          validationPredictions: [
-            { date: '2024-01-15', hour: 8, actual: 1000, predicted: 1050 },
-            { date: '2024-01-15', hour: 9, actual: 1200, predicted: 1100 },
-          ],
-        },
-      ],
-    });
+  it('Chart button reports a failed predictions fetch instead of opening an empty chart', async () => {
+    const setComparisonStatus = await renderOneRow();
+    fetchStrategyPredictions.mockRejectedValue(new Error('HA WebSocket timed out'));
 
-    const readFormValues = vi.fn(() => ({}));
-    initValidation({ readFormValues, renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
-    document.getElementById('pred-run-validation').click();
-
+    document.querySelector('.btn-chart').click();
     await vi.waitFor(() => {
-      expect(document.querySelector('.btn-chart')).toBeTruthy();
+      expect(setComparisonStatus).toHaveBeenCalledWith('Chart failed: HA WebSocket timed out', true);
+    });
+    expect(document.getElementById('pred-chart-section').hidden).toBe(true);
+  });
+
+  it('Chart button clicked twice destroys previous charts before recreating, fetching the strategy once', async () => {
+    await renderOneRow();
+    fetchStrategyPredictions.mockResolvedValue({ validationPredictions: PREDICTIONS });
+    const destroyed = [];
+    vi.stubGlobal('Chart', class {
+      constructor() { this.data = {}; }
+      destroy() { destroyed.push(this); }
     });
 
     // First click creates charts
     document.querySelector('.btn-chart').click();
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+    });
+    expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
 
-    // Second click should destroy existing charts then recreate
+    // Second click: served from the per-comparison memo (no second multi-week
+    // HA query), existing charts destroyed, then recreated.
     document.querySelector('.btn-chart').click();
-
-    // Charts should still be visible (recreated after destroy)
+    await vi.waitFor(() => {
+      expect(destroyed).toHaveLength(2);
+    });
+    expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
     expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  });
+
+  it('Chart button locks the run buttons while its fetch is in flight', async () => {
+    await renderOneRow();
+    let release;
+    fetchStrategyPredictions.mockReturnValue(new Promise(resolve => { release = resolve; }));
+
+    const chartBtn = document.querySelector('.btn-chart');
+    chartBtn.click();
+    await vi.waitFor(() => {
+      expect(chartBtn.disabled).toBe(true);
+    });
+    expect(document.getElementById('pred-run-validation').disabled).toBe(true);
+    expect(document.getElementById('autosel-run').disabled).toBe(true);
+
+    release({ validationPredictions: PREDICTIONS });
+    await vi.waitFor(() => {
+      expect(chartBtn.disabled).toBe(false);
+    });
+    expect(document.getElementById('pred-run-validation').disabled).toBe(false);
+    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  });
+
+  it('a new comparison run forgets the memoised chart data', async () => {
+    await renderOneRow();
+    fetchStrategyPredictions.mockResolvedValue({ validationPredictions: PREDICTIONS });
+    document.querySelector('.btn-chart').click();
+    await vi.waitFor(() => {
+      expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
+    });
+
+    // Re-run the comparison (a new window) — the same row must fetch again.
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-run-validation').disabled).toBe(false);
+    });
+    document.querySelector('.btn-chart').click();
+    await vi.waitFor(() => {
+      expect(fetchStrategyPredictions).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('only the most recent Chart click renders when a fetch overlaps a re-rendered table', async () => {
+    // The Use button re-renders the table with fresh (enabled) Chart buttons
+    // while a chart fetch is in flight; the older response must not win.
+    const setComparisonStatus = await renderOneRow();
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 50, rmse: 60, mape: 10, n: 96, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median', mae: 55, rmse: 65, mape: 11, n: 96, validationPredictions: [] },
+      ],
+    });
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.btn-chart')).toHaveLength(2);
+    });
+
+    let releaseFirst;
+    fetchStrategyPredictions
+      .mockReturnValueOnce(new Promise(resolve => { releaseFirst = resolve; }))
+      .mockResolvedValueOnce({ validationPredictions: PREDICTIONS });
+    const [first, second] = document.querySelectorAll('.btn-chart');
+    first.click();
+    await vi.waitFor(() => {
+      expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
+    });
+    // Re-render (as the Use button does) hands out enabled buttons again.
+    second.disabled = false;
+    second.click();
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: s1 / 8w / all / median');
+    });
+
+    // The first (older) response lands last and is ignored.
+    releaseFirst({ validationPredictions: PREDICTIONS });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: s1 / 8w / all / median');
+    expect(setComparisonStatus).toHaveBeenLastCalledWith('');
+  });
+
+  it('locks both run buttons while a comparison is in flight', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    let release;
+    runValidation.mockReturnValue(new Promise(resolve => { release = resolve; }));
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+
+    const runBtn = document.getElementById('pred-run-validation');
+    const selectionBtn = document.getElementById('autosel-run');
+    runBtn.click();
+    await vi.waitFor(() => {
+      expect(runBtn.disabled).toBe(true);
+    });
+    expect(runBtn.textContent).toBe('Running...');
+    expect(selectionBtn.disabled).toBe(true);
+    expect(selectionBtn.classList.contains('opacity-50')).toBe(true);
+
+    release({ sensorNames: [], results: [] });
+    await vi.waitFor(() => {
+      expect(runBtn.disabled).toBe(false);
+    });
+    expect(runBtn.textContent).toBe('Run Validation');
+    expect(selectionBtn.disabled).toBe(false);
+  });
+
+  it('exposes the show-all toggle state to assistive tech', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: Array.from({ length: 25 }, (_, i) => ({
+        sensor: 's1', lookbackWeeks: i + 1, dayFilter: 'all', aggregation: 'mean', mae: 100 + i, rmse: 120, mape: 10, n: 96, validationPredictions: [],
+      })),
+    });
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+    document.getElementById('pred-run-validation').click();
+
+    const toggle = document.getElementById('pred-show-all');
+    await vi.waitFor(() => {
+      expect(toggle.hidden).toBe(false);
+    });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelectorAll('#pred-metrics-body tr:not([hidden])')).toHaveLength(20);
+
+    toggle.click();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelectorAll('#pred-metrics-body tr:not([hidden])')).toHaveLength(25);
+    toggle.click();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('sorts metrics table with NaN mae entries pushed to the end', async () => {

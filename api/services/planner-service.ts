@@ -5,12 +5,13 @@ import highsFactory from '../../vendor/highs-build/highs.js';
 import { mapRowsToDessV2 } from '../../lib/dess-mapper.ts';
 import { annotatePvCurtailmentSlots } from '../../lib/pv-curtailment.ts';
 import { buildLP } from '../../lib/build-lp.ts';
+import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
 import { getSolverInputs, buildSolverConfigFromSettings } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
-import { saveSettings, loadSettings } from './settings-store.ts';
+import { updateSettings, loadSettings } from './settings-store.ts';
 import { saveData } from './data-store.ts';
 import { applyPredictionAdjustmentsToData } from './prediction-adjustments.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
@@ -262,15 +263,14 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   if (settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0) {
     data = { ...data, rebalanceState: { startMs: null } };
     settings = { ...settings, rebalanceEnabled: false };
-    await Promise.all([saveSettings(settings), saveData(data)]);
+    await Promise.all([updateSettings(s => ({ ...s, rebalanceEnabled: false })), saveData(data)]);
     // Rebuild cfg without rebalance constraints (still preserving the EV).
     cfg = buildSolverConfigFromSettings(settings, applyPredictionAdjustmentsToData(data), timing.startMs, evState);
   }
 
   const lpText = buildLP(cfg);
   const highs = await getHighsInstance();
-  const hasBinaries = cfg.load_W.length > 0;
-  const solveOptions = hasBinaries ? { mip_rel_gap: 0.005, mip_abs_gap: 0.01 } : {};
+  const solveOptions = solveOptionsFor(cfg);
   let result: ReturnType<typeof highs.solve>;
   const t0 = performance.now();
   try {

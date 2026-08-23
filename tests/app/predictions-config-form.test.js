@@ -333,6 +333,11 @@ describe('prediction config form', () => {
     await vi.advanceTimersByTimeAsync(700);
 
     expect(spy).toHaveBeenCalledWith('Failed to save prediction config:', expect.any(Error));
+    // …and shows it: the server validates the patch now, and a 400 that only
+    // reached the console left the form looking saved.
+    const status = document.getElementById('pred-status');
+    expect(status.textContent).toBe('Save failed: save boom');
+    expect(status.className).toContain('text-red-600');
     spy.mockRestore();
   });
 
@@ -435,6 +440,12 @@ describe('prediction config form', () => {
       expect(validationDeps.getHighlights().best).toBeNull();
 
       autoDeps.onRunComplete();
+      expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
+
+      // Apply suggestion changes the form's strategy, so the table's ACTIVE
+      // badge has to be re-derived the same way.
+      rerenderTable.mockClear();
+      autoDeps.onApplied();
       expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
 
       // No sensor selected → no historical predictor in the form

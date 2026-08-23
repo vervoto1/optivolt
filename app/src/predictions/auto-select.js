@@ -10,7 +10,12 @@
 
 import { fetchAutoSelect, fetchStoredSettings, runAutoSelect, saveStoredSettings } from '../api/api.js';
 import { debounce } from '../utils.js';
+import { formatStrategy, isSameStrategy } from './strategy.js';
+import { setRunButtonsDisabled } from './run-buttons.js';
 
+export { formatStrategy, isSameStrategy };
+
+/** Mirrors DEFAULT_AUTO_SELECT_CONFIG on the server (api/services/prediction-auto-select.ts). */
 const DEFAULTS = { enabled: false, mode: 'suggest', time: '03:30', metric: 'mae', minImprovement_percent: 10, windowDays: 28 };
 const FIELD_IDS = ['autosel-enabled', 'autosel-mode', 'autosel-time', 'autosel-metric', 'autosel-min-improvement', 'autosel-window-days'];
 
@@ -30,14 +35,6 @@ export function getLastAutoSelectRun() {
   return lastRun;
 }
 
-export function formatStrategy(s) {
-  return s ? `${s.lookbackWeeks}w / ${s.dayFilter} / ${s.aggregation}` : '--';
-}
-
-export function isSameStrategy(a, b) {
-  return !!a && !!b && a.lookbackWeeks === b.lookbackWeeks && a.dayFilter === b.dayFilter && a.aggregation === b.aggregation;
-}
-
 export function formatRelativeTime(iso, nowMs = Date.now()) {
   const diffMin = Math.round((nowMs - new Date(iso).getTime()) / 60000);
   if (diffMin < 1) return 'just now';
@@ -47,21 +44,23 @@ export function formatRelativeTime(iso, nowMs = Date.now()) {
   return `${Math.round(hours / 24)} d ago`;
 }
 
-export async function initAutoSelect({ applyStrategy, getCurrentStrategy, onRunComplete } = {}) {
-  deps = { applyStrategy, getCurrentStrategy, onRunComplete };
+export async function initAutoSelect({ applyStrategy, getCurrentStrategy, onRunComplete, onApplied } = {}) {
+  deps = { applyStrategy, getCurrentStrategy, onRunComplete, onApplied };
 
+  let cfg = DEFAULTS;
   try {
     const settings = await fetchStoredSettings();
-    const cfg = { ...DEFAULTS, ...(settings?.predictionAutoSelect ?? {}) };
-    setChecked('autosel-enabled', cfg.enabled);
-    setVal('autosel-mode', cfg.mode);
-    setVal('autosel-time', cfg.time);
-    setVal('autosel-metric', cfg.metric);
-    setVal('autosel-min-improvement', cfg.minImprovement_percent);
-    setVal('autosel-window-days', cfg.windowDays);
+    cfg = { ...DEFAULTS, ...(settings?.predictionAutoSelect ?? {}) };
   } catch (err) {
     console.warn('Failed to load auto-select settings:', err.message);
   }
+  // The markup carries no values of its own, so the defaults must land even when the fetch failed.
+  setChecked('autosel-enabled', cfg.enabled);
+  setVal('autosel-mode', cfg.mode);
+  setVal('autosel-time', cfg.time);
+  setVal('autosel-metric', cfg.metric);
+  setVal('autosel-min-improvement', cfg.minImprovement_percent);
+  setVal('autosel-window-days', cfg.windowDays);
 
   const save = debounce(saveAutoSelectSettings, 600);
   for (const id of FIELD_IDS) {
@@ -102,13 +101,18 @@ export async function refreshAutoSelectStatus() {
   } catch (err) {
     console.warn('Failed to load auto-select status:', err.message);
     lastRun = null;
+    // Distinct from "never ran": the panel's whole job is reporting run state,
+    // so a status read that failed must not look like a feature that never fired.
+    renderUnavailable(err.message);
+    return;
   }
   renderRun(lastRun);
 }
 
 async function onRunNow() {
   const btn = document.getElementById('autosel-run');
-  setBusy(btn, true, 'Running…');
+  setRunButtonsDisabled(true);
+  btn.textContent = 'Running…';
   try {
     lastRun = await runAutoSelect(true);
     renderRun(lastRun);
@@ -116,18 +120,42 @@ async function onRunNow() {
   } catch (err) {
     setOutcome(`Error: ${err.message}`, 'error');
   } finally {
-    setBusy(btn, false, 'Run Selection');
+    btn.textContent = 'Run Selection';
+    setRunButtonsDisabled(false);
   }
 }
 
 async function onApply() {
   if (!lastRun?.best || !deps.applyStrategy) return;
+  const btn = document.getElementById('autosel-apply');
+  // The save is a network round trip; without a busy state a double-click posts it twice.
+  setBusy(btn, true, 'Applying…');
   try {
     await deps.applyStrategy(lastRun.best);
     renderRun(lastRun);
+    // Lets the comparison table re-read its highlights so the ACTIVE badge moves.
+    deps.onApplied?.();
   } catch (err) {
     setOutcome(`Apply failed: ${err.message}`, 'error');
+  } finally {
+    setBusy(btn, false, 'Apply suggestion');
   }
+}
+
+function clearRunCells() {
+  setEl('autosel-current', '--');
+  setEl('autosel-current-metric', '');
+  setEl('autosel-best', '--');
+  setEl('autosel-best-metric', '');
+  setEl('autosel-delta', '--');
+  const applyRow = document.getElementById('autosel-apply-row');
+  if (applyRow) applyRow.hidden = true;
+}
+
+function renderUnavailable(message) {
+  setEl('autosel-last-run', 'Unknown');
+  setOutcome(`Status unavailable: ${message}`, 'error');
+  clearRunCells();
 }
 
 function renderRun(run) {
@@ -135,12 +163,7 @@ function renderRun(run) {
   if (!run) {
     setEl('autosel-last-run', 'Never');
     setOutcome('No run yet', 'neutral');
-    setEl('autosel-current', '--');
-    setEl('autosel-current-metric', '');
-    setEl('autosel-best', '--');
-    setEl('autosel-best-metric', '');
-    setEl('autosel-delta', '--');
-    if (applyRow) applyRow.hidden = true;
+    clearRunCells();
     return;
   }
 
@@ -154,8 +177,12 @@ function renderRun(run) {
   setEl('autosel-best', formatStrategy(run.best));
   setEl('autosel-best-metric', scoreOf(run.best));
 
+  // improvement_percent is the server's error reduction (positive = best has a
+  // lower MAE/RMSE than the current strategy), which is exactly what the tile's
+  // "Gain" label means — so no sign flip, and no collapsing to "0 %".
   const pct = run.improvement_percent;
-  setEl('autosel-delta', pct == null ? '--' : pct > 0 ? `−${pct.toFixed(1)} %` : '0 %');
+  const gain = pct == null ? null : `${pct.toFixed(1)} %`;
+  setEl('autosel-delta', gain ?? '--');
 
   const current = deps.getCurrentStrategy?.() ?? null;
   const alreadyApplied = run.action === 'suggested' && isSameStrategy(current, run.best);
@@ -165,22 +192,21 @@ function renderRun(run) {
     case 'skipped':
       setOutcome(`Skipped: ${run.skipReason ?? 'unknown reason'}`, 'warn');
       break;
+    case 'failed':
+      setOutcome(`Failed: ${run.error ?? 'unknown error'}`, 'error');
+      break;
     case 'applied':
-      // pct is null on the `incumbent-unscored` path — the switch happened
-      // because the current strategy could not be scored, not because of a
-      // measured gain, so don't report it as "−0.0 %".
-      setOutcome(
-        pct == null
-          ? 'Switched — current strategy could not be scored'
-          : `Switched to best (−${pct.toFixed(1)} %)`,
-        'good',
-      );
+      // gain is null on records written by the pre-0.7.56 `incumbent-unscored`
+      // path (which no longer applies, but may still sit in the run history).
+      setOutcome(gain == null ? 'Switched — current strategy could not be scored' : `Switched to best (${gain} lower ${metricLabel})`, 'good');
       break;
     case 'suggested':
       if (alreadyApplied) {
         setOutcome('Suggestion applied', 'good');
       } else {
-        setOutcome(pct == null ? 'Suggested: current strategy could not be scored' : `Suggested: switch to best (−${pct.toFixed(1)} %)`, 'suggest');
+        // gain is null on the `incumbent-unscored` path — the current strategy
+        // could not be scored, so there is no measured margin to report.
+        setOutcome(gain == null ? 'Suggested: current strategy could not be scored' : `Suggested: switch to best (${gain} lower ${metricLabel})`, 'suggest');
         showApply = true;
       }
       break;

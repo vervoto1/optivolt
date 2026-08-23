@@ -1,4 +1,5 @@
 import type { Settings } from '../types.ts';
+import { isInDailyWindow } from './daily-window.ts';
 import { writeVictronSetting } from './mqtt-service.ts';
 import { planAndMaybeWrite } from './planner-service.ts';
 
@@ -28,16 +29,10 @@ export function isPriceRefreshWindowActive(): boolean {
 
 /**
  * Check if the current local time falls within [time, time+duration).
+ * Midnight-wrap and DST aware — see daily-window.ts.
  */
 function isInWindow(now: Date, time: string, durationMinutes: number): boolean {
-  const [h, m] = time.split(':').map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
-
-  const startMinutes = h * 60 + m;
-  const endMinutes = startMinutes + durationMinutes;
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-  return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  return isInDailyWindow(now, time, durationMinutes);
 }
 
 async function tick(): Promise<void> {

@@ -8,7 +8,8 @@ vi.mock('../../../api/services/mqtt-service.ts');
 vi.mock('../../../api/services/plan-history-store.ts');
 vi.mock('../../../api/services/ha-client.ts');
 
-import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
+import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
+import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
@@ -60,6 +61,7 @@ describe('computePlan — rebalance bookkeeping', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
   });
@@ -189,6 +191,7 @@ describe('planAndMaybeWrite — DESS slot count', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -218,6 +221,7 @@ describe('computePlan — error handling', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -276,6 +280,7 @@ describe('planAndMaybeWrite — solver status guard', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -318,6 +323,7 @@ describe('computePlan — MQTT SoC refresh', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({
@@ -410,6 +416,7 @@ describe('computePlan — EV preview when car disconnected', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     // Car DISCONNECTED: plug 'off', but the SoC sensor still reads.
@@ -459,6 +466,7 @@ describe('computePlan — plan snapshot timing', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -490,6 +498,7 @@ describe('planAndMaybeWrite — DESS fingerprint cache', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -533,6 +542,7 @@ describe('computePlan — updateData path', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -582,6 +592,7 @@ describe('planAndMaybeWrite — writeToVictron=false', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
@@ -610,6 +621,7 @@ describe('computePlan — horizon warnings', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
   });
@@ -659,6 +671,7 @@ describe('computePlan — EV info in solve log', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
   });
@@ -692,6 +705,7 @@ describe('computePlan — rebalance context', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
   });
@@ -740,6 +754,7 @@ describe('computePlan — savePlanSnapshot fire-and-forget', () => {
     refreshSeriesFromVrmAndPersist.mockResolvedValue();
     setDynamicEssSchedule.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     saveData.mockResolvedValue();
     loadSettings.mockResolvedValue({ ...baseSettings });
     loadData.mockResolvedValue({ ...baseData });

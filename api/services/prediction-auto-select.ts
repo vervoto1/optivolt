@@ -21,14 +21,15 @@ import type {
   Settings,
 } from '../types.ts';
 import { loadSettings } from './settings-store.ts';
-import { loadPredictionConfig, savePredictionConfig } from './prediction-config-store.ts';
+import { computeValidationWindow, loadPredictionConfig, updatePredictionConfig } from './prediction-config-store.ts';
 import { scoreStrategies } from './load-prediction-service.ts';
-import type { ValidationWindow } from './load-prediction-service.ts';
-import { appendAutoSelectRun, getLatestAutoSelectRun } from './prediction-auto-select-store.ts';
+import type { ValidationEntry } from './load-prediction-service.ts';
+import { appendAutoSelectRun, loadAutoSelectHistory } from './prediction-auto-select-store.ts';
+import { findDailyWindowStart } from './daily-window.ts';
 import { generateAllConfigs } from '../../lib/load-predictor-historical.ts';
 import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import { formatStrategy, isSameStrategy, selectStrategy } from '../../lib/strategy-selector.ts';
-import type { SelectionResult, StrategyKey } from '../../lib/strategy-selector.ts';
+import type { SelectionResult, StrategyKey, StrategyScore } from '../../lib/strategy-selector.ts';
 
 const CHECK_INTERVAL_MS = 60_000;
 /** The scheduled run fires once inside [time, time + this) — wide enough to survive a slow tick. */
@@ -36,12 +37,23 @@ const FIRE_WINDOW_MINUTES = 5;
 /** Delay after boot before the catch-up check, so startup I/O settles first. */
 const BOOT_CATCH_UP_DELAY_MS = 2 * 60_000;
 const CATCH_UP_AFTER_MS = 24 * 60 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long before a fire window an automatic run still counts as having
+ * served it. The boot catch-up fires two minutes after start, so a box that
+ * comes up just before its window gets a catch-up stamped before
+ * `windowStart`, and a scheduled run straight after it would score the same
+ * data twice (and in auto mode apply twice). Well under a day, so
+ * yesterday's run never serves today's window — also for a time that wraps
+ * midnight, where each run lands after 00:00 on the same local day as the
+ * next window's start (a same-day rule would fire every other day).
+ */
+const SERVED_BY_RUN_WITHIN_MS = 6 * 60 * 60 * 1000;
 /** Scored points required for eligibility, as a share of the window's hourly slots. */
-const MIN_SAMPLES_SHARE = 0.8;
+export const MIN_SAMPLES_SHARE = 0.8;
 /** Ranking entries kept in the persisted run record. */
 const RANKING_LIMIT = 10;
 
+/** Pinned to `api/defaults/default-settings.json` by a test — change both together. */
 export const DEFAULT_AUTO_SELECT_CONFIG: PredictionAutoSelectConfig = {
   enabled: false,
   mode: 'suggest',
@@ -51,16 +63,25 @@ export const DEFAULT_AUTO_SELECT_CONFIG: PredictionAutoSelectConfig = {
   windowDays: 28,
 };
 
+type HistoricalPredictor = NonNullable<PredictionConfig['historicalPredictor']>;
+
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let catchUpHandle: ReturnType<typeof setTimeout> | null = null;
-let configEnabled = false;
 let configTime = '';
-let lastRunDayKey: string | null = null;
-let running = false;
+/**
+ * Bumped by stop(). A tick or catch-up that was suspended on I/O when the
+ * timer was stopped or replaced (every `POST /settings` restarts it) compares
+ * its captured generation afterwards and abandons the run.
+ */
+let generation = 0;
+/** Start of the fire window the current timer already served (in-memory de-dup between ticks). */
+let firedWindowMs: number | null = null;
+/** Trigger of the run in flight, or null when idle. */
+let running: AutoSelectTrigger | null = null;
 
-/** True while a run (scheduled or manual) is in flight. */
+/** True while a run (scheduled or manual) is in flight (for tests). */
 export function isAutoSelectRunning(): boolean {
-  return running;
+  return running !== null;
 }
 
 /** True while the daily timer is armed (for tests). */
@@ -68,30 +89,20 @@ export function isAutoSelectScheduled(): boolean {
   return intervalHandle !== null;
 }
 
+/** Eligibility floor for a window: 80 % of its hourly slots must have been scored. */
+export function minSamplesFor(windowDays: number): number {
+  return Math.round(MIN_SAMPLES_SHARE * 24 * windowDays);
+}
+
 /**
- * The previous `windowDays` full UTC days, ending at today's UTC midnight —
- * the same construction `loadPredictionConfig()` uses for its 7-day window.
+ * Project a scoring entry onto the declared `StrategyScore` shape. The
+ * scorer's entries also carry `sensor` and a `validationPredictions` array;
+ * persisting them as-is leaked both into every run record and API response
+ * (and spreading `best` into the prediction form once moved the active sensor).
  */
-export function computeValidationWindow(windowDays: number, nowMs: number = Date.now()): ValidationWindow {
-  const now = new Date(nowMs);
-  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  return {
-    start: new Date(end - windowDays * DAY_MS).toISOString(),
-    end: new Date(end).toISOString(),
-  };
-}
-
-function localDayKey(date: Date): string {
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
-/** True when the local time is inside [time, time + FIRE_WINDOW_MINUTES). */
-function isInFireWindow(now: Date, time: string): boolean {
-  const [h, m] = time.split(':').map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
-  const startMinutes = h * 60 + m;
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  return nowMinutes >= startMinutes && nowMinutes < startMinutes + FIRE_WINDOW_MINUTES;
+function toStrategyScore(entry: ValidationEntry | StrategyScore): StrategyScore {
+  const { lookbackWeeks, dayFilter, aggregation, mae, rmse, mape, n, nSkipped } = entry;
+  return { lookbackWeeks, dayFilter, aggregation, mae, rmse, mape, n, nSkipped };
 }
 
 function findSkipReason(settings: Settings, predConfig: PredictionConfig): string | null {
@@ -120,40 +131,81 @@ function describeSelection(selection: SelectionResult, metric: 'mae' | 'rmse', i
   const label = metric.toUpperCase();
   const best = selection.best ? `${formatStrategy(selection.best)} ${label} ${fmt(selection.best[metric])}` : 'none';
   const inc = `${formatStrategy(incumbent)} ${label} ${fmt(selection.incumbent?.[metric])}`;
-  const delta = selection.improvement_percent == null ? '' : ` (${selection.improvement_percent > 0 ? '−' : ''}${Math.abs(selection.improvement_percent).toFixed(1)} %)`;
+  const delta = selection.improvement_percent == null ? '' : ` (${selection.improvement_percent.toFixed(1)} % better)`;
   return `${selection.reason}: best ${best}, current ${inc}${delta}`;
+}
+
+function emptyRun(at: string, trigger: AutoSelectTrigger, cfg: PredictionAutoSelectConfig, sensor: string | null): AutoSelectRun {
+  return {
+    at,
+    trigger,
+    sensor,
+    windowDays: cfg.windowDays,
+    metric: cfg.metric,
+    mode: cfg.mode,
+    minImprovement_percent: cfg.minImprovement_percent,
+    incumbent: null,
+    best: null,
+    improvement_percent: null,
+    reason: null,
+    action: 'skipped',
+    ranking: [],
+  };
+}
+
+/**
+ * Write the winning strategy into `historicalPredictor`.
+ *
+ * The config is re-read under the store's update lock and only the three
+ * strategy fields are overlaid, so a UI edit that landed during the (long)
+ * scoring phase — to the sensor list, PV config or predictor type — is not
+ * reverted. Returns false without writing when the strategy that was scored
+ * is no longer the active one (the user changed it mid-run) or, for a
+ * timer-triggered run, when the selector was disabled or switched to suggest
+ * mode while the run was in flight (`POST /settings` restarts the timer but
+ * cannot cancel a run that is already scoring).
+ */
+async function applyStrategy(scored: HistoricalPredictor, best: StrategyKey, trigger: AutoSelectTrigger): Promise<boolean> {
+  if (trigger !== 'manual') {
+    const cfg = { ...DEFAULT_AUTO_SELECT_CONFIG, ...(await loadSettings()).predictionAutoSelect };
+    if (!cfg.enabled || cfg.mode !== 'auto') {
+      console.log('[auto-select] not applied — selector disabled or switched to suggest mode during the run');
+      return false;
+    }
+  }
+  let applied = false;
+  await updatePredictionConfig(fresh => {
+    const hp = fresh.historicalPredictor;
+    if (fresh.activeType !== 'historical' || !hp || hp.sensor !== scored.sensor || !isSameStrategy(hp, scored)) {
+      return null;
+    }
+    applied = true;
+    return {
+      ...fresh,
+      historicalPredictor: { ...hp, lookbackWeeks: best.lookbackWeeks, dayFilter: best.dayFilter, aggregation: best.aggregation },
+    };
+  });
+  if (!applied) console.log('[auto-select] not applied — the active predictor changed during the run');
+  return applied;
 }
 
 /**
  * Score every strategy for the active sensor and decide. Always records a run
- * (including skips) so the UI and the catch-up logic can see what happened.
- * Throws 409 when a run is already in flight. `enabled` only gates the timer —
- * a manual run always executes.
+ * — including skips and failures — so the UI and the scheduler can see what
+ * happened. Throws 409 when a run is already in flight, and rethrows run
+ * errors after recording them. `enabled` only gates the timer — a manual run
+ * always executes.
  */
 export async function runAutoSelect(
   { apply = true, trigger = 'manual' }: { apply?: boolean; trigger?: AutoSelectTrigger } = {},
 ): Promise<AutoSelectRun> {
   if (running) throw new HttpError(409, 'Auto-select run already in progress');
-  running = true;
+  running = trigger;
+  let base = emptyRun(new Date().toISOString(), trigger, DEFAULT_AUTO_SELECT_CONFIG, null);
   try {
     const [settings, predConfig] = await Promise.all([loadSettings(), loadPredictionConfig()]);
     const cfg: PredictionAutoSelectConfig = { ...DEFAULT_AUTO_SELECT_CONFIG, ...settings.predictionAutoSelect };
-
-    const base: AutoSelectRun = {
-      at: new Date().toISOString(),
-      trigger,
-      sensor: predConfig.historicalPredictor?.sensor ?? null,
-      windowDays: cfg.windowDays,
-      metric: cfg.metric,
-      mode: cfg.mode,
-      minImprovement_percent: cfg.minImprovement_percent,
-      incumbent: null,
-      best: null,
-      improvement_percent: null,
-      reason: null,
-      action: 'skipped',
-      ranking: [],
-    };
+    base = emptyRun(base.at, trigger, cfg, predConfig.historicalPredictor?.sensor ?? null);
 
     const skipReason = findSkipReason(settings, predConfig);
     if (skipReason) {
@@ -173,92 +225,148 @@ export async function runAutoSelect(
 
     const validationWindow = computeValidationWindow(cfg.windowDays);
     const runConfig = { ...predConfig, haUrl: settings.haUrl ?? '', haToken: settings.haToken ?? '' };
-    const scores = await scoreStrategies(runConfig, strategies, validationWindow);
+    const minSamples = minSamplesFor(cfg.windowDays);
+    // The same floor gates the common-hour intersection: a strategy that
+    // cannot cover the window on its own is ineligible anyway and must not
+    // shrink the hour set — and `n` — of the ones that can.
+    const scores = await scoreStrategies(runConfig, strategies, validationWindow, { minCoverage: minSamples });
 
     const selection = selectStrategy(scores, incumbent, {
       metric: cfg.metric,
       minImprovement_percent: cfg.minImprovement_percent,
-      minSamples: Math.round(MIN_SAMPLES_SHARE * 24 * cfg.windowDays),
+      minSamples,
     });
 
     let action: AutoSelectAction = 'kept';
     if (selection.shouldSwitch) {
       action = cfg.mode === 'auto' && apply ? 'applied' : 'suggested';
+    } else if (selection.reason === 'incumbent-unscored' && selection.best) {
+      // No margin can be measured against an unscored incumbent, so this is
+      // only ever offered, never applied (see selectStrategy).
+      action = 'suggested';
     }
 
     if (action === 'applied') {
       const best = selection.best!;
-      await savePredictionConfig({
-        ...predConfig,
-        historicalPredictor: {
-          ...hp,
-          lookbackWeeks: best.lookbackWeeks,
-          dayFilter: best.dayFilter,
-          aggregation: best.aggregation,
-        },
-      });
-      console.log(`[auto-select] switched ${formatStrategy(incumbent)} → ${formatStrategy(best)} — ${describeSelection(selection, cfg.metric, incumbent)}`);
-    } else {
+      if (await applyStrategy(hp, best, trigger)) {
+        console.log(`[auto-select] switched ${formatStrategy(incumbent)} → ${formatStrategy(best)} — ${describeSelection(selection, cfg.metric, incumbent)}`);
+      } else {
+        action = 'suggested';
+      }
+    }
+    if (action !== 'applied') {
       console.log(`[auto-select] ${action} (${trigger}) — ${describeSelection(selection, cfg.metric, incumbent)}`);
     }
 
     const record: AutoSelectRun = {
       ...base,
-      incumbent: selection.incumbent,
-      best: selection.best,
+      incumbent: selection.incumbent && toStrategyScore(selection.incumbent),
+      best: selection.best && toStrategyScore(selection.best),
       improvement_percent: selection.improvement_percent,
       reason: selection.reason,
       action,
-      ranking: selection.ranking.slice(0, RANKING_LIMIT),
+      ranking: selection.ranking.slice(0, RANKING_LIMIT).map(toStrategyScore),
     };
     await appendAutoSelectRun(record);
     return record;
+  } catch (err) {
+    // Persist the failure: otherwise a permanently broken selector (expired HA
+    // token, recorder down) keeps showing its last *successful* outcome in the
+    // UI forever, with the only signal a console line inside a container.
+    const message = err instanceof Error ? err.message : String(err);
+    await appendAutoSelectRun({ ...base, action: 'failed', error: message })
+      .catch(storeErr => console.warn('[auto-select] Failed to record the failed run:', (storeErr as Error).message));
+    throw err;
   } finally {
-    running = false;
+    running = null;
   }
 }
 
-async function latestRunOrNull(): Promise<AutoSelectRun | null> {
+/**
+ * The whole run history, oldest first — never just the latest record. The
+ * timer's guards ask "did an automatic run already serve this window / the
+ * last 24 h", and the latest record is routinely something else: a manual
+ * run from the card, or a record the user's `POST /settings` restart added
+ * after the scheduled one. Judging on the latest alone re-ran (and in auto
+ * mode re-applied) the backtest on every such day. A failing read counts as
+ * no history.
+ */
+async function historyOrEmpty(): Promise<AutoSelectRun[]> {
   try {
-    return await getLatestAutoSelectRun();
+    return await loadAutoSelectHistory();
   } catch (err) {
     console.warn('[auto-select] Failed to read run history:', (err as Error).message);
-    return null;
+    return [];
   }
 }
 
-async function runScheduled(trigger: AutoSelectTrigger): Promise<void> {
+/** Runs the timer never repeat: a scheduled/catch-up attempt that did not fail. */
+function isAutomaticAttempt(run: AutoSelectRun): boolean {
+  return run.trigger !== 'manual' && run.action !== 'failed';
+}
+
+/** True when `run` served the fire window starting at `windowStart`: an automatic attempt inside it, or shortly before it (see SERVED_BY_RUN_WITHIN_MS). */
+function servesWindow(run: AutoSelectRun, windowStart: Date): boolean {
+  return isAutomaticAttempt(run) && new Date(run.at).getTime() >= windowStart.getTime() - SERVED_BY_RUN_WITHIN_MS;
+}
+
+/** True when the run completed (any outcome); false when it threw or was deferred behind another run. */
+async function runScheduled(trigger: AutoSelectTrigger): Promise<boolean> {
   try {
     await runAutoSelect({ apply: true, trigger });
+    return true;
   } catch (err) {
-    console.error(`[auto-select] ${trigger} run failed:`, (err as Error).message);
+    if (err instanceof HttpError && err.statusCode === 409) {
+      console.log(`[auto-select] ${trigger} run deferred — another run is in flight`);
+    } else {
+      console.error(`[auto-select] ${trigger} run failed:`, (err as Error).message);
+    }
+    return false;
   }
 }
 
 async function tick(): Promise<void> {
-  /* v8 ignore next 2 — configEnabled is set before the interval is armed and
-  stop() clears the interval, so a tick never observes it false */
-  if (!configEnabled) return;
-  const now = new Date();
-  const dayKey = localDayKey(now);
-  if (!isInFireWindow(now, configTime) || lastRunDayKey === dayKey) return;
-  lastRunDayKey = dayKey;
+  const gen = generation;
+  const windowStart = findDailyWindowStart(new Date(), configTime, FIRE_WINDOW_MINUTES);
+  if (!windowStart || firedWindowMs === windowStart.getTime()) return;
 
-  // A restart inside the fire window must not repeat a run that already happened today.
-  const latest = await latestRunOrNull();
-  if (latest && localDayKey(new Date(latest.at)) === dayKey) {
+  // A backtest outlasts the tick interval when the HA fetch is slow; the
+  // ticks that fire meanwhile must not 409 against the timer's own run. A
+  // manual run in flight defers the scheduled one to the next tick.
+  if (running) {
+    if (running === 'manual') console.log('[auto-select] scheduled run deferred — another run is in flight');
+    return;
+  }
+
+  // A restart inside the fire window must not repeat a run that already happened
+  // for it. Manual runs earlier in the day do not count — they must not cancel
+  // the scheduled run — and neither does a failed one, which is retried below.
+  const history = await historyOrEmpty();
+  if (gen !== generation) return;
+  if (history.some(run => servesWindow(run, windowStart))) {
+    firedWindowMs = windowStart.getTime();
     console.log('[auto-select] already ran today — skipping scheduled run');
     return;
   }
-  await runScheduled('scheduled');
+
+  // Only a completed run consumes the window. A failure, or a 409 from a manual
+  // run in flight, is retried on the next tick until the window closes.
+  if (await runScheduled('scheduled')) firedWindowMs = windowStart.getTime();
 }
 
+/**
+ * Boot catch-up: run once when no automatic attempt happened in the last
+ * 24 h. A skipped attempt counts — its cause is a config state (fixed
+ * predictor, no HA credentials) that a restart does not change, and
+ * re-recording the same skip on every boot only churns the ring buffer.
+ */
 async function catchUp(): Promise<void> {
-  /* v8 ignore next 2 — same as tick(): stop() cancels the pending catch-up */
-  if (!configEnabled) return;
-  const latest = await latestRunOrNull();
-  if (latest && Date.now() - new Date(latest.at).getTime() < CATCH_UP_AFTER_MS) return;
-  console.log('[auto-select] no run in the last 24 h — running catch-up');
+  const gen = generation;
+  const history = await historyOrEmpty();
+  if (gen !== generation) return;
+  const since = Date.now() - CATCH_UP_AFTER_MS;
+  if (history.some(run => isAutomaticAttempt(run) && new Date(run.at).getTime() >= since)) return;
+  console.log('[auto-select] no automatic run in the last 24 h — running catch-up');
   await runScheduled('catch-up');
 }
 
@@ -281,7 +389,6 @@ export function startPredictionAutoSelect(
   const cfg = settings.predictionAutoSelect;
   if (!cfg?.enabled) return;
 
-  configEnabled = true;
   configTime = cfg.time ?? DEFAULT_AUTO_SELECT_CONFIG.time;
 
   console.log(`[auto-select] started (daily at ${configTime}, mode ${cfg.mode ?? DEFAULT_AUTO_SELECT_CONFIG.mode})`);
@@ -296,7 +403,8 @@ export function startPredictionAutoSelect(
 }
 
 /**
- * Stop the daily timer if running.
+ * Stop the daily timer if running. A tick or catch-up already suspended on I/O
+ * notices the generation change and abandons its run.
  */
 export function stopPredictionAutoSelect(): void {
   if (intervalHandle !== null) {
@@ -308,8 +416,8 @@ export function stopPredictionAutoSelect(): void {
     clearTimeout(catchUpHandle);
     catchUpHandle = null;
   }
-  configEnabled = false;
+  generation++;
   // The persisted run history is the real "already ran today" guard (see tick);
   // the in-memory key only de-duplicates ticks within one armed timer.
-  lastRunDayKey = null;
+  firedWindowMs = null;
 }
