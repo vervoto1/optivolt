@@ -1,18 +1,83 @@
 # TODOS
 
-No open items. Everything filed from the v0.7.54 and v0.7.55 reviews is closed below; new findings go in a new section above this line, using the same **What / Why / Context / Effort / Priority / Depends on** shape.
+Open items are the findings the v0.7.56 review rated *plausible* but did not confirm; everything it confirmed is closed below. New findings go in a new section above the **Completed** line, using the same **What / Why / Context / Effort / Priority / Depends on** shape.
+
+## Predictions / auto-select
+
+### Collapse consecutive failed auto-select records
+
+**What:** When a scheduled run fails on every retry tick, update the latest `failed` record's `at`/`error` instead of appending one per tick.
+
+**Why:** The retry-per-tick is intentional (a transient HA hiccup recovers a minute later), but a persistently broken selector — an expired token fails in under a second — appends up to five `failed` records per night into the 60-slot ring buffer and evicts the last `applied`/`suggested` record in roughly twelve nights, so `?history=1` loses the outcome that matters.
+
+**Context:** `api/services/prediction-auto-select.ts` `runAutoSelect` catch block + `appendAutoSelectRun`. A tick no longer races the timer's own in-flight run (v0.7.56), so only real failures reach this path.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+## Storage
+
+### Sweep orphaned `*.tmp` files from `DATA_DIR` at boot
+
+**What:** On startup, `readdir` the data directory and unlink `<file>.<pid>.<n>.tmp` entries older than a few minutes.
+
+**Why:** `writeJson` uses a unique temp name per write (so concurrent writers cannot tear each other), which means a hard kill between `writeFile` and `rename` leaves a new orphan every time; nothing sweeps them. Slow but unbounded growth on the persistent `/data` volume, and untracked files in a dev checkout.
+
+**Context:** `api/services/json-store.ts`. Now that every store's writers go through `withJsonLock`, an alternative is a fixed `${file}.tmp` name for locked paths (at most one orphan per target) and unique names only for unlocked writers.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
+## Settings / tooling
+
+### Make `normalizeClockTime` clamp consistently
+
+**What:** Decide whether an out-of-range minute (`12:75`) should clamp to `12:59` (current) or the hour should roll like `24:00` → `23:59` does, and apply one rule.
+
+**Why:** The two clamps in `api/services/settings-schema.ts` follow different logic; unreachable from `<input type=time>` but reachable from the API.
+
+**Effort:** XS
+**Priority:** P4
+**Depends on:** None
+
+### Let the solver-refresh gate run the planner's full input pipeline
+
+**What:** `scripts/compare-highs-builds.ts` builds its LP from `buildSolverConfigFromSettings` directly; `getSolverInputs` additionally applies adaptive-learning calibration and prediction adjustments.
+
+**Why:** A production `data.json` + `settings.json` snapshot is therefore compared on a slightly different LP than the one the box solves. Representativeness only — the gate's pass/fail is about solver drift, not plan content.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None
 
 ## Completed
+
+### Follow-ups from the v0.7.56 review (closed in v0.7.56)
+
+- **Common-hour intersection gated by the coverage floor** — `scoreOnData` takes `minCoverage`; a strategy that cannot predict enough of the window on its own (`1w/same` across a recorder gap) is scored on its own hours and no longer drags every other strategy's `n` under `minSamplesFor()`, which made the whole grid `no-eligible` for weeks.
+- **Stored `historicalPredictor` bounded on load** — `clampHistoricalPredictor()` in `prediction-config-schema.ts`, applied by `loadPredictionConfig`; a pre-validation `lookbackWeeks` no longer reaches `predict()` on every tick, and the debounced form save surfaces a rejected patch on the status line instead of `console.error` only.
+- **`dessPriceRefresh.durationMinutes` capped below a day** — `DESS_PRICE_REFRESH_LIMITS` (1–1439); `findDailyWindowStart` never matches a duration ≥ 1440 min. A longer window was open at every instant and left DESS in Mode 1 with every schedule write skipped.
+- **Timer guards scan the run history** — `tick()` and `catchUp()` judge on the whole ring buffer, not the latest record (a manual run or a settings-restart record after the scheduled one re-ran the backtest); a catch-up within 6 h before the window serves it; a tick never 409s against the timer's own in-flight run; a recent skipped attempt satisfies the catch-up.
+- **Chart button hardened** — client: request sequence guard, per-comparison memo, Chart buttons locked with the run buttons (also after a re-render); server: `scoreStrategyPredictions` serves from the history of the last comparison run, so the chart is computed on the table's data and window without another multi-week recorder query.
+- **`settings.json` read-modify-write lock** — generic `withJsonLock` in `json-store.ts`; `updateSettings()` in `settings-store.ts`; `POST /settings`, the EV override, the rebalance auto-disable and both VRM refresh writers go through it (the series refresh patches only `stepSize_m`).
+- **One HA-guard wrapper in `prediction-forecast-runner.ts`** — `runWithHaGuards` holds the connection/sensor asserts, the log line and the single `mapPredictionError` mapping (`connection refused` is a 502 on the validation and chart paths too).
+- **Shared schema validators** — `api/services/schema-validators.ts` replaces the duplicated `expect*`/`assertObject`/`clampInt` helpers in the settings and prediction-config schemas.
+- **Shared MIP solve options** — `lib/solve-options.ts` (`MIP_SOLVE_OPTIONS`, `solveOptionsFor`) used by the planner and the solver-refresh gate; the gate's objective tolerance derives from the same constants.
+- **Single-sensor scoring fetches only the entities it needs** — `entityIdsForSensors()` is same-name-merge- and derived-formula-aware (nested derived sensors included); used by the selector, the live forecast and the fixed predictor's accuracy read.
+
+### Filed from the v0.7.54 and v0.7.55 reviews (closed in v0.7.56)
 
 All of the following were filed from the v0.7.54 and v0.7.55 reviews and closed in **v0.7.56** (see `CHANGELOG.md` for the user-facing description).
 
 ### Predictions / auto-select
 
 - **Record failed auto-select runs** — `AutoSelectAction` gained `failed` (+ `error`); `runAutoSelect` records the failure before rethrowing, the card renders it.
-- **Make the daily run guards trigger- and outcome-aware** — manual runs no longer consume the day; skipped/failed runs no longer satisfy the catch-up; the window is consumed only after a completed run, so failures and 409s retry on the next tick; a 409 is logged as "deferred".
+- **Make the daily run guards trigger- and outcome-aware** — manual runs no longer consume the day; failed runs no longer satisfy the catch-up (a skipped attempt does — see the v0.7.56 follow-ups); the window is consumed only after a completed run, so failures and 409s retry on the next tick; a 409 is logged as "deferred".
 - **Make the daily fire window DST- and midnight-safe** — new `api/services/daily-window.ts` (`findDailyWindowStart`), shared with `dess-price-refresh.ts`; the window start is a real instant, so `23:58` wraps and a spring-forward time fires after the jump.
 - **Apply hysteresis to the `incumbent-unscored` switch** — `selectStrategy` returns `shouldSwitch: false` for it; the service records `suggested`, never `applied`.
-- **Score candidates on a common sample set** — `scoreOnData` scores every strategy of a sensor on the intersection of the hours all of them predicted; `n` is shared, `nSkipped` stays per-strategy; `minSamplesFor()` pins the derived floor in a test.
+- **Score candidates on a common sample set** — `scoreOnData` scores every strategy of a sensor on the intersection of the hours all of them predicted (among the strategies clearing the coverage floor — see the v0.7.56 follow-ups); `n` is shared, `nSkipped` stays per-strategy; `minSamplesFor()` pins the derived floor in a test.
 - **Validate `historicalPredictor` on write** — new `api/services/prediction-config-schema.ts`; `POST /predictions/config` rejects out-of-range `lookbackWeeks` (1–52) and bad enums with 400; the UI input has `max="52"`.
 - **Close the server-side lost update on `prediction-config.json`** — `updatePredictionConfig()` lock in the store; the selector re-reads and overlays only the three strategy fields, and drops the write when the predictor changed or (timer-triggered) the selector was disabled mid-run; the route uses the same lock.
 - **Project run records to the declared `StrategyScore` shape** — `toStrategyScore()` strips `sensor`/`validationPredictions` from `incumbent`, `best`, `ranking`.

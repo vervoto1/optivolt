@@ -17,7 +17,7 @@ vi.mock('../../../api/services/prediction-config-store.ts', async (importOrigina
 vi.mock('../../../api/services/load-prediction-service.ts', () => ({ scoreStrategies: vi.fn() }));
 vi.mock('../../../api/services/prediction-auto-select-store.ts', () => ({
   appendAutoSelectRun: vi.fn().mockResolvedValue(undefined),
-  getLatestAutoSelectRun: vi.fn().mockResolvedValue(null),
+  loadAutoSelectHistory: vi.fn().mockResolvedValue([]),
 }));
 
 const {
@@ -33,7 +33,7 @@ const {
 const { loadSettings } = await import('../../../api/services/settings-store.ts');
 const { loadPredictionConfig, savePredictionConfig, updatePredictionConfig } = await import('../../../api/services/prediction-config-store.ts');
 const { scoreStrategies } = await import('../../../api/services/load-prediction-service.ts');
-const { appendAutoSelectRun, getLatestAutoSelectRun } = await import('../../../api/services/prediction-auto-select-store.ts');
+const { appendAutoSelectRun, loadAutoSelectHistory } = await import('../../../api/services/prediction-auto-select-store.ts');
 const { HttpError } = await import('../../../api/http-errors.ts');
 
 const INCUMBENT = { sensor: 'Load without EV', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median' };
@@ -94,7 +94,7 @@ describe('runAutoSelect', () => {
     stopPredictionAutoSelect();
     loadSettings.mockResolvedValue(makeSettings());
     loadPredictionConfig.mockResolvedValue(makePredConfig());
-    getLatestAutoSelectRun.mockResolvedValue(null);
+    loadAutoSelectHistory.mockResolvedValue([]);
     scoreStrategies.mockResolvedValue([score(8, 'all', 'median', 483), score(26, 'all', 'median', 457)]);
     log = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -168,12 +168,15 @@ describe('runAutoSelect', () => {
     loadSettings.mockResolvedValue(makeSettings({ windowDays: 14, metric: 'rmse', minImprovement_percent: 5 }));
     await runAutoSelect();
 
-    const [runConfig, strategies, window] = scoreStrategies.mock.calls[0];
+    const [runConfig, strategies, window, options] = scoreStrategies.mock.calls[0];
     expect(runConfig).toMatchObject({ haUrl: 'ws://homeassistant.local:8123/api/websocket', haToken: 'token', activeType: 'historical' });
     expect(strategies).toHaveLength(80);
     expect(strategies.every(s => s.sensor === 'Load without EV')).toBe(true);
     expect(strategies.some(s => s.lookbackWeeks === 8 && s.dayFilter === 'all' && s.aggregation === 'median')).toBe(true);
     expect(window).toEqual({ start: '2026-08-08T00:00:00.000Z', end: '2026-08-22T00:00:00.000Z' });
+    // The eligibility floor also gates the scorer's common-hour intersection,
+    // so one gap-sensitive strategy cannot pull every other one under it.
+    expect(options).toEqual({ minCoverage: minSamplesFor(14) });
   });
 
   it('applies the 80 % eligibility floor derived from the window', async () => {
@@ -409,7 +412,7 @@ describe('startPredictionAutoSelect timer', () => {
     stopPredictionAutoSelect();
     loadSettings.mockResolvedValue(makeSettings({ enabled: true, mode: 'suggest', time: '03:30' }));
     loadPredictionConfig.mockResolvedValue(makePredConfig());
-    getLatestAutoSelectRun.mockResolvedValue(null);
+    loadAutoSelectHistory.mockResolvedValue([]);
     scoreStrategies.mockResolvedValue([score(8, 'all', 'median', 300)]);
     log = vi.spyOn(console, 'log').mockImplementation(() => {});
     error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -435,7 +438,7 @@ describe('startPredictionAutoSelect timer', () => {
   it('fires once inside the daily window and again the next day', async () => {
     // Local time (TZ=Europe/Amsterdam in vitest config); recent run so no catch-up
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     startPredictionAutoSelect(enabled());
     expect(isAutoSelectScheduled()).toBe(true);
 
@@ -453,7 +456,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('skips the scheduled run when a run already happened today (restart inside the window)', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:31:00'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T03:30:20'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T03:30:20')]);
     startPredictionAutoSelect(enabled());
 
     await vi.advanceTimersByTimeAsync(60_000);
@@ -463,7 +466,7 @@ describe('startPredictionAutoSelect timer', () => {
     // A skipped automatic attempt counts too: its cause is a config state that
     // a retry a minute later will not change.
     vi.clearAllMocks();
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T03:30:20', { action: 'skipped' }));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T03:30:20', { action: 'skipped' })]);
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000);
     expect(scoreStrategies).not.toHaveBeenCalled();
@@ -471,7 +474,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('does not let a manual run earlier in the day cancel the scheduled run', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T01:00:00', { trigger: 'manual' }));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T01:00:00', { trigger: 'manual' })]);
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000);
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
@@ -480,7 +483,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('retries a failed scheduled run on the next tick and stops once a run completes', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     scoreStrategies.mockRejectedValueOnce(new Error('HA down'));
     startPredictionAutoSelect(enabled());
 
@@ -497,7 +500,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('retries after a restart inside the window when the persisted run for it failed', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:31:00'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T03:30:20', { action: 'failed', error: 'HA down' }));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T03:30:20', { action: 'failed', error: 'HA down' })]);
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000);
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
@@ -505,16 +508,17 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('defers behind a manual run in flight and retries on the next tick', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     let release;
     scoreStrategies.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
     const manual = runAutoSelect(); // manual run holding the flag
     await vi.advanceTimersByTimeAsync(0);
     startPredictionAutoSelect(enabled());
 
-    await vi.advanceTimersByTimeAsync(60_000); // 03:30:30 — 409
-    expect(log).toHaveBeenCalledWith('[auto-select] scheduled run deferred — a manual run is in flight');
+    await vi.advanceTimersByTimeAsync(60_000); // 03:30:30 — deferred without a 409
+    expect(log).toHaveBeenCalledWith('[auto-select] scheduled run deferred — another run is in flight');
     expect(error).not.toHaveBeenCalled();
+    expect(appendAutoSelectRun).not.toHaveBeenCalled();
 
     release([score(8, 'all', 'median', 300)]);
     await manual;
@@ -523,16 +527,70 @@ describe('startPredictionAutoSelect timer', () => {
     expect(appendAutoSelectRun.mock.calls.at(-1)[0].trigger).toBe('scheduled');
   });
 
+  it('does not race its own run: ticks during a slow scheduled run neither 409 nor log a deferral', async () => {
+    vi.setSystemTime(new Date('2026-08-23T03:29:30'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
+    let release;
+    scoreStrategies.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    startPredictionAutoSelect(enabled());
+
+    await vi.advanceTimersByTimeAsync(60_000); // 03:30:30 — scheduled run starts, HA fetch hangs
+    expect(scoreStrategies).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2 * 60_000); // 03:32:30 — two more ticks while it runs
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('deferred'));
+    expect(appendAutoSelectRun).not.toHaveBeenCalled();
+
+    release([score(8, 'all', 'median', 300)]);
+    await vi.advanceTimersByTimeAsync(2 * 60_000); // rest of the window
+    expect(scoreStrategies).toHaveBeenCalledTimes(1);
+    expect(appendAutoSelectRun).toHaveBeenCalledTimes(1);
+    expect(appendAutoSelectRun.mock.calls[0][0]).toMatchObject({ trigger: 'scheduled', action: 'kept' });
+  });
+
+  it('judges "already ran today" on the whole history, not the latest record', async () => {
+    // Scheduled run at 03:30:10, a manual run at 03:31 (now the latest record),
+    // then a settings save restarts the timer inside the window: the window
+    // is still served.
+    vi.setSystemTime(new Date('2026-08-23T03:32:00'));
+    loadAutoSelectHistory.mockResolvedValue([
+      pastRun('2026-08-22T03:30:10'),
+      pastRun('2026-08-23T03:30:10'),
+      pastRun('2026-08-23T03:31:00', { trigger: 'manual' }),
+    ]);
+    startPredictionAutoSelect(enabled());
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(scoreStrategies).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('already ran today'));
+  });
+
+  it('treats a catch-up that fired shortly before the window as having served it', async () => {
+    // Boot at 03:27 → catch-up at 03:29; its record is stamped before the
+    // 03:30 window opens, and a scheduled run on top of it would score the
+    // same data twice.
+    vi.setSystemTime(new Date('2026-08-23T03:30:30'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T03:29:10', { trigger: 'catch-up' })]);
+    startPredictionAutoSelect(enabled());
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(scoreStrategies).not.toHaveBeenCalled();
+
+    // A catch-up the previous evening is too old to count as today's run.
+    vi.clearAllMocks();
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T20:00:00', { trigger: 'catch-up' })]);
+    startPredictionAutoSelect(enabled());
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(scoreStrategies).toHaveBeenCalledTimes(1);
+  });
+
   it('abandons a tick that was suspended on the history read when the timer is stopped or replaced', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
     let releaseHistory;
-    getLatestAutoSelectRun.mockReturnValueOnce(new Promise(resolve => { releaseHistory = resolve; }));
+    loadAutoSelectHistory.mockReturnValueOnce(new Promise(resolve => { releaseHistory = resolve; }));
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000); // tick is now awaiting the history
-    expect(getLatestAutoSelectRun).toHaveBeenCalledTimes(1);
+    expect(loadAutoSelectHistory).toHaveBeenCalledTimes(1);
 
     stopPredictionAutoSelect();
-    releaseHistory(null);
+    releaseHistory([]);
     await vi.advanceTimersByTimeAsync(0);
     expect(scoreStrategies).not.toHaveBeenCalled();
   });
@@ -541,7 +599,7 @@ describe('startPredictionAutoSelect timer', () => {
     // 2027-03-28 02:00 → 03:00 CEST in Europe/Amsterdam; 02:30 never appears
     // on the wall clock, and the old minutes-of-day check produced no run at all.
     vi.setSystemTime(new Date('2027-03-28T00:59:30Z')); // 01:59:30 CET, 30 s before the jump
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2027-03-27T02:31:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2027-03-27T02:31:00')]);
     startPredictionAutoSelect(enabled({ time: '02:30' }));
     await vi.advanceTimersByTimeAsync(60 * 60_000); // one real hour: wall clock 03:59 → no, window opened at 03:30
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
@@ -550,13 +608,13 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('fires in a window that wraps midnight and again the next evening', async () => {
     vi.setSystemTime(new Date('2026-08-24T00:00:30')); // local; window 23:58–00:03 opened yesterday
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T23:58:30'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T23:58:30')]);
     startPredictionAutoSelect(enabled({ time: '23:58' }));
     await vi.advanceTimersByTimeAsync(60_000); // 00:01:30
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
 
     // The evening window of the new day is a different one.
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-24T00:01:30'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-24T00:01:30')]);
     await vi.advanceTimersByTimeAsync(23 * 60 * 60_000 + 57 * 60_000); // 23:58:30
     expect(scoreStrategies).toHaveBeenCalledTimes(2);
   });
@@ -574,26 +632,25 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('runs a catch-up when the last run is older than 24 h but not when it is recent', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T11:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T11:00:00')]);
     startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(scoreStrategies).not.toHaveBeenCalled();
 
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(scoreStrategies).toHaveBeenCalledTimes(1);
   });
 
-  it('still runs the catch-up when the recent run was manual, skipped, or failed', async () => {
+  it('still runs the catch-up when the only recent run was manual or failed', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     for (const recent of [
       pastRun('2026-08-23T11:00:00', { trigger: 'manual' }),
-      pastRun('2026-08-23T11:00:00', { action: 'skipped', skipReason: 'Home Assistant connection not configured' }),
       pastRun('2026-08-23T11:00:00', { action: 'failed', error: 'HA down' }),
     ]) {
       vi.clearAllMocks();
-      getLatestAutoSelectRun.mockResolvedValue(recent);
+      loadAutoSelectHistory.mockResolvedValue([recent]);
       startPredictionAutoSelect(enabled(), { runCatchUp: true });
       await vi.advanceTimersByTimeAsync(3 * 60_000);
       expect(scoreStrategies).toHaveBeenCalledTimes(1);
@@ -601,14 +658,38 @@ describe('startPredictionAutoSelect timer', () => {
     }
   });
 
+  it('is satisfied by a recent skipped automatic attempt (a restart does not change the skip reason)', async () => {
+    vi.setSystemTime(new Date('2026-08-23T12:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([
+      pastRun('2026-08-23T11:00:00', { trigger: 'catch-up', action: 'skipped', skipReason: 'active predictor is "fixed", not historical' }),
+    ]);
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(scoreStrategies).not.toHaveBeenCalled();
+    expect(appendAutoSelectRun).not.toHaveBeenCalled();
+  });
+
+  it('judges the catch-up on the whole history, so a manual run after the scheduled one does not trigger it', async () => {
+    // Scheduled run completed at 03:30, the user clicked Run Selection at
+    // 10:00 (now the latest record), the add-on restarted at 10:05.
+    vi.setSystemTime(new Date('2026-08-23T10:05:00'));
+    loadAutoSelectHistory.mockResolvedValue([
+      pastRun('2026-08-23T03:30:10'),
+      pastRun('2026-08-23T10:00:00', { trigger: 'manual' }),
+    ]);
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(scoreStrategies).not.toHaveBeenCalled();
+  });
+
   it('abandons the catch-up when the timer is stopped while it reads the history', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     let releaseHistory;
-    getLatestAutoSelectRun.mockReturnValueOnce(new Promise(resolve => { releaseHistory = resolve; }));
+    loadAutoSelectHistory.mockReturnValueOnce(new Promise(resolve => { releaseHistory = resolve; }));
     startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(2 * 60_000);
     stopPredictionAutoSelect();
-    releaseHistory(null);
+    releaseHistory([]);
     await vi.advanceTimersByTimeAsync(0);
     expect(scoreStrategies).not.toHaveBeenCalled();
   });
@@ -636,7 +717,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('restarting replaces the previous timer (no double fire)', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     startPredictionAutoSelect(enabled());
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000);
@@ -645,7 +726,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('never fires on an unparseable time, and falls back to defaults for missing time/mode', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-23T01:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-23T01:00:00')]);
     startPredictionAutoSelect(enabled({ time: 'xx:yy' }));
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(scoreStrategies).not.toHaveBeenCalled();
@@ -656,7 +737,7 @@ describe('startPredictionAutoSelect timer', () => {
 
   it('logs scheduled-run failures instead of throwing', async () => {
     vi.setSystemTime(new Date('2026-08-23T03:29:30'));
-    getLatestAutoSelectRun.mockResolvedValue(pastRun('2026-08-22T06:00:00'));
+    loadAutoSelectHistory.mockResolvedValue([pastRun('2026-08-22T06:00:00')]);
     scoreStrategies.mockRejectedValue(new Error('HA down'));
     startPredictionAutoSelect(enabled());
     await vi.advanceTimersByTimeAsync(60_000);
@@ -666,7 +747,7 @@ describe('startPredictionAutoSelect timer', () => {
   it('treats a failing history read as "no run yet"', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
-    getLatestAutoSelectRun.mockRejectedValue(new Error('corrupt'));
+    loadAutoSelectHistory.mockRejectedValue(new Error('corrupt'));
     startPredictionAutoSelect(enabled(), { runCatchUp: true });
     await vi.advanceTimersByTimeAsync(2 * 60_000);
     expect(warn).toHaveBeenCalledWith('[auto-select] Failed to read run history:', 'corrupt');

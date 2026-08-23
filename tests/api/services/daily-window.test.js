@@ -20,6 +20,17 @@ describe('findDailyWindowStart', () => {
     expect(findDailyWindowStart(local(2026, 8, 23, 3, 32), '', 5)).toBeNull();
   });
 
+  it('never matches a duration of a day or more, or a non-positive one', () => {
+    // With 24 h+ yesterday's start covers every instant today's does not — an
+    // always-open "daily" window (the price refresh would never leave Mode 1).
+    for (const minutes of [0, -5, NaN, 1440, 1500, 100_000]) {
+      expect(findDailyWindowStart(local(2026, 8, 23, 3, 32), '03:30', minutes)).toBeNull();
+      expect(isInDailyWindow(local(2026, 8, 23, 20, 0), '03:30', minutes)).toBe(false);
+    }
+    expect(findDailyWindowStart(local(2026, 8, 24, 3, 28), '03:30', 1439)).toEqual(local(2026, 8, 23, 3, 30));
+    expect(findDailyWindowStart(local(2026, 8, 24, 3, 30), '03:30', 1439)).toEqual(local(2026, 8, 24, 3, 30));
+  });
+
   it('wraps across midnight instead of truncating the window at 23:59', () => {
     // 23:58 + 5 min runs to 00:03 the next day; the start is yesterday's 23:58.
     expect(findDailyWindowStart(local(2026, 8, 24, 0, 1), '23:58', 5)).toEqual(local(2026, 8, 23, 23, 58));

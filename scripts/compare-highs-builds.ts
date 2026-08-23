@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildSolverConfigFromSettings } from '../api/services/config-builder.ts';
 import { buildLP } from '../lib/build-lp.ts';
+import { MIP_SOLVE_OPTIONS, solveOptionsFor } from '../lib/solve-options.ts';
 import { parseSolution, type HighsSolution } from '../lib/parse-solution.ts';
 import type { Data, Settings } from '../api/types.ts';
 
@@ -42,9 +43,9 @@ const startMs = process.env.NOW ? Date.parse(process.env.NOW) : Date.parse(data.
 const timing = { startMs, stepMin: settings.stepSize_m ?? 15 };
 const cfg = buildSolverConfigFromSettings(settings, data, startMs);
 const lp = buildLP(cfg);
-// Same options as planner-service.ts.
-const hasBinaries = cfg.load_W.length > 0;
-const solveOptions = hasBinaries ? { mip_rel_gap: 0.005, mip_abs_gap: 0.01 } : {};
+// The planner's own options and binaries predicate (lib/solve-options.ts).
+const solveOptions = solveOptionsFor(cfg);
+const hasBinaries = Object.keys(solveOptions).length > 0;
 
 interface HighsModule { solve(lp: string, options?: Record<string, unknown>): HighsSolution & { Status: string; ObjectiveValue: number } }
 
@@ -81,7 +82,7 @@ for (let i = 0; i < vendored.rows.length; i++) {
 }
 console.log(`rows: ${vendored.rows.length}, differing: ${differingRows}, max |diff|: ${maxAbsDiff}${fields.size ? `, fields: ${[...fields].join(', ')}` : ''}`);
 
-const objectiveTolerance = Math.max(0.01, Math.abs(vendored.objective) * 0.005);
+const objectiveTolerance = Math.max(MIP_SOLVE_OPTIONS.mip_abs_gap, Math.abs(vendored.objective) * MIP_SOLVE_OPTIONS.mip_rel_gap);
 if (vendored.status !== candidate.status || Math.abs(vendored.objective - candidate.objective) > objectiveTolerance) {
   console.error('FAIL: solver status or objective differs beyond the planner MIP gap');
   process.exit(1);

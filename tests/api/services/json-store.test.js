@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { writeJson, readJson } from '../../../api/services/json-store.ts';
+import { writeJson, readJson, withJsonLock } from '../../../api/services/json-store.ts';
 import fs from 'node:fs/promises';
 
 vi.mock('node:fs/promises');
@@ -104,5 +104,41 @@ describe('json-store — readJson', () => {
     fs.readFile.mockRejectedValue(err);
 
     await expect(readJson('/tmp/missing.json')).rejects.toThrow('ENOENT');
+  });
+});
+
+describe('json-store — withJsonLock', () => {
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  it('runs callers for the same path one after another, in order', async () => {
+    const events = [];
+    let release;
+    const first = withJsonLock('/tmp/a.json', async () => {
+      events.push('first:start');
+      await new Promise(resolve => { release = resolve; });
+      events.push('first:end');
+      return 1;
+    });
+    const second = withJsonLock('/tmp/sub/../a.json', async () => { events.push('second'); return 2; });
+    await tick();
+    expect(events).toEqual(['first:start']);
+    release();
+    expect(await Promise.all([first, second])).toEqual([1, 2]);
+    expect(events).toEqual(['first:start', 'first:end', 'second']);
+  });
+
+  it('does not block callers for a different path', async () => {
+    const events = [];
+    let release;
+    const blocked = withJsonLock('/tmp/a.json', () => new Promise(resolve => { release = resolve; }));
+    await withJsonLock('/tmp/b.json', async () => { events.push('b'); });
+    expect(events).toEqual(['b']);
+    release();
+    await blocked;
+  });
+
+  it('rejects a failing caller without breaking the chain for the next one', async () => {
+    await expect(withJsonLock('/tmp/a.json', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(await withJsonLock('/tmp/a.json', async () => 'ok')).toBe('ok');
   });
 });

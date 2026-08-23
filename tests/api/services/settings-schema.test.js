@@ -3,8 +3,7 @@ import {
   AUTO_SELECT_LIMITS,
   mergeSettings,
   normalizeSettings,
-  sanitizeSettingsResponse,
-} from '../../../api/services/settings-schema.ts';
+  sanitizeSettingsResponse, DESS_PRICE_REFRESH_LIMITS } from '../../../api/services/settings-schema.ts';
 
 function validSettings() {
   return {
@@ -330,6 +329,20 @@ describe('settings-schema', () => {
 
         s.dessPriceRefresh = { enabled: true, time: '24:30', durationMinutes: 15 };
         expect(normalizeSettings(s).dessPriceRefresh.time).toBe('23:59');
+      });
+
+      it('bounds dessPriceRefresh.durationMinutes below a day — a longer window never closes', () => {
+        // The window is found through today's and yesterday's start, so a
+        // duration of a day or more is open at every instant: DESS would be
+        // switched to Mode 1 once and never restored.
+        const s = validSettings();
+        s.dessPriceRefresh = { enabled: true, time: '13:00', durationMinutes: 1500 };
+        expect(normalizeSettings(s).dessPriceRefresh.durationMinutes).toBe(DESS_PRICE_REFRESH_LIMITS.durationMinutes.max);
+        expect(DESS_PRICE_REFRESH_LIMITS.durationMinutes.max).toBe(1439);
+        s.dessPriceRefresh = { enabled: true, time: '13:00', durationMinutes: 0.2 };
+        expect(normalizeSettings(s).dessPriceRefresh.durationMinutes).toBe(1);
+        s.dessPriceRefresh = { enabled: true, time: '13:00', durationMinutes: 15.4 };
+        expect(normalizeSettings(s).dessPriceRefresh.durationMinutes).toBe(15);
       });
 
       it('rejects a non-object block', () => {

@@ -140,6 +140,25 @@ describe('executeStrategyPredictions', () => {
     scoreStrategyPredictions.mockRejectedValueOnce(new Error('boom'));
     await expect(executeStrategyPredictions(makeConfig(), strategy)).rejects.toThrow('boom');
   });
+
+  it('shares one HA-error mapping with the forecast path — a refused connection is a 502 here too', async () => {
+    // The validation and chart paths used to carry their own copy of the
+    // heuristic, which had already drifted (no 'connection refused').
+    scoreStrategyPredictions.mockRejectedValueOnce(new Error('connection refused by host'));
+    await expect(executeStrategyPredictions(makeConfig(), strategy))
+      .rejects.toMatchObject({ statusCode: 502, message: /HA connection error/ });
+    runValidation.mockRejectedValueOnce(new Error('connection refused by host'));
+    await expect(executePredictionValidation(makeConfig()))
+      .rejects.toMatchObject({ statusCode: 502, message: /HA connection error/ });
+  });
+
+  it('logs the strategy with the shared server-side formatter', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    scoreStrategyPredictions.mockResolvedValue({ strategy, validationPredictions: [] });
+    await executeStrategyPredictions(makeConfig(), strategy);
+    expect(log).toHaveBeenCalledWith('[predict] validate/strategy', expect.objectContaining({ strategy: 'House/4w/same/mean' }));
+    log.mockRestore();
+  });
 });
 
 describe('executePredictionValidation', () => {

@@ -6,6 +6,8 @@
  * auto-select).
  */
 
+const MINUTES_PER_DAY = 24 * 60;
+
 /**
  * Start of the daily window that `now` falls in, or null when it is outside.
  *
@@ -20,11 +22,15 @@
  *   forward (02:30 → 03:30), so the window opens at the first instant after
  *   the jump instead of never.
  *
- * `time` is `HH:MM`; an unparseable value never matches.
+ * `time` is `HH:MM`; an unparseable value never matches. Neither does a
+ * duration of a day or more: yesterday's start would then cover every instant
+ * today's does not, and a "daily" window that is always open is never what a
+ * caller wants (the price refresh would park DESS in Mode 1 for good).
  */
 export function findDailyWindowStart(now: Date, time: string, durationMinutes: number): Date | null {
   const [h, m] = time.split(':').map(Number);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (!(durationMinutes > 0 && durationMinutes < MINUTES_PER_DAY)) return null;
   const durationMs = durationMinutes * 60_000;
   for (const dayOffset of [0, -1]) {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, h, m);

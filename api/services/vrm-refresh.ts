@@ -1,6 +1,6 @@
 import { VRMClient } from '../../lib/vrm-api.ts';
 import type { VRMForecasts, VRMPrices } from '../../lib/vrm-api.ts';
-import { loadSettings, saveSettings } from './settings-store.ts';
+import { loadSettings, updateSettings } from './settings-store.ts';
 import { loadData, saveData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
@@ -43,10 +43,9 @@ export async function refreshSettingsFromVrmAndPersist() {
     }),
   ]);
 
-  // v8 ignore next — module-level const
-  const base = await loadSettings();
-
-  const merged = {
+  // Overlaid onto the settings as they are at write time (under the store's
+  // lock), so a UI save that landed during the VRM/MQTT round-trips is kept.
+  const merged = (await updateSettings(base => ({
     ...base,
     batteryCapacity_Wh:       vrmSettings.batteryCapacity_Wh,
     maxDischargePower_W:      vrmSettings.dischargePower_W,
@@ -58,9 +57,7 @@ export async function refreshSettingsFromVrmAndPersist() {
     // SoC limits now come from MQTT (if available), otherwise keep existing.
     minSoc_percent: socLimits?.minSoc_percent ?? base.minSoc_percent,
     maxSoc_percent: socLimits?.maxSoc_percent ?? base.maxSoc_percent,
-  };
-
-  await saveSettings(merged);
+  })))!;
   return merged;
 }
 
@@ -239,10 +236,11 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
 
   await saveData(nextData);
 
-  // Optionally keep stepSize_m in settings in sync
-  const nextSettings = {
-    ...settings,
-    stepSize_m: forecasts?.step_minutes || settings.stepSize_m,
-  };
-  await saveSettings(nextSettings);
+  // Keep stepSize_m in settings in sync. Patched onto the current file under
+  // the store's lock rather than saving the `settings` snapshot loaded before
+  // the VRM fetches: that snapshot is seconds old by now, and writing it back
+  // whole reverted any POST /settings, EV override or rebalance auto-disable
+  // that landed in between.
+  const stepSize_m = forecasts?.step_minutes || settings.stepSize_m;
+  await updateSettings(current => current.stepSize_m === stepSize_m ? null : { ...current, stepSize_m });
 }

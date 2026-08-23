@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadSettings, saveSettings } from '../../../api/services/settings-store.ts';
+import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
+import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
 import { loadData, saveData } from '../../../api/services/data-store.ts';
 import * as mqttService from '../../../api/services/mqtt-service.ts';
 
@@ -90,6 +91,7 @@ describe('refreshSeriesFromVrmAndPersist — MQTT SoC', () => {
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
@@ -153,6 +155,7 @@ describe('refreshSeriesFromVrmAndPersist — VRM data fetch', () => {
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
   });
 
@@ -241,14 +244,38 @@ describe('refreshSeriesFromVrmAndPersist — VRM data fetch', () => {
   });
 
   it('updates stepSize_m in settings from forecast step_minutes', async () => {
-    mockFetchForecasts.mockResolvedValue({ ...forecasts, step_minutes: 15 });
+    mockFetchForecasts.mockResolvedValue({ ...forecasts, step_minutes: 30 });
     mockFetchPrices.mockResolvedValue({ ...prices });
 
     await refreshSeriesFromVrmAndPersist();
 
     expect(saveSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ stepSize_m: 15 }),
+      expect.objectContaining({ stepSize_m: 30 }),
     );
+  });
+
+  it('patches stepSize_m onto the settings at write time and skips the write when it is unchanged', async () => {
+    // The refresh loaded its settings before the multi-second VRM fetches; a
+    // POST /settings that landed meanwhile must survive, so only stepSize_m is
+    // overlaid on a fresh load — and nothing is written when it already matches.
+    mockFetchForecasts.mockResolvedValue({ ...forecasts, step_minutes: 30 });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+    loadSettings
+      .mockResolvedValueOnce({ ...baseSettings })
+      .mockResolvedValueOnce({ ...baseSettings, rebalanceEnabled: true });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(updateSettings).toHaveBeenCalledOnce();
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ stepSize_m: 30, rebalanceEnabled: true }));
+
+    vi.clearAllMocks();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    mockFetchForecasts.mockResolvedValue({ ...forecasts, step_minutes: baseSettings.stepSize_m });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+    await refreshSeriesFromVrmAndPersist();
+    expect(saveSettings).not.toHaveBeenCalled();
   });
 
   it('throws when VRM_INSTALLATION_ID is not set', async () => {
@@ -275,6 +302,7 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -327,6 +355,7 @@ describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null'
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
@@ -374,6 +403,7 @@ describe('refreshSettingsFromVrmAndPersist', () => {
 
     loadSettings.mockResolvedValue({ ...baseSettings });
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mqttService.readVictronSocLimits.mockResolvedValue({
       minSoc_percent: 15,
       maxSoc_percent: 95,
@@ -449,6 +479,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -581,6 +612,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources failure paths', ()
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -675,6 +707,7 @@ describe('refreshSeriesFromVrmAndPersist — empty timestamps', () => {
     loadData.mockResolvedValue({ ...baseData });
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
 

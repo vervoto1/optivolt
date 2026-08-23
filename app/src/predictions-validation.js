@@ -2,7 +2,7 @@
 import { fetchStrategyPredictions, runValidation, savePredictionConfig } from './api/api.js';
 import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from './chart-tooltip.js';
 import { isSameStrategy } from './predictions/strategy.js';
-import { setRunButtonsDisabled } from './predictions/run-buttons.js';
+import { areRunButtonsDisabled, setRunButtonsDisabled } from './predictions/run-buttons.js';
 
 /** Rows shown per sensor before the "show all" toggle (the grid has 80 strategies per sensor). */
 const TOP_ROWS = 20;
@@ -14,6 +14,14 @@ let _activeSensor = null;
 let accuracyChart = null;
 let diffChart = null;
 let showAllRows = false;
+/**
+ * Per-hour predictions already fetched for the current comparison, keyed by
+ * strategy. Re-opening a chart is free, and the map is dropped with the
+ * results it belongs to (a new run scores a new window).
+ */
+let chartCache = new Map();
+/** Bumped per Chart click; a response for an older click is dropped. */
+let chartRequestSeq = 0;
 
 export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights }) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
@@ -76,6 +84,7 @@ async function onRunValidation(deps) {
     try {
       const result = await runValidation();
       validationResults = result;
+      chartCache = new Map();
       renderResults(result, deps);
       setComparisonStatus(`Validation complete — ${result.results.length} combinations evaluated`);
     } catch (err) {
@@ -188,6 +197,9 @@ function renderMetricsTable(results, sensorName, deps) {
 
     tbody.appendChild(tr);
   });
+  // A re-render during a run (the Use button, a finished selection) must not
+  // hand out enabled Chart buttons while the others are locked.
+  if (areRunButtonsDisabled()) setRunButtonsDisabled(true);
 
   const showAllBtn = document.getElementById('pred-show-all');
   if (showAllBtn) {
@@ -219,28 +231,47 @@ async function onUseConfig(row, deps) {
   }
 }
 
+function chartKey(row) {
+  return `${row.sensor}|${row.lookbackWeeks}|${row.dayFilter}|${row.aggregation}`;
+}
+
 /**
  * The validation response carries metrics only; the per-hour series behind a
  * chart is fetched for the one strategy being opened (80 strategies × every
  * window hour per sensor was ~15 MB per comparison run, 79 of them unused).
+ *
+ * A fetch is a multi-week HA history read on the server, so the run buttons
+ * lock while one is in flight, a strategy is fetched once per comparison, and
+ * only the most recent click gets to draw — two overlapping fetches used to
+ * render whichever response landed last, not the row last clicked.
  */
 async function onShowChart(row, deps) {
   const canvas = document.getElementById('pred-accuracy-chart');
   if (!canvas) return;
 
-  let preds;
-  try {
-    deps.setComparisonStatus?.('Loading chart…');
-    ({ validationPredictions: preds = [] } = await fetchStrategyPredictions({
-      sensor: row.sensor,
-      lookbackWeeks: row.lookbackWeeks,
-      dayFilter: row.dayFilter,
-      aggregation: row.aggregation,
-    }));
-    deps.setComparisonStatus?.('');
-  } catch (err) {
-    deps.setComparisonStatus?.(`Chart failed: ${err.message}`, true);
-    return;
+  const key = chartKey(row);
+  let preds = chartCache.get(key);
+  if (!preds) {
+    const seq = ++chartRequestSeq;
+    setRunButtonsDisabled(true);
+    try {
+      deps.setComparisonStatus?.('Loading chart…');
+      ({ validationPredictions: preds = [] } = await fetchStrategyPredictions({
+        sensor: row.sensor,
+        lookbackWeeks: row.lookbackWeeks,
+        dayFilter: row.dayFilter,
+        aggregation: row.aggregation,
+      }));
+      if (seq !== chartRequestSeq) return;
+      chartCache.set(key, preds);
+      deps.setComparisonStatus?.('');
+    } catch (err) {
+      if (seq !== chartRequestSeq) return;
+      deps.setComparisonStatus?.(`Chart failed: ${err.message}`, true);
+      return;
+    } finally {
+      if (seq === chartRequestSeq) setRunButtonsDisabled(false);
+    }
   }
 
   renderAccuracyCharts(row, preds);

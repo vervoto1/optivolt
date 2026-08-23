@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../../api/services/json-store.ts', () => {
+vi.mock('../../../api/services/json-store.ts', async (importOriginal) => {
+  const { withJsonLock } = await importOriginal();
   let store = {};
   return {
+    // The real per-path lock: the update tests below exercise its serialisation.
+    withJsonLock,
     resolveDataDir: () => '/tmp/test-data',
     readJson: vi.fn(async (filePath) => {
       if (store[filePath] === undefined) {
@@ -20,7 +23,7 @@ vi.mock('../../../api/services/json-store.ts', () => {
   };
 });
 
-import { loadSettings, saveSettings, loadDefaultSettings } from '../../../api/services/settings-store.ts';
+import { loadSettings, saveSettings, updateSettings, loadDefaultSettings } from '../../../api/services/settings-store.ts';
 import { readJson, writeJson, _reset, _set } from '../../../api/services/json-store.ts';
 
 // Minimal valid settings matching the schema
@@ -262,6 +265,52 @@ describe('saveSettings', () => {
       expect.stringContaining('settings.json'),
       expect.objectContaining(settings),
     );
+  });
+});
+
+describe('updateSettings', () => {
+  const SETTINGS_PATH = '/tmp/test-data/settings.json';
+
+  beforeEach(() => {
+    _reset();
+    _set(getDefaultPath(), makeDefaults());
+    vi.clearAllMocks();
+  });
+
+  it('loads, mutates, normalises and saves, returning what was persisted', async () => {
+    const next = await updateSettings(s => ({ ...s, rebalanceEnabled: true, batteryCapacity_Wh: 4000.4 }));
+    expect(next.rebalanceEnabled).toBe(true);
+    expect(writeJson).toHaveBeenCalledWith(SETTINGS_PATH, expect.objectContaining({ rebalanceEnabled: true, batteryCapacity_Wh: 4000 }));
+    expect((await loadSettings()).rebalanceEnabled).toBe(true);
+  });
+
+  it('leaves the file untouched when the mutator returns null', async () => {
+    expect(await updateSettings(() => null)).toBeNull();
+    expect(writeJson).not.toHaveBeenCalled();
+  });
+
+  it('serialises concurrent updates so neither loses the other', async () => {
+    // The VRM refresh loads the settings, awaits multi-second fetches and
+    // saves the whole object back; a POST /settings in that window used to be
+    // reverted on disk with nothing logged.
+    _set(SETTINGS_PATH, makeDefaults({ stepSize_m: 15, rebalanceEnabled: false }));
+    const seenBySecond = [];
+    const first = updateSettings(s => ({ ...s, rebalanceEnabled: true }));
+    const second = updateSettings(s => { seenBySecond.push(s.rebalanceEnabled); return { ...s, stepSize_m: 30 }; });
+    await Promise.all([first, second]);
+
+    expect(seenBySecond).toEqual([true]);
+    const final = await loadSettings();
+    expect(final.rebalanceEnabled).toBe(true);
+    expect(final.stepSize_m).toBe(30);
+    expect(writeJson).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects without writing when the mutator throws, and keeps serialising afterwards', async () => {
+    await expect(updateSettings(() => { throw new Error('haUrl must be a Home Assistant websocket URL'); })).rejects.toThrow('haUrl');
+    expect(writeJson).not.toHaveBeenCalled();
+    const next = await updateSettings(s => ({ ...s, rebalanceEnabled: true }));
+    expect(next.rebalanceEnabled).toBe(true);
   });
 });
 

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveDataDir, readJson, writeJson } from './json-store.ts';
+import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.ts';
 import type { Settings } from '../types.ts';
 import { normalizeSettings } from './settings-schema.ts';
 
@@ -67,9 +67,35 @@ export async function loadSettings(): Promise<Settings> {
 
 /**
  * Persist settings to DATA_DIR/settings.json (pretty-printed).
+ *
+ * Prefer `updateSettings`: a plain save writes back whatever snapshot the
+ * caller loaded, so anything another writer persisted in between is lost.
  */
 export async function saveSettings(settings: Settings): Promise<void> {
-  await writeJson(SETTINGS_PATH, normalizeSettings(settings));
+  await withJsonLock(SETTINGS_PATH, () => writeJson(SETTINGS_PATH, normalizeSettings(settings)));
+}
+
+/**
+ * Read-modify-write the settings under the store's lock.
+ *
+ * Four writers share this file — `POST /settings`, the EV override route, the
+ * planner's rebalance auto-disable and the VRM refresh — and the refresh in
+ * particular loads the settings, awaits multi-second VRM/MQTT/Open-Meteo
+ * fetches, then saves the whole object back: a save landing in that window
+ * used to be silently reverted on disk while the timers restarted by
+ * `POST /settings` kept running on the newer config. `mutate` receives the
+ * freshly loaded (normalised) settings and returns what to persist, or
+ * `null` to leave the file untouched; the persisted value is returned. A
+ * throwing `mutate` (a 400 from `normalizeSettings`) rejects without writing.
+ */
+export async function updateSettings(
+  mutate: (current: Settings) => Settings | null,
+): Promise<Settings | null> {
+  return withJsonLock(SETTINGS_PATH, async () => {
+    const next = mutate(await loadSettings());
+    if (next) await writeJson(SETTINGS_PATH, normalizeSettings(next));
+    return next;
+  });
 }
 
 /**

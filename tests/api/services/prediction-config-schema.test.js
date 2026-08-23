@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  clampHistoricalPredictor,
   normalizePredictionConfigPatch,
   LOOKBACK_WEEKS_MAX,
   LOOKBACK_WEEKS_MIN,
@@ -72,5 +73,32 @@ describe('normalizePredictionConfigPatch', () => {
     expect(() => normalizePredictionConfigPatch({ pvConfig: { longitude: NaN } })).toThrow('pvConfig.longitude must be a finite number');
     expect(() => normalizePredictionConfigPatch({ pvConfig: { historyDays: 0 } })).toThrow('pvConfig.historyDays must be an integer between 1 and 365');
     expect(normalizePredictionConfigPatch({ pvConfig: { pvMode: 'hybrid' } })).toEqual({ pvConfig: { pvMode: 'hybrid' } });
+  });
+});
+
+describe('clampHistoricalPredictor', () => {
+  it('bounds a stored lookbackWeeks without throwing, so an old file cannot pin the process on load', () => {
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: 104 }))).toEqual(hp({ lookbackWeeks: LOOKBACK_WEEKS_MAX }));
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: 1e7 }))).toEqual(hp({ lookbackWeeks: LOOKBACK_WEEKS_MAX }));
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: 0 }))).toEqual(hp({ lookbackWeeks: LOOKBACK_WEEKS_MIN }));
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: 2.6 }))).toEqual(hp({ lookbackWeeks: 3 }));
+    // Missing or junk → the form's default, not a throw.
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: '8' })).lookbackWeeks).toBe(4);
+    expect(clampHistoricalPredictor(hp({ lookbackWeeks: undefined })).lookbackWeeks).toBe(4);
+  });
+
+  it('coerces unknown dayFilter/aggregation values to the defaults and leaves the rest alone', () => {
+    expect(clampHistoricalPredictor(hp({ dayFilter: 'weekends', aggregation: 'p90', extra: 1 })))
+      .toEqual(hp({ dayFilter: 'same', aggregation: 'mean', extra: 1 }));
+    expect(clampHistoricalPredictor(hp({ dayFilter: 'weekday-sat-sun', aggregation: 'median' })))
+      .toEqual(hp({ dayFilter: 'weekday-sat-sun', aggregation: 'median' }));
+  });
+
+  it('returns an in-range strategy as the same object, and a non-object value as-is', () => {
+    const strategy = hp();
+    expect(clampHistoricalPredictor(strategy)).toBe(strategy);
+    expect(clampHistoricalPredictor(undefined)).toBeUndefined();
+    expect(clampHistoricalPredictor(null)).toBeNull();
+    expect(clampHistoricalPredictor('x')).toBe('x');
   });
 });

@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../../api/services/json-store.ts', () => {
+vi.mock('../../../api/services/json-store.ts', async (importOriginal) => {
+  const { withJsonLock } = await importOriginal();
   let store = {};
   return {
+    // The real per-path lock: the update tests below exercise its serialisation.
+    withJsonLock,
     resolveDataDir: () => '/tmp/test-data',
     readJson: vi.fn(async (filePath) => {
       if (store[filePath] === undefined) {
@@ -112,6 +115,35 @@ describe('loadPredictionConfig', () => {
       aggregation: 'mean',
     });
     expect(config).not.toHaveProperty('activeConfig');
+  });
+});
+
+describe('loadPredictionConfig — stored strategy bounds', () => {
+  beforeEach(() => {
+    _reset();
+  });
+
+  it('clamps an out-of-range lookbackWeeks from a pre-validation file on load', async () => {
+    // POST /predictions/config has only validated the strategy since 0.7.56;
+    // a file written by an older UI can hold any value, and predict() walks
+    // lookbackWeeks × 7 days synchronously on every auto-calculate tick.
+    _set(getDefaultPath(), {});
+    _set(PREDICTION_CONFIG_PATH, { historicalPredictor: { sensor: 'Total Load', lookbackWeeks: 104, dayFilter: 'same', aggregation: 'mean' } });
+    const config = await loadPredictionConfig();
+    expect(config.historicalPredictor).toEqual({ sensor: 'Total Load', lookbackWeeks: 52, dayFilter: 'same', aggregation: 'mean' });
+  });
+
+  it('clamps the strategy migrated from the legacy activeConfig block too', async () => {
+    _set(getDefaultPath(), {});
+    _set(PREDICTION_CONFIG_PATH, { activeConfig: { sensor: 'Total Load', lookbackWeeks: 0, dayFilter: 'nope', aggregation: 'mean' } });
+    const config = await loadPredictionConfig();
+    expect(config.historicalPredictor).toEqual({ sensor: 'Total Load', lookbackWeeks: 1, dayFilter: 'same', aggregation: 'mean' });
+  });
+
+  it('leaves a config without a historical predictor alone', async () => {
+    _set(getDefaultPath(), { activeType: 'fixed', fixedPredictor: { load_W: 300 } });
+    const config = await loadPredictionConfig();
+    expect(config.historicalPredictor).toBeUndefined();
   });
 });
 

@@ -2,7 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError } from '../http-errors.ts';
 import { getLastPlan, getLastEvPreview } from '../services/planner-service.ts';
-import { loadSettings, saveSettings } from '../services/settings-store.ts';
+import { loadSettings, updateSettings } from '../services/settings-store.ts';
 import { computeEvDecision } from '../services/ev-decision-service.ts';
 import { getLastActuation, runActuatorTick } from '../services/ev-actuator-service.ts';
 import type { EvOverrideMode } from '../types.ts';
@@ -165,9 +165,7 @@ router.post('/override', async (req: Request, res: Response, next: NextFunction)
     if (!OVERRIDE_MODES.includes(mode)) {
       throw new HttpError(400, `mode must be one of ${OVERRIDE_MODES.join(', ')}`);
     }
-    const settings = await loadSettings();
-    settings.evOverrideMode = mode as EvOverrideMode;
-    await saveSettings(settings);
+    await updateSettings(settings => ({ ...settings, evOverrideMode: mode as EvOverrideMode }));
     // Best-effort instant apply — never let a tick error fail the request.
     void runActuatorTick().catch(() => {});
     res.json({ mode });

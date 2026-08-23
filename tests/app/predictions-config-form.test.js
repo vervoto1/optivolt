@@ -333,6 +333,11 @@ describe('prediction config form', () => {
     await vi.advanceTimersByTimeAsync(700);
 
     expect(spy).toHaveBeenCalledWith('Failed to save prediction config:', expect.any(Error));
+    // …and shows it: the server validates the patch now, and a 400 that only
+    // reached the console left the form looking saved.
+    const status = document.getElementById('pred-status');
+    expect(status.textContent).toBe('Save failed: save boom');
+    expect(status.className).toContain('text-red-600');
     spy.mockRestore();
   });
 

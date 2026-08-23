@@ -13,8 +13,16 @@
 import { HttpError } from '../http-errors.ts';
 import type { PredictionConfig } from '../types.ts';
 import type { Aggregation, DayFilter } from '../../lib/load-predictor-historical.ts';
-
-type JsonRecord = Record<string, unknown>;
+import {
+  assertObject,
+  clampInt,
+  expectEnum,
+  expectFiniteNumber,
+  expectIntegerInRange,
+  expectNonEmptyString,
+  isObject,
+  type JsonRecord,
+} from './schema-validators.ts';
 
 /** `lookbackWeeks` bounds: at least one week of history, at most a year. */
 export const LOOKBACK_WEEKS_MIN = 1;
@@ -24,40 +32,13 @@ const DAY_FILTERS: readonly DayFilter[] = ['same', 'all', 'weekday-weekend', 'we
 const AGGREGATIONS: readonly Aggregation[] = ['mean', 'median'];
 const ACTIVE_TYPES = ['historical', 'fixed'] as const;
 
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function assertRecord(value: unknown, label: string): asserts value is JsonRecord {
-  if (!isRecord(value)) throw new HttpError(400, `${label} must be an object`);
-}
-
-function expectEnum<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !allowed.includes(value as T)) {
-    throw new HttpError(400, `${label} must be one of: ${allowed.join(', ')}`);
-  }
-  return value as T;
-}
-
-function expectNonEmptyString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.trim() === '') throw new HttpError(400, `${label} must be a non-empty string`);
-  return value;
-}
-
-function expectFiniteNumber(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new HttpError(400, `${label} must be a finite number`);
-  return value;
-}
-
-function expectIntegerInRange(value: unknown, min: number, max: number, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-    throw new HttpError(400, `${label} must be an integer between ${min} and ${max}`);
-  }
-  return value;
-}
+/** Fallbacks for a stored strategy field that is missing or not a valid value (see `clampHistoricalPredictor`). */
+const DEFAULT_LOOKBACK_WEEKS = 4;
+const DEFAULT_DAY_FILTER: DayFilter = 'same';
+const DEFAULT_AGGREGATION: Aggregation = 'mean';
 
 function normalizeHistoricalPredictor(value: unknown): PredictionConfig['historicalPredictor'] {
-  assertRecord(value, 'historicalPredictor');
+  assertObject(value, 'historicalPredictor');
   return {
     sensor: expectNonEmptyString(value.sensor, 'historicalPredictor.sensor'),
     lookbackWeeks: expectIntegerInRange(value.lookbackWeeks, LOOKBACK_WEEKS_MIN, LOOKBACK_WEEKS_MAX, 'historicalPredictor.lookbackWeeks'),
@@ -66,8 +47,31 @@ function normalizeHistoricalPredictor(value: unknown): PredictionConfig['histori
   };
 }
 
+/**
+ * Coerce an already-persisted `historicalPredictor` into range without
+ * throwing — the load-time counterpart of `normalizeHistoricalPredictor`.
+ *
+ * `POST /predictions/config` has only validated the strategy since 0.7.56; a
+ * file written by an older UI (whose input had no `max`) can hold a
+ * `lookbackWeeks` that `predict()`'s synchronous day loop would still walk on
+ * every auto-calculate tick, and that every later form save would be
+ * rejected for with a 400 the user never sees. Only the three strategy
+ * fields are touched (a missing or non-numeric/non-enum value becomes the
+ * form's default); an absent or non-object value is returned as-is.
+ */
+export function clampHistoricalPredictor<T>(value: T): T {
+  if (!isObject(value)) return value;
+  const lookbackWeeks = clampInt(value.lookbackWeeks, LOOKBACK_WEEKS_MIN, LOOKBACK_WEEKS_MAX, DEFAULT_LOOKBACK_WEEKS);
+  const dayFilter = DAY_FILTERS.includes(value.dayFilter as DayFilter) ? value.dayFilter : DEFAULT_DAY_FILTER;
+  const aggregation = AGGREGATIONS.includes(value.aggregation as Aggregation) ? value.aggregation : DEFAULT_AGGREGATION;
+  if (lookbackWeeks === value.lookbackWeeks && dayFilter === value.dayFilter && aggregation === value.aggregation) {
+    return value;
+  }
+  return { ...value, lookbackWeeks, dayFilter, aggregation } as T;
+}
+
 function normalizeFixedPredictor(value: unknown): PredictionConfig['fixedPredictor'] {
-  assertRecord(value, 'fixedPredictor');
+  assertObject(value, 'fixedPredictor');
   const load_W = expectFiniteNumber(value.load_W, 'fixedPredictor.load_W');
   if (load_W < 0) throw new HttpError(400, 'fixedPredictor.load_W must be >= 0');
   return { load_W };
@@ -76,14 +80,14 @@ function normalizeFixedPredictor(value: unknown): PredictionConfig['fixedPredict
 function normalizeSensorList(value: unknown, label: string, keyField: 'id' | 'name'): unknown[] {
   if (!Array.isArray(value)) throw new HttpError(400, `${label} must be an array`);
   value.forEach((entry, i) => {
-    assertRecord(entry, `${label}[${i}]`);
+    assertObject(entry, `${label}[${i}]`);
     expectNonEmptyString(entry[keyField], `${label}[${i}].${keyField}`);
   });
   return value;
 }
 
 function normalizePvConfig(value: unknown): JsonRecord {
-  assertRecord(value, 'pvConfig');
+  assertObject(value, 'pvConfig');
   if ('latitude' in value) expectFiniteNumber(value.latitude, 'pvConfig.latitude');
   if ('longitude' in value) expectFiniteNumber(value.longitude, 'pvConfig.longitude');
   if ('historyDays' in value) expectIntegerInRange(value.historyDays, 1, 365, 'pvConfig.historyDays');
@@ -95,7 +99,7 @@ function normalizePvConfig(value: unknown): JsonRecord {
  * first problem; returns the patch with server-owned keys removed.
  */
 export function normalizePredictionConfigPatch(incoming: unknown): Partial<PredictionConfig> {
-  assertRecord(incoming, 'prediction config payload');
+  assertObject(incoming, 'prediction config payload');
   // haUrl/haToken live in settings; validationWindow is recomputed on every load.
   const { haUrl: _haUrl, haToken: _haToken, validationWindow: _vw, ...patch } = incoming;
 

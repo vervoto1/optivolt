@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { assertCondition, toHttpError } from '../http-errors.ts';
-import { loadSettings, saveSettings } from '../services/settings-store.ts';
+import { loadSettings, updateSettings } from '../services/settings-store.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../services/pv-curtailment.ts';
@@ -34,9 +34,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       'settings payload must be an object',
     );
 
-    const prevSettings = await loadSettings();
-    const mergedSettings = normalizeSettings(mergeSettings(prevSettings, incoming as SettingsPatch));
-    await saveSettings(mergedSettings);
+    // Merged onto the settings as they are at write time, under the store's
+    // lock, so a VRM refresh that loaded them earlier cannot revert this save.
+    const mergedSettings = (await updateSettings(prev => normalizeSettings(mergeSettings(prev, incoming as SettingsPatch))))!;
 
     // Restart timers with new settings
     stopAutoCalculate();

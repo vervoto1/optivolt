@@ -163,11 +163,18 @@ export async function savePredictionFormToServer() {
   strategyDirty = false;
 }
 
+/**
+ * The debounced per-edit save. A rejected save is shown on the comparison
+ * status line: the server now validates the patch, and a 400 that only went
+ * to the console left the form looking saved while every later edit was
+ * rejected the same way.
+ */
 async function savePredictionFormSilently() {
   try {
     await savePredictionFormToServer();
   } catch (err) {
     console.error('Failed to save prediction config:', err);
+    setComparisonStatus(`Save failed: ${err.message}`, true);
   }
 }
 

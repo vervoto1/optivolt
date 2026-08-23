@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveDataDir, readJson, writeJson } from './json-store.ts';
+import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.ts';
+import { clampHistoricalPredictor } from './prediction-config-schema.ts';
 import type { PredictionConfig, PredictionValidationWindow, PvPredictionConfig } from '../types.ts';
 
 // v8 ignore next — module-level setup
@@ -76,21 +77,24 @@ export async function loadPredictionConfig(): Promise<PredictionConfig> {
   };
   const { validationWindow: _vw, ...rest } = merged;
 
-  // Always recompute validationWindow — never trust a persisted value
   return {
     ...rest,
+    // A stored strategy is bounded on every load, not only when the route
+    // validates a new one: an out-of-range lookbackWeeks from a pre-0.7.56
+    // file would otherwise still reach predict() on every auto-calculate tick.
+    historicalPredictor: clampHistoricalPredictor(rest.historicalPredictor),
+    // Always recompute validationWindow — never trust a persisted value
     validationWindow: computeValidationWindow(7),
   };
 }
 
+/** Persist the config as given. Prefer `updatePredictionConfig` — a plain save can still lose a race. */
 export async function savePredictionConfig(config: PredictionConfig): Promise<void> {
-  await writeJson(PREDICTION_CONFIG_PATH, config);
+  await withJsonLock(PREDICTION_CONFIG_PATH, () => writeJson(PREDICTION_CONFIG_PATH, config));
 }
 
-let updateChain: Promise<unknown> = Promise.resolve();
-
 /**
- * Read-modify-write the prediction config under a process-level lock.
+ * Read-modify-write the prediction config under the store's lock.
  *
  * Two writers share this file — `POST /predictions/config` and the
  * auto-selector — and the selector's run spans a long HA fetch. Without the
@@ -103,13 +107,9 @@ let updateChain: Promise<unknown> = Promise.resolve();
 export async function updatePredictionConfig(
   mutate: (current: PredictionConfig) => PredictionConfig | null,
 ): Promise<PredictionConfig | null> {
-  const run = updateChain.then(async () => {
-    const current = await loadPredictionConfig();
-    const next = mutate(current);
-    if (next) await savePredictionConfig(next);
+  return withJsonLock(PREDICTION_CONFIG_PATH, async () => {
+    const next = mutate(await loadPredictionConfig());
+    if (next) await writeJson(PREDICTION_CONFIG_PATH, next);
     return next;
   });
-  // Keep the chain alive past a failed update so later callers still serialise.
-  updateChain = run.catch(() => undefined);
-  return run;
 }

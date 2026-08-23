@@ -257,24 +257,109 @@ describe('predictions-validation', () => {
     expect(document.getElementById('pred-chart-section').hidden).toBe(true);
   });
 
-  it('Chart button clicked twice destroys previous charts before recreating', async () => {
+  it('Chart button clicked twice destroys previous charts before recreating, fetching the strategy once', async () => {
     await renderOneRow();
     fetchStrategyPredictions.mockResolvedValue({ validationPredictions: PREDICTIONS });
+    const destroyed = [];
+    vi.stubGlobal('Chart', class {
+      constructor() { this.data = {}; }
+      destroy() { destroyed.push(this); }
+    });
 
     // First click creates charts
     document.querySelector('.btn-chart').click();
     await vi.waitFor(() => {
       expect(document.getElementById('pred-chart-section').hidden).toBe(false);
     });
+    expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
 
-    // Second click should destroy existing charts then recreate
+    // Second click: served from the per-comparison memo (no second multi-week
+    // HA query), existing charts destroyed, then recreated.
+    document.querySelector('.btn-chart').click();
+    await vi.waitFor(() => {
+      expect(destroyed).toHaveLength(2);
+    });
+    expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
+    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  });
+
+  it('Chart button locks the run buttons while its fetch is in flight', async () => {
+    await renderOneRow();
+    let release;
+    fetchStrategyPredictions.mockReturnValue(new Promise(resolve => { release = resolve; }));
+
+    const chartBtn = document.querySelector('.btn-chart');
+    chartBtn.click();
+    await vi.waitFor(() => {
+      expect(chartBtn.disabled).toBe(true);
+    });
+    expect(document.getElementById('pred-run-validation').disabled).toBe(true);
+    expect(document.getElementById('autosel-run').disabled).toBe(true);
+
+    release({ validationPredictions: PREDICTIONS });
+    await vi.waitFor(() => {
+      expect(chartBtn.disabled).toBe(false);
+    });
+    expect(document.getElementById('pred-run-validation').disabled).toBe(false);
+    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  });
+
+  it('a new comparison run forgets the memoised chart data', async () => {
+    await renderOneRow();
+    fetchStrategyPredictions.mockResolvedValue({ validationPredictions: PREDICTIONS });
+    document.querySelector('.btn-chart').click();
+    await vi.waitFor(() => {
+      expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
+    });
+
+    // Re-run the comparison (a new window) — the same row must fetch again.
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-run-validation').disabled).toBe(false);
+    });
     document.querySelector('.btn-chart').click();
     await vi.waitFor(() => {
       expect(fetchStrategyPredictions).toHaveBeenCalledTimes(2);
     });
+  });
 
-    // Charts should still be visible (recreated after destroy)
-    expect(document.getElementById('pred-chart-section').hidden).toBe(false);
+  it('only the most recent Chart click renders when a fetch overlaps a re-rendered table', async () => {
+    // The Use button re-renders the table with fresh (enabled) Chart buttons
+    // while a chart fetch is in flight; the older response must not win.
+    const setComparisonStatus = await renderOneRow();
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 50, rmse: 60, mape: 10, n: 96, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 8, dayFilter: 'all', aggregation: 'median', mae: 55, rmse: 65, mape: 11, n: 96, validationPredictions: [] },
+      ],
+    });
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('.btn-chart')).toHaveLength(2);
+    });
+
+    let releaseFirst;
+    fetchStrategyPredictions
+      .mockReturnValueOnce(new Promise(resolve => { releaseFirst = resolve; }))
+      .mockResolvedValueOnce({ validationPredictions: PREDICTIONS });
+    const [first, second] = document.querySelectorAll('.btn-chart');
+    first.click();
+    await vi.waitFor(() => {
+      expect(fetchStrategyPredictions).toHaveBeenCalledTimes(1);
+    });
+    // Re-render (as the Use button does) hands out enabled buttons again.
+    second.disabled = false;
+    second.click();
+    await vi.waitFor(() => {
+      expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: s1 / 8w / all / median');
+    });
+
+    // The first (older) response lands last and is ignored.
+    releaseFirst({ validationPredictions: PREDICTIONS });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: s1 / 8w / all / median');
+    expect(setComparisonStatus).toHaveBeenLastCalledWith('');
   });
 
   it('locks both run buttons while a comparison is in flight', async () => {

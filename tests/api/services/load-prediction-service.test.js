@@ -14,6 +14,8 @@ import {
   scoreStrategies,
   scoreStrategyPredictions,
   fetchHorizonWeeks,
+  entityIdsForSensors,
+  clearValidationHistory,
   BACKTEST_FETCH_TIMEOUT_MS,
 } from '../../../api/services/load-prediction-service.ts';
 import { DEFAULT_LOOKBACK_WEEKS, generateAllConfigs } from '../../../lib/load-predictor-historical.ts';
@@ -343,6 +345,24 @@ describe('scoreStrategies', () => {
     // must not enter its score, since `same` has no Tuesday to be judged on.
     expect(all.mae).toBe(0);
   });
+
+  it('keeps a strategy below the coverage floor out of the intersection instead of shrinking everyone to its hours', async () => {
+    // Same data as above. With a floor of 2 hours `same/4w` (1 own hour) is
+    // scored on its own hours and stays under the floor, while `all/4w` keeps
+    // both hours — and its Tuesday error now counts.
+    const history = buildHaHistory();
+    history['sensor.load'].push({ start: new Date('2026-03-17T10:00:00.000Z').getTime(), change: 0.9 });
+    fetchHaStats.mockResolvedValue(history);
+    const [same, all] = await scoreStrategies(baseConfig, [
+      { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+      { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', aggregation: 'mean' },
+    ], window, { minCoverage: 2 });
+
+    expect(same.n).toBe(1);
+    expect(same.nSkipped).toBe(1);
+    expect(all.n).toBe(2);
+    expect(all.mae).toBe(200);
+  });
 });
 
 describe('scoreStrategyPredictions', () => {
@@ -350,6 +370,7 @@ describe('scoreStrategyPredictions', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW_STRING));
     vi.resetAllMocks();
+    clearValidationHistory();
     fetchHaStats.mockResolvedValue(buildHaHistory());
   });
 
@@ -357,8 +378,9 @@ describe('scoreStrategyPredictions', () => {
     vi.useRealTimers();
   });
 
+  const strategy = { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+
   it('returns the per-hour predictions of one strategy over the config window', async () => {
-    const strategy = { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
     const result = await scoreStrategyPredictions(baseConfig, strategy);
 
     expect(fetchHaStats).toHaveBeenCalledOnce();
@@ -368,6 +390,71 @@ describe('scoreStrategyPredictions', () => {
     expect(result.validationPredictions).toHaveLength(1);
     expect(result.validationPredictions[0]).toMatchObject({ actual: 500, predicted: 500 });
     expect(result).not.toHaveProperty('mae');
+  });
+
+  it('serves the chart from the history of the last comparison run — same data and window as the table', async () => {
+    await runValidation(baseConfig);
+    expect(fetchHaStats).toHaveBeenCalledOnce();
+
+    // The UTC day rolled over since the run: a fresh fetch would score a
+    // different window than the one the table's metrics came from.
+    vi.setSystemTime(new Date('2026-03-22T00:10:00.000Z'));
+    const shifted = { ...baseConfig, validationWindow: { start: '2026-03-15T00:00:00.000Z', end: '2026-03-22T00:00:00.000Z' } };
+    const result = await scoreStrategyPredictions(shifted, strategy);
+
+    expect(fetchHaStats).toHaveBeenCalledOnce(); // no second recorder query
+    expect(result.validationPredictions).toHaveLength(1);
+    expect(result.validationPredictions[0]).toMatchObject({ actual: 500, predicted: 500 });
+  });
+
+  it('fetches again when the sensor config changed or the strategy needs more history than the run fetched', async () => {
+    await runValidation(baseConfig);
+
+    const otherSensors = { ...baseConfig, sensors: [...baseConfig.sensors, { id: 'sensor.pv', name: 'PV', unit: 'kWh' }] };
+    await scoreStrategyPredictions(otherSensors, strategy);
+    expect(fetchHaStats).toHaveBeenCalledTimes(2);
+
+    clearValidationHistory();
+    await runValidation(baseConfig);
+    await scoreStrategyPredictions(baseConfig, { ...strategy, lookbackWeeks: 52 }); // past the grid's 26w fetch
+    expect(fetchHaStats).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('entityIdsForSensors', () => {
+  const sensors = [
+    { id: 'sensor.tarif_1', name: 'Grid Import', unit: 'kWh' },
+    { id: 'sensor.tarif_2', name: 'Grid Import', unit: 'kWh' },
+    { id: 'sensor.solar', name: 'Solar', unit: 'kWh' },
+    { id: 'sensor.ev', name: 'EV', unit: 'kWh' },
+  ];
+  const derived = [
+    { name: 'Total Load', formula: ['+Grid Import', '+Solar'] },
+    { name: 'Load without EV', formula: ['+Total Load', '-EV'] },
+  ];
+
+  it('includes every entity merged into the same sensor name', () => {
+    expect(entityIdsForSensors(sensors, derived, ['Grid Import'])).toEqual(['sensor.tarif_1', 'sensor.tarif_2']);
+  });
+
+  it('follows a derived sensor through its formula, nested derived sensors included', () => {
+    // postprocess treats a missing formula reference as 0, so a partial fetch
+    // would produce wrong derived values rather than none.
+    expect(entityIdsForSensors(sensors, derived, ['Total Load'])).toEqual(['sensor.tarif_1', 'sensor.tarif_2', 'sensor.solar']);
+    expect(entityIdsForSensors(sensors, derived, ['Load without EV'])).toEqual(['sensor.tarif_1', 'sensor.tarif_2', 'sensor.solar', 'sensor.ev']);
+  });
+
+  it('falls back to every configured entity for a name nothing maps onto', () => {
+    expect(entityIdsForSensors(sensors, derived, ['Gone'])).toEqual(sensors.map(s => s.id));
+  });
+
+  it('is what scoreStrategies fetches for the scored sensor', async () => {
+    vi.resetAllMocks();
+    fetchHaStats.mockResolvedValue({});
+    const config = { ...baseConfig, sensors, derived };
+    const window = { start: '2026-03-14T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
+    await scoreStrategies(config, [{ sensor: 'Total Load', lookbackWeeks: 1, dayFilter: 'all', aggregation: 'mean' }], window);
+    expect(fetchHaStats.mock.calls[0][0].entityIds).toEqual(['sensor.tarif_1', 'sensor.tarif_2', 'sensor.solar']);
   });
 });
 

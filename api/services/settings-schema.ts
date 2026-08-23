@@ -17,8 +17,14 @@ import type {
   EssSystemConfig,
 } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
-
-type JsonRecord = Record<string, unknown>;
+import {
+  assertObject,
+  clampInt,
+  expectBoolean,
+  expectEnum,
+  expectFiniteNumber,
+  expectString,
+} from './schema-validators.ts';
 
 export type SettingsPatch = Partial<Settings> & {
   dataSources?: Partial<DataSources>;
@@ -48,6 +54,17 @@ const HH_MM = /^\d{2}:\d{2}$/;
 export const AUTO_SELECT_LIMITS = {
   minImprovement_percent: { min: 1, max: 50 },
   windowDays: { min: 14, max: 56 },
+} as const;
+/**
+ * Bounds for the DESS price-refresh window. The ceiling is a hard one: the
+ * window is found by `findDailyWindowStart`, which looks at today's and
+ * yesterday's start, so a duration of a day or more is open at every instant —
+ * DESS would be switched to Mode 1 once and never restored, with every
+ * schedule write skipped until a restart. (The settings form caps the input
+ * at 60 minutes; the HTML attribute is advisory, this is not.)
+ */
+export const DESS_PRICE_REFRESH_LIMITS = {
+  durationMinutes: { min: 1, max: 24 * 60 - 1 },
 } as const;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 const MAX_SAFE_SHORE_A = 25;
@@ -89,44 +106,6 @@ function autoSplitLegacyEfficiency(settings: Settings): void {
   settings.inverterEfficiency_percent = Math.max(1, Math.min(100, Math.round(inverter * 100)));
   settings.chargeEfficiency_percent = Math.max(1, Math.min(100, Math.round((legacy_charge / inverter) * 100)));
   settings.dischargeEfficiency_percent = Math.max(1, Math.min(100, Math.round((legacy_discharge / inverter) * 100)));
-}
-
-function isObject(value: unknown): value is JsonRecord {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function assertObject(value: unknown, label: string): asserts value is JsonRecord {
-  if (!isObject(value)) {
-    throw new HttpError(400, `${label} must be an object`);
-  }
-}
-
-function expectBoolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') {
-    throw new HttpError(400, `${label} must be a boolean`);
-  }
-  return value;
-}
-
-function expectString(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new HttpError(400, `${label} must be a string`);
-  }
-  return value;
-}
-
-function expectFiniteNumber(value: unknown, label: string): number {
-  if (!Number.isFinite(value)) {
-    throw new HttpError(400, `${label} must be a finite number`);
-  }
-  return Number(value);
-}
-
-function expectEnum<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !allowed.includes(value as T)) {
-    throw new HttpError(400, `${label} must be one of: ${allowed.join(', ')}`);
-  }
-  return value as T;
 }
 
 function normalizeSocPercent(value: number): number {
@@ -321,11 +300,6 @@ function optNumber(value: unknown): number | undefined {
   return Number.isFinite(value) ? Number(value) : undefined;
 }
 
-function clampInt(value: unknown, min: number, max: number, fallback: number): number {
-  const n = Number.isFinite(value) ? Math.round(Number(value)) : fallback;
-  return Math.max(min, Math.min(max, n));
-}
-
 /**
  * Validate a daily trigger time. The format must be `HH:MM`; a value past the
  * end of the day (`24:00`, `99:99`, `12:75`) is clamped to the latest valid
@@ -450,7 +424,12 @@ function normalizeDessPriceRefresh(dessPriceRefresh: DessPriceRefreshConfig): De
   return {
     enabled: expectBoolean(dessPriceRefresh.enabled, 'dessPriceRefresh.enabled'),
     time,
-    durationMinutes: Math.max(1, Math.round(expectFiniteNumber(dessPriceRefresh.durationMinutes, 'dessPriceRefresh.durationMinutes'))),
+    durationMinutes: clampInt(
+      expectFiniteNumber(dessPriceRefresh.durationMinutes, 'dessPriceRefresh.durationMinutes'),
+      DESS_PRICE_REFRESH_LIMITS.durationMinutes.min,
+      DESS_PRICE_REFRESH_LIMITS.durationMinutes.max,
+      DESS_PRICE_REFRESH_LIMITS.durationMinutes.min,
+    ),
   };
 }
 

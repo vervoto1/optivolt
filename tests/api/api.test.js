@@ -17,7 +17,8 @@ vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/prediction-config-store.ts');
 vi.mock('../../api/services/prediction-auto-select.ts');
 
-import { loadSettings, saveSettings } from '../../api/services/settings-store.ts';
+import { loadSettings, saveSettings, updateSettings } from '../../api/services/settings-store.ts';
+import { wireUpdateSettings } from './helpers/settings-store-mock.js';
 import { refreshSettingsFromVrmAndPersist } from '../../api/services/vrm-refresh.ts';
 import { loadPlanHistory, clearPlanHistory } from '../../api/services/plan-history-store.ts';
 import { getRecentSamples, clearSocSamples } from '../../api/services/soc-tracker.ts';
@@ -113,6 +114,7 @@ describe('Route contracts', () => {
 
     loadSettings.mockResolvedValue(structuredClone(mockSettings));
     saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     refreshSettingsFromVrmAndPersist.mockResolvedValue({ batteryCapacity_Wh: 10000 });
     planAndMaybeWrite.mockResolvedValue({
       cfg: { initialSoc_percent: 20 },
