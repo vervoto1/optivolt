@@ -682,6 +682,24 @@ describe('startPredictionAutoSelect timer', () => {
     expect(scoreStrategies).not.toHaveBeenCalled();
   });
 
+  it('defers the catch-up (logged, not failed) when a manual run is in flight at that moment', async () => {
+    vi.setSystemTime(new Date('2026-08-23T12:00:00'));
+    let release;
+    scoreStrategies.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    const manual = runAutoSelect(); // holds the running flag through the catch-up
+    await vi.advanceTimersByTimeAsync(0);
+    startPredictionAutoSelect(enabled(), { runCatchUp: true });
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(log).toHaveBeenCalledWith('[auto-select] catch-up run deferred — another run is in flight');
+    expect(error).not.toHaveBeenCalled();
+    expect(appendAutoSelectRun).not.toHaveBeenCalled();
+
+    release([score(8, 'all', 'median', 300)]);
+    await manual;
+    expect(scoreStrategies).toHaveBeenCalledTimes(1); // the catch-up is not retried; the manual run covers it
+  });
+
   it('abandons the catch-up when the timer is stopped while it reads the history', async () => {
     vi.setSystemTime(new Date('2026-08-23T12:00:00'));
     let releaseHistory;
