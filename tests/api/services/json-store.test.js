@@ -10,18 +10,42 @@ describe('json-store — writeJson', () => {
     fs.mkdir.mockResolvedValue(undefined);
     fs.writeFile.mockResolvedValue(undefined);
     fs.rename.mockResolvedValue(undefined);
+    fs.unlink.mockResolvedValue(undefined);
   });
 
-  it('creates parent directory and writes formatted JSON atomically', async () => {
+  const TMP = /^\/tmp\/test\/data\.json\.\d+\.\d+\.tmp$/;
+
+  it('creates parent directory and writes formatted JSON atomically via a temp file', async () => {
     await writeJson('/tmp/test/data.json', { key: 'value' });
 
     expect(fs.mkdir).toHaveBeenCalledWith('/tmp/test', { recursive: true });
     expect(fs.writeFile).toHaveBeenCalledWith(
-      '/tmp/test/data.json.tmp',
+      expect.stringMatching(TMP),
       expect.stringContaining('"key": "value"'),
       'utf8',
     );
-    expect(fs.rename).toHaveBeenCalledWith('/tmp/test/data.json.tmp', '/tmp/test/data.json');
+    const [tmpPath] = fs.writeFile.mock.calls[0];
+    expect(fs.rename).toHaveBeenCalledWith(tmpPath, '/tmp/test/data.json');
+    expect(fs.unlink).not.toHaveBeenCalled();
+  });
+
+  it('uses a distinct temp file per write so concurrent writers cannot tear each other', async () => {
+    // Two in-flight writes to the same target used to share `${file}.tmp`; the
+    // second writeFile could land mid-way through the first, and whichever
+    // rename won published a mix of both payloads.
+    let releaseFirst;
+    fs.writeFile.mockImplementationOnce(() => new Promise(resolve => { releaseFirst = resolve; }));
+    const first = writeJson('/tmp/test/data.json', { n: 1 });
+    const second = writeJson('/tmp/test/data.json', { n: 2 });
+    await second;
+    releaseFirst();
+    await first;
+
+    const tmpPaths = fs.writeFile.mock.calls.map(c => c[0]);
+    expect(tmpPaths).toHaveLength(2);
+    expect(tmpPaths[0]).not.toBe(tmpPaths[1]);
+    expect(tmpPaths.every(p => TMP.test(p))).toBe(true);
+    expect(fs.rename.mock.calls.map(c => c[1])).toEqual(['/tmp/test/data.json', '/tmp/test/data.json']);
   });
 
   it('writes JSON with a trailing newline', async () => {
@@ -43,8 +67,17 @@ describe('json-store — writeJson', () => {
     await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('disk full');
   });
 
-  it('propagates rename errors', async () => {
+  it('propagates rename errors and removes the orphaned temp file', async () => {
     fs.rename.mockRejectedValue(new Error('cross-device link'));
+
+    await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('cross-device link');
+    const [tmpPath] = fs.writeFile.mock.calls[0];
+    expect(fs.unlink).toHaveBeenCalledWith(tmpPath);
+  });
+
+  it('still propagates the rename error when the temp-file cleanup fails too', async () => {
+    fs.rename.mockRejectedValue(new Error('cross-device link'));
+    fs.unlink.mockRejectedValue(new Error('gone already'));
 
     await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('cross-device link');
   });

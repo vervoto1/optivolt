@@ -36,6 +36,19 @@ export type SettingsPatch = Partial<Settings> & {
 };
 
 const HH_MM = /^\d{2}:\d{2}$/;
+
+/**
+ * Bounds for the `predictionAutoSelect` numeric fields. The HTML `min`/`max`
+ * attributes on the Strategy Selection card mirror these.
+ *
+ * The margin floor is 1 %, not 0: at 0 the selector switches to anything
+ * strictly better every day, which is exactly the flapping the hysteresis
+ * exists to prevent.
+ */
+export const AUTO_SELECT_LIMITS = {
+  minImprovement_percent: { min: 1, max: 50 },
+  windowDays: { min: 14, max: 56 },
+} as const;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 const MAX_SAFE_SHORE_A = 25;
 
@@ -314,6 +327,24 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
 }
 
 /**
+ * Validate a daily trigger time. The format must be `HH:MM`; a value past the
+ * end of the day (`24:00`, `99:99`, `12:75`) is clamped to the latest valid
+ * time at or before it rather than rejected, because this runs on *load* as
+ * well as on `POST /settings` — a throw here would fail startup for anyone
+ * with such a value already stored. A clamped time still fires once a day;
+ * the unclamped one never matched any minute of the day.
+ */
+function normalizeClockTime(value: unknown, label: string): string {
+  const time = expectString(value, label).trim();
+  if (!HH_MM.test(time)) {
+    throw new HttpError(400, `${label} must be in HH:MM format`);
+  }
+  const [h, m] = time.split(':').map(Number);
+  if (h > 23) return '23:59';
+  return `${String(h).padStart(2, '0')}:${String(Math.min(59, m)).padStart(2, '0')}`;
+}
+
+/**
  * Normalize the native EV planning + actuation settings (feature-parity port).
  * All fields are optional; booleans default false, the actuation numerics get
  * sane defaults, and optional numeric levels are left undefined when absent so a
@@ -414,10 +445,7 @@ function normalizeHaPriceConfig(haPriceConfig: HaPriceConfig): HaPriceConfig {
 
 function normalizeDessPriceRefresh(dessPriceRefresh: DessPriceRefreshConfig): DessPriceRefreshConfig {
   assertObject(dessPriceRefresh, 'dessPriceRefresh');
-  const time = expectString(dessPriceRefresh.time, 'dessPriceRefresh.time').trim();
-  if (!HH_MM.test(time)) {
-    throw new HttpError(400, 'dessPriceRefresh.time must be in HH:MM format');
-  }
+  const time = normalizeClockTime(dessPriceRefresh.time, 'dessPriceRefresh.time');
 
   return {
     enabled: expectBoolean(dessPriceRefresh.enabled, 'dessPriceRefresh.enabled'),
@@ -579,18 +607,17 @@ function normalizeAdaptiveLearning(adaptiveLearning: AdaptiveLearningConfig): Ad
 
 function normalizePredictionAutoSelect(cfg: PredictionAutoSelectConfig): PredictionAutoSelectConfig {
   assertObject(cfg, 'predictionAutoSelect');
-  const time = expectString(cfg.time, 'predictionAutoSelect.time').trim();
-  if (!HH_MM.test(time)) {
-    throw new HttpError(400, 'predictionAutoSelect.time must be in HH:MM format');
-  }
+  const time = normalizeClockTime(cfg.time, 'predictionAutoSelect.time');
+  const margin = AUTO_SELECT_LIMITS.minImprovement_percent;
+  const window = AUTO_SELECT_LIMITS.windowDays;
   return {
     enabled: expectBoolean(cfg.enabled, 'predictionAutoSelect.enabled'),
     mode: expectEnum(cfg.mode, ['suggest', 'auto'], 'predictionAutoSelect.mode'),
     time,
     metric: expectEnum(cfg.metric, ['mae', 'rmse'], 'predictionAutoSelect.metric'),
-    minImprovement_percent: Math.max(0, Math.min(50,
+    minImprovement_percent: Math.max(margin.min, Math.min(margin.max,
       expectFiniteNumber(cfg.minImprovement_percent, 'predictionAutoSelect.minImprovement_percent'))),
-    windowDays: Math.max(14, Math.min(56,
+    windowDays: Math.max(window.min, Math.min(window.max,
       Math.round(expectFiniteNumber(cfg.windowDays, 'predictionAutoSelect.windowDays')))),
   };
 }

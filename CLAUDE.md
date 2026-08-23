@@ -18,6 +18,7 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 - **Run a single test file:** `npx vitest run tests/lib/build-lp.test.js`
 - **Typecheck:** `npm run typecheck`
 - **Lint:** `npm run lint`
+- **Compare HiGHS builds:** `npx tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]` — the gate for refreshing the vendored solver; procedure and policy in `vendor/highs-build/PROVENANCE.md`.
 - **Rebuild Tailwind CSS:** `npm run build:css` — regenerates `app/vendor/tailwind.css` from `tailwind.source.css` (Tailwind v4, CSS-first config: theme tokens, `@source` globs, dark variant, and v3-parity preflight overrides all live in that file). Run after adding new Tailwind classes anywhere under `app/` and commit the result (CI fails if it is stale).
 
 ## Architecture
@@ -68,7 +69,7 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 ## Code conventions
 
 - ESM modules throughout (`"type": "module"` in package.json).
-- TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules. Styling uses precompiled Tailwind (`app/vendor/tailwind.css`, rebuilt with `npm run build:css`) — there is no runtime Tailwind compiler.
+- TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules. Styling uses precompiled Tailwind (`app/vendor/tailwind.css`, rebuilt with `npm run build:css`) — there is no runtime Tailwind compiler. The inline `<style>` block in `app/index.html` sits in `@layer components`, so a utility class on the same element wins over it without the `!` prefix; keep the `<link>` to `tailwind.css` before that block.
 - Node.js >= 22 required.
 - Express 5.
 - Unused variables prefixed with `_` (eslint rule).

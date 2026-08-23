@@ -36,7 +36,7 @@ export interface SelectOptions {
 
 export type SelectionReason =
   | 'no-eligible'          // nothing scored enough samples (HA outage, brand-new sensor)
-  | 'incumbent-unscored'   // incumbent ineligible while a candidate is → switch
+  | 'incumbent-unscored'   // incumbent ineligible while a candidate is → suggest only, never auto-switch
   | 'incumbent-best'       // incumbent is rank 1 (ties included)
   | 'below-threshold'      // a candidate is better, but not by minImprovement
   | 'switch';              // a candidate clears the threshold
@@ -56,7 +56,7 @@ export function isSameStrategy(a: StrategyKey, b: StrategyKey): boolean {
   return a.lookbackWeeks === b.lookbackWeeks && a.dayFilter === b.dayFilter && a.aggregation === b.aggregation;
 }
 
-/** Compact "8w/all/median" label used in logs and the UI. */
+/** Compact "8w/all/median" label for server logs (the UI has its own formatter in app/src/predictions/strategy.js). */
 export function formatStrategy(s: StrategyKey): string {
   return `${s.lookbackWeeks}w/${s.dayFilter}/${s.aggregation}`;
 }
@@ -92,7 +92,13 @@ export function selectStrategy(
   const incumbentScore = ranking.find(s => isSameStrategy(s, incumbent)) ?? null;
 
   if (!incumbentScore) {
-    return { best, incumbent: null, shouldSwitch: true, improvement_percent: null, reason: 'incumbent-unscored', ranking };
+    // No incumbent score means no margin can be measured, so this is never an
+    // automatic switch: the usual cause is a transient data condition that
+    // happens to hit only the incumbent's dates (a recorder gap exactly one
+    // lookback period before the window), and rewriting the live predictor on
+    // that is the flapping the hysteresis exists to prevent. The caller
+    // surfaces `best` as a suggestion instead.
+    return { best, incumbent: null, shouldSwitch: false, improvement_percent: null, reason: 'incumbent-unscored', ranking };
   }
 
   if (isSameStrategy(best, incumbent)) {

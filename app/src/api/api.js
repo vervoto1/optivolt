@@ -69,6 +69,7 @@ export const fetchBatteryStatus = () => getJson('/battery');
 export const fetchPredictionConfig = () => getJson('/predictions/config');
 export const savePredictionConfig = (c) => postJson('/predictions/config', c);
 export const runValidation = () => postJson('/predictions/validate', {});
+export const fetchStrategyPredictions = (strategy) => postJson('/predictions/validate/strategy', strategy);
 export const fetchAutoSelect = () => getJson('/predictions/auto-select');
 export const runAutoSelect = (apply = true) => postJson('/predictions/auto-select/run', { apply });
 export const runLoadForecast = () => postJson('/predictions/load/forecast', {});

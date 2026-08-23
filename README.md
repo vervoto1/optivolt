@@ -148,7 +148,7 @@ rest_command:
 The historical load predictor has a grid of strategies (lookback 1–26 weeks × day filter × mean/median). Instead of comparing them by hand on the Predictions tab, OptiVolt can backtest all of them for the active sensor once a day and keep, suggest, or apply the winner:
 
 - `suggest` (default) records the best strategy; the Strategy Selection card shows it with an **Apply suggestion** button.
-- `auto` rewrites the lookback / day filter / aggregation of `historicalPredictor` when the best beats the current strategy by at least `minImprovement_percent`. The sensor, predictor type, and PV config are never touched, and the next auto-calculate tick forecasts with the new strategy.
+- `auto` rewrites the lookback / day filter / aggregation of `historicalPredictor` when the best beats the current strategy by at least `minImprovement_percent` (1–50 %). The sensor, predictor type, and PV config are never touched — the write re-reads the config and overlays only those three fields, so an edit you make while a run is scoring is kept — and the next auto-calculate tick forecasts with the new strategy. When the current strategy itself cannot be scored (typically a recorder gap exactly one lookback period before the window) there is no margin to measure, so the winner is only suggested, never applied automatically.
 
 Enable it in the settings block (or from the Predictions tab):
 ```json
@@ -161,7 +161,7 @@ Enable it in the settings block (or from the Predictions tab):
   "windowDays": 28
 }
 ```
-The defaults are deliberately conservative: on real data the weekly "winner" jumps between 1 and 26 weeks and all strategies sit within a few percent of each other over long windows, so a short window or a small margin would just chase noise. `GET /predictions/auto-select` returns the last runs (`kept`, `suggested`, `applied`, or `skipped` with a reason); `POST /predictions/auto-select/run` runs one immediately (`{"apply": false}` for a dry run).
+The defaults are deliberately conservative: on real data the weekly "winner" jumps between 1 and 26 weeks and all strategies sit within a few percent of each other over long windows, so a short window or a small margin would just chase noise. Every strategy is scored on the same hours (the window hours all of them could predict), so a strategy that skipped part of the window is not compared on a different sample than one that covered all of it. `GET /predictions/auto-select` returns the last run (`kept`, `suggested`, `applied`, `skipped` with a reason, or `failed` with the error); `POST /predictions/auto-select/run` runs one immediately (`{"apply": false}` for a dry run). A failed scheduled run is retried every minute until the 5-minute window closes, and a boot catch-up fires when no scheduled run completed in the last 24 h.
 
 ### 4. Push Custom Pricing / Sensor Data (Optional)
 > **Note:** OptiVolt can now read prices directly from Home Assistant sensors. Set `dataSources.prices` to `'ha'` in **Settings → HA Price Sensor** and configure the entity ID (e.g., a GE Spot sensor). Both hourly and 15-minute price intervals are supported. The manual push example below remains available as an alternative.
@@ -298,13 +298,14 @@ The **API** exposes:
 - `GET /calculate/last` — Returns the cached last plan (same payload shape as `POST /calculate`, plus `computedAtMs`) without triggering a solve; 404 until a first plan has been computed. The web UI hydrates from this on page load so the dashboard renders instantly instead of waiting for a solve.
 - `POST /vrm/refresh-settings` — Fetches latest Dynamic ESS limits/settings from VRM and persists.
 - `GET /predictions/config` — Reads prediction configuration plus `isAddon`.
-- `POST /predictions/config` — Saves prediction configuration. Home Assistant URL/token are intentionally stored in `/settings`, not this file.
+- `POST /predictions/config` — Saves prediction configuration (merged into the stored config; only the keys you send are validated). `historicalPredictor.lookbackWeeks` must be an integer from 1 to 52, `dayFilter`/`aggregation`/`activeType` must be known values, and `sensors`/`derived`/`pvConfig` must be well-formed — anything else is a 400. Home Assistant URL/token are intentionally stored in `/settings`, not this file, and are stripped if sent.
 - `GET /predictions/adjustments` — Lists active manual forecast adjustments and prunes expired ones.
 - `POST /predictions/adjustments` — Creates a manual forecast adjustment for `load` or `pv`.
 - `PATCH /predictions/adjustments/:id` — Updates a manual forecast adjustment.
 - `DELETE /predictions/adjustments/:id` — Deletes a manual forecast adjustment.
-- `POST /predictions/validate` — Runs load-predictor validation (all strategies × all sensors, 7-day window) against Home Assistant history.
-- `GET /predictions/auto-select` — Auto-select settings plus the last run and run history.
+- `POST /predictions/validate` — Runs load-predictor validation (all strategies × all sensors, 7-day window) against Home Assistant history. Returns metrics only (`mae`, `rmse`, `mape`, `n`, `nSkipped` per strategy); the per-hour series behind a chart comes from the endpoint below.
+- `POST /predictions/validate/strategy` — Per-hour actual vs predicted for one strategy over the same 7-day window; body `{"sensor", "lookbackWeeks", "dayFilter", "aggregation"}` (validated like `historicalPredictor`). Returns `{ strategy, validationPredictions }`.
+- `GET /predictions/auto-select` — Auto-select settings plus the last run; add `?history=1` for the full run history (up to 60 records).
 - `POST /predictions/auto-select/run` — Runs strategy selection now; body `{"apply": false}` forces a dry run (send it with `Content-Type: application/json`, otherwise the body is not parsed and the run defaults to `apply: true`). `apply` must be a boolean; anything else is a 400. 409 while a run is in flight.
 - `POST /predictions/load/forecast` — Runs the active load forecast and returns adjusted forecast data with `rawForecast` when adjustments apply.
 - `POST /predictions/pv/forecast` — Runs the PV forecast when PV configuration is complete.

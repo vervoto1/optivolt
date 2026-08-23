@@ -8,7 +8,14 @@ vi.mock('../../../lib/ha-postprocess.ts', async (importOriginal) => {
 });
 
 import { fetchHaStats } from '../../../api/services/ha-client.ts';
-import { runForecast, runValidation, scoreStrategies, fetchHorizonWeeks } from '../../../api/services/load-prediction-service.ts';
+import {
+  runForecast,
+  runValidation,
+  scoreStrategies,
+  scoreStrategyPredictions,
+  fetchHorizonWeeks,
+  BACKTEST_FETCH_TIMEOUT_MS,
+} from '../../../api/services/load-prediction-service.ts';
 import { DEFAULT_LOOKBACK_WEEKS, generateAllConfigs } from '../../../lib/load-predictor-historical.ts';
 
 // ---------------------------------------------------------------------------
@@ -165,7 +172,7 @@ describe('runValidation', () => {
     vi.useRealTimers();
   });
 
-  it('calls fetchHaStats once with the longest grid lookback plus the validation week', async () => {
+  it('calls fetchHaStats once with the longest grid lookback plus the validation week, and a backtest-sized timeout', async () => {
     await runValidation(baseConfig);
 
     expect(fetchHaStats).toHaveBeenCalledOnce();
@@ -175,16 +182,18 @@ describe('runValidation', () => {
     const expected = NOW_MS - 27 * 7 * 24 * 60 * 60 * 1000;
     expect(Math.abs(startMs - expected)).toBeLessThan(60_000);
     expect(Math.max(...DEFAULT_LOOKBACK_WEEKS)).toBe(26);
+    // A 27-week, multi-MB recorder query on the same host as OptiVolt; the
+    // client's 30 s default was sized for the live forecast's few-week fetch.
+    expect(call.timeoutMs).toBe(BACKTEST_FETCH_TIMEOUT_MS);
+    expect(BACKTEST_FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
   });
 
-  it('scores the 7-day window only: every validationPrediction lies inside the window', async () => {
+  it('returns metrics only — no per-hour predictions in the comparison payload', async () => {
+    // 80 strategies × every window hour per sensor was ~15 MB per run; the
+    // chart fetches its single strategy on demand (scoreStrategyPredictions).
     const result = await runValidation(baseConfig);
-    const ws = new Date(baseConfig.validationWindow.start).getTime();
-    const we = new Date(baseConfig.validationWindow.end).getTime();
     expect(result.results.length).toBeGreaterThan(0);
-    for (const entry of result.results) {
-      expect(entry.validationPredictions.every(p => p.time >= ws && p.time < we)).toBe(true);
-    }
+    expect(result.results.every(entry => entry.validationPredictions.length === 0)).toBe(true);
   });
 
   it('returns sensorNames array containing the configured sensor', async () => {
@@ -299,7 +308,7 @@ describe('scoreStrategies', () => {
 
   it('agrees with runValidation for the same strategy (shared scoring core)', async () => {
     const grid = generateAllConfigs(['Load']);
-    const scored = await scoreStrategies(baseConfig, grid, baseConfig.validationWindow, { includePredictions: true });
+    const scored = await scoreStrategies(baseConfig, grid, baseConfig.validationWindow);
     fetchHaStats.mockResolvedValue(buildHaHistory());
     const validation = await runValidation(baseConfig);
 
@@ -310,6 +319,55 @@ describe('scoreStrategies', () => {
       expect(twin).toBeDefined();
       expect(twin).toEqual(entry);
     }
+  });
+
+  it('scores every strategy of a sensor on the hours all of them could predict', async () => {
+    // Window: Mon 16 10:00 and Tue 17 10:00. History has Mondays only, so
+    // `same/4w` can predict the Monday but not the Tuesday while `all/4w` can
+    // predict both. Ranking the two on different hour sets would compare a
+    // 1-hour mean against a 2-hour mean; instead both are scored on the
+    // common hour and the Tuesday shows up as `same`'s own skip.
+    const history = buildHaHistory();
+    history['sensor.load'].push({ start: new Date('2026-03-17T10:00:00.000Z').getTime(), change: 0.9 });
+    fetchHaStats.mockResolvedValue(history);
+    const [same, all] = await scoreStrategies(baseConfig, [
+      { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' },
+      { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', aggregation: 'mean' },
+    ], window);
+
+    expect(same.n).toBe(1);
+    expect(all.n).toBe(1);
+    expect(same.nSkipped).toBe(1);
+    expect(all.nSkipped).toBe(0);
+    // `all` predicts Tue 900 Wh from the Monday 500s — an error of 400 that
+    // must not enter its score, since `same` has no Tuesday to be judged on.
+    expect(all.mae).toBe(0);
+  });
+});
+
+describe('scoreStrategyPredictions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    fetchHaStats.mockResolvedValue(buildHaHistory());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns the per-hour predictions of one strategy over the config window', async () => {
+    const strategy = { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean' };
+    const result = await scoreStrategyPredictions(baseConfig, strategy);
+
+    expect(fetchHaStats).toHaveBeenCalledOnce();
+    const startMs = new Date(fetchHaStats.mock.calls[0][0].startTime).getTime();
+    expect(Math.abs(startMs - (NOW_MS - 5 * 7 * 24 * 60 * 60 * 1000))).toBeLessThan(60_000);
+    expect(result.strategy).toEqual(strategy);
+    expect(result.validationPredictions).toHaveLength(1);
+    expect(result.validationPredictions[0]).toMatchObject({ actual: 500, predicted: 500 });
+    expect(result).not.toHaveProperty('mae');
   });
 });
 

@@ -1,7 +1,8 @@
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import type { PredictionAdjustmentSeries, PredictionRunConfig, TimeSeries } from '../types.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
-import { runValidation, runForecast as runLoadForecast } from './load-prediction-service.ts';
+import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from './load-prediction-service.ts';
+import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import type { ForecastRunResult } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import type { PvForecastRunResult } from './pv-prediction-service.ts';
@@ -23,6 +24,24 @@ export async function executePredictionValidation(config: PredictionRunConfig) {
 
   try {
     return await runValidation(config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('auth') || msg.includes('WebSocket') || msg.includes('timed out')) {
+      throw toHttpError(err, 502, `HA connection error: ${msg}`);
+    }
+    throw err;
+  }
+}
+
+/** Per-hour predictions for one strategy (the comparison table's Chart button); same guards and HA error mapping as validation. */
+export async function executeStrategyPredictions(config: PredictionRunConfig, strategy: PredictConfig) {
+  assertHaConnection(config);
+  assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
+
+  logPredictionCall('validate/strategy', { strategy: `${strategy.sensor}/${strategy.lookbackWeeks}w/${strategy.dayFilter}/${strategy.aggregation}` });
+
+  try {
+    return await scoreStrategyPredictions(config, strategy);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('auth') || msg.includes('WebSocket') || msg.includes('timed out')) {

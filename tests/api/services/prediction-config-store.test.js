@@ -20,8 +20,13 @@ vi.mock('../../../api/services/json-store.ts', () => {
   };
 });
 
-import { loadPredictionConfig, savePredictionConfig } from '../../../api/services/prediction-config-store.ts';
-import { writeJson, _reset, _set } from '../../../api/services/json-store.ts';
+import {
+  computeValidationWindow,
+  loadPredictionConfig,
+  savePredictionConfig,
+  updatePredictionConfig,
+} from '../../../api/services/prediction-config-store.ts';
+import { readJson, writeJson, _reset, _set } from '../../../api/services/json-store.ts';
 
 function getDefaultPath() {
   return new URL('../../../api/defaults/default-prediction-config.json', import.meta.url).pathname;
@@ -150,5 +155,78 @@ describe('savePredictionConfig', () => {
       expect.stringContaining('prediction-config.json'),
       config,
     );
+  });
+});
+
+describe('computeValidationWindow', () => {
+  it('returns the previous N full UTC days ending at today UTC midnight', () => {
+    const now = new Date('2026-08-22T10:00:00.000Z').getTime();
+    expect(computeValidationWindow(28, now)).toEqual({
+      start: '2026-07-25T00:00:00.000Z',
+      end: '2026-08-22T00:00:00.000Z',
+    });
+    expect(computeValidationWindow(14, now).start).toBe('2026-08-08T00:00:00.000Z');
+  });
+
+  it('is what loadPredictionConfig uses for its 7-day window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-06-15T10:00:00.000Z'));
+    _reset();
+    _set(getDefaultPath(), {});
+    const config = await loadPredictionConfig();
+    expect(config.validationWindow).toEqual(computeValidationWindow(7));
+    expect(config.validationWindow.start).toBe('2024-06-08T00:00:00.000Z');
+    vi.useRealTimers();
+  });
+});
+
+describe('updatePredictionConfig', () => {
+  beforeEach(() => {
+    _reset();
+    _set(getDefaultPath(), { sensors: [], derived: [], activeType: 'historical' });
+    vi.clearAllMocks();
+  });
+
+  it('loads, mutates and saves, returning what was persisted', async () => {
+    const next = await updatePredictionConfig(cfg => ({ ...cfg, activeType: 'fixed' }));
+    expect(next.activeType).toBe('fixed');
+    expect(writeJson).toHaveBeenCalledWith(PREDICTION_CONFIG_PATH, expect.objectContaining({ activeType: 'fixed' }));
+    expect((await loadPredictionConfig()).activeType).toBe('fixed');
+  });
+
+  it('leaves the file untouched when the mutator returns null', async () => {
+    const seen = [];
+    expect(await updatePredictionConfig(cfg => { seen.push(cfg.activeType); return null; })).toBeNull();
+    expect(seen).toEqual(['historical']);
+    expect(writeJson).not.toHaveBeenCalled();
+  });
+
+  it('serialises concurrent updates so neither loses the other', async () => {
+    // Without the lock both updaters load the same snapshot and the second
+    // save reverts the first (the auto-selector's strategy switch vs. a UI
+    // sensor edit — the run spans a long HA fetch, so the window is wide).
+    _set(PREDICTION_CONFIG_PATH, { activeType: 'historical', historicalPredictor: { sensor: 'A', lookbackWeeks: 4, dayFilter: 'all', aggregation: 'mean' } });
+    const seenBySecond = [];
+
+    const first = updatePredictionConfig(cfg => ({ ...cfg, historicalPredictor: { ...cfg.historicalPredictor, lookbackWeeks: 26 } }));
+    const second = updatePredictionConfig(cfg => {
+      seenBySecond.push(cfg.historicalPredictor.lookbackWeeks);
+      return { ...cfg, pvConfig: { ...cfg.pvConfig, latitude: 52 } };
+    });
+    await Promise.all([first, second]);
+
+    // The second updater only loaded after the first had saved.
+    expect(seenBySecond).toEqual([26]);
+    expect(readJson.mock.calls.filter(c => c[0] === PREDICTION_CONFIG_PATH)).toHaveLength(2);
+    const final = await loadPredictionConfig();
+    expect(final.historicalPredictor.lookbackWeeks).toBe(26);
+    expect(final.pvConfig.latitude).toBe(52);
+    expect(writeJson).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps serialising after a failed update', async () => {
+    await expect(updatePredictionConfig(() => { throw new Error('boom'); })).rejects.toThrow('boom');
+    const next = await updatePredictionConfig(cfg => ({ ...cfg, activeType: 'fixed' }));
+    expect(next.activeType).toBe('fixed');
   });
 });

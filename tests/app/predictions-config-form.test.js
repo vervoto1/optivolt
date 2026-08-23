@@ -437,6 +437,12 @@ describe('prediction config form', () => {
       autoDeps.onRunComplete();
       expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
 
+      // Apply suggestion changes the form's strategy, so the table's ACTIVE
+      // badge has to be re-derived the same way.
+      rerenderTable.mockClear();
+      autoDeps.onApplied();
+      expect(rerenderTable).toHaveBeenCalledWith(validationDeps);
+
       // No sensor selected → no historical predictor in the form
       document.getElementById('pred-active-sensor').innerHTML = '';
       expect(autoDeps.getCurrentStrategy()).toBeNull();

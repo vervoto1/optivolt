@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  AUTO_SELECT_LIMITS,
   mergeSettings,
   normalizeSettings,
   sanitizeSettingsResponse,
@@ -298,11 +299,37 @@ describe('settings-schema', () => {
 
         s.predictionAutoSelect = { ...block(), minImprovement_percent: -5, windowDays: 100.4 };
         r = normalizeSettings(s).predictionAutoSelect;
-        expect(r.minImprovement_percent).toBe(0);
+        expect(r.minImprovement_percent).toBe(1);
         expect(r.windowDays).toBe(56);
 
         s.predictionAutoSelect = { ...block(), windowDays: 27.6 };
         expect(normalizeSettings(s).predictionAutoSelect.windowDays).toBe(28);
+      });
+
+      it('floors the margin at 1 % — 0 would switch on any strictly better candidate every day', () => {
+        const s = validSettings();
+        s.predictionAutoSelect = { ...block(), minImprovement_percent: 0 };
+        expect(normalizeSettings(s).predictionAutoSelect.minImprovement_percent).toBe(AUTO_SELECT_LIMITS.minImprovement_percent.min);
+        expect(AUTO_SELECT_LIMITS.minImprovement_percent.min).toBe(1);
+      });
+
+      it('clamps an out-of-range but well-formed time instead of rejecting it', () => {
+        // normalizeSettings also runs on load, so a throw here would fail
+        // startup for a stored "24:00"; before the clamp such a value armed a
+        // timer that could never fire.
+        const s = validSettings();
+        s.predictionAutoSelect = { ...block(), time: '24:00' };
+        expect(normalizeSettings(s).predictionAutoSelect.time).toBe('23:59');
+        s.predictionAutoSelect = { ...block(), time: '99:99' };
+        expect(normalizeSettings(s).predictionAutoSelect.time).toBe('23:59');
+        s.predictionAutoSelect = { ...block(), time: '07:05' };
+        expect(normalizeSettings(s).predictionAutoSelect.time).toBe('07:05');
+
+        s.predictionAutoSelect = { ...block(), time: '12:75' };
+        expect(normalizeSettings(s).predictionAutoSelect.time).toBe('12:59');
+
+        s.dessPriceRefresh = { enabled: true, time: '24:30', durationMinutes: 15 };
+        expect(normalizeSettings(s).dessPriceRefresh.time).toBe('23:59');
       });
 
       it('rejects a non-object block', () => {

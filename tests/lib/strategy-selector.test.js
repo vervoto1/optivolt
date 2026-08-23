@@ -146,14 +146,17 @@ describe('selectStrategy', () => {
     expect(result.incumbent).toMatchObject(offGrid);
   });
 
-  it('switches when the incumbent is ineligible but a candidate is', () => {
+  it('offers but never auto-switches when the incumbent is ineligible and a candidate is', () => {
+    // No incumbent score → no margin to measure → this must not bypass the
+    // hysteresis. The usual cause is a transient gap hitting only the
+    // incumbent's dates; the caller surfaces `best` as a suggestion.
     const scores = [
       score(8, 'all', 'median', 300, { n: 20 }),
       score(4, 'all', 'median', 350),
     ];
     const result = selectStrategy(scores, INCUMBENT, OPTS);
     expect(result.reason).toBe('incumbent-unscored');
-    expect(result.shouldSwitch).toBe(true);
+    expect(result.shouldSwitch).toBe(false);
     expect(result.incumbent).toBeNull();
     expect(result.improvement_percent).toBeNull();
     expect(result.best.lookbackWeeks).toBe(4);

@@ -10,14 +10,13 @@ import type { StatRecord } from '../../lib/ha-postprocess.ts';
 import {
   predict,
   validate,
+  buildPredictIndex,
   generateAllConfigs,
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
-import type { DayFilter, Aggregation, PredictConfig } from '../../lib/load-predictor-historical.ts';
+import type { DayFilter, Aggregation, PredictConfig, PredictIndex, PredictTarget } from '../../lib/load-predictor-historical.ts';
 import type { PredictionRunConfig } from '../types.ts';
 import { getForecastTimeRange, buildForecastSeries, computeErrorMetrics, type ForecastSeries, type PredictionResult } from '../../lib/time-series-utils.ts';
-
-type PredictTarget = Pick<StatRecord, 'date' | 'time' | 'hour' | 'dayOfWeek'> & { value?: number | null };
 
 export interface ValidationEntry {
   sensor: string;
@@ -27,7 +26,9 @@ export interface ValidationEntry {
   mae: number;
   rmse: number;
   mape: number;
+  /** Window hours scored — the same for every strategy of a sensor (see scoreOnData). */
   n: number;
+  /** Window hours this strategy could not predict at all (its own gaps, before the common-hour intersection). */
   nSkipped: number;
   validationPredictions: PredictionResult[];
 }
@@ -54,6 +55,13 @@ export interface ValidationWindow {
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * WebSocket timeout for the bulk backtest fetches. The 30 s client default was
+ * sized for the live forecast's few-week query; a 27–30-week grid fetch is a
+ * 4–5 MB recorder query running on the same host as OptiVolt.
+ */
+export const BACKTEST_FETCH_TIMEOUT_MS = 120_000;
+
+/**
  * Weeks of HA history needed to backtest strategies with the given lookbacks
  * over `validationWindow`: the longest lookback plus the window itself.
  */
@@ -71,15 +79,25 @@ async function fetchHistory(config: PredictionRunConfig, weeks: number): Promise
     haToken,
     entityIds: sensors.map(s => s.id),
     startTime,
+    timeoutMs: BACKTEST_FETCH_TIMEOUT_MS,
   });
   return postprocess(rawData, sensors, derived);
 }
 
 /**
  * Score strategies against already-fetched history. Only the entries inside
- * the validation window are predicted (passed as `targets`): predicting the
- * whole history is the dominant cost of a validation run and grows with the
- * lookback grid, while everything outside the window is discarded anyway.
+ * the validation window are predicted (passed as `predict()` targets):
+ * predicting the whole history is the dominant cost of a validation run and
+ * grows with the lookback grid, while everything outside the window is
+ * discarded anyway. The per-sensor history index and past-day chains are
+ * built once and shared by every strategy of that sensor.
+ *
+ * Every strategy of a sensor is scored on the same hours — the intersection
+ * of the window hours each of them could predict. Without that, a strategy
+ * that skipped 20 % of the window (a recorder gap exactly one of its lookback
+ * periods before the window) would be ranked head-to-head against one that
+ * scored every hour, on means computed over different hour sets. `nSkipped`
+ * still reports each strategy's own gaps so a shrunken `n` can be traced.
  */
 function scoreOnData(
   data: StatRecord[],
@@ -89,20 +107,32 @@ function scoreOnData(
 ): ValidationEntry[] {
   const windowStart = new Date(validationWindow.start).getTime();
   const windowEnd = new Date(validationWindow.end).getTime();
-  const targetsBySensor = new Map<string, StatRecord[]>();
+  const maxLookback = strategies.reduce((max, s) => Math.max(max, s.lookbackWeeks), 0);
+  const bySensor = new Map<string, { targets: PredictTarget[]; index: PredictIndex }>();
 
-  const results: ValidationEntry[] = [];
-  for (const cfg of strategies) {
-    let targets = targetsBySensor.get(cfg.sensor);
-    if (!targets) {
-      targets = data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd);
-      targetsBySensor.set(cfg.sensor, targets);
+  const predicted = strategies.map(cfg => {
+    let entry = bySensor.get(cfg.sensor);
+    if (!entry) {
+      const targets = data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd);
+      entry = { targets, index: buildPredictIndex(data, cfg.sensor, targets, maxLookback) };
+      bySensor.set(cfg.sensor, entry);
     }
+    return { cfg, predictions: predict(data, cfg, entry.targets, entry.index) };
+  });
 
-    const predictions = predict(data, cfg, targets);
-    const metrics = validate(predictions, validationWindow);
+  // Hours every strategy of the sensor could predict.
+  const commonHoursBySensor = new Map<string, Set<number>>();
+  for (const { cfg, predictions } of predicted) {
+    const own = new Set(predictions.filter(p => p.predicted !== null).map(p => p.time));
+    const common = commonHoursBySensor.get(cfg.sensor);
+    commonHoursBySensor.set(cfg.sensor, common ? new Set([...common].filter(t => own.has(t))) : own);
+  }
 
-    results.push({
+  return predicted.map(({ cfg, predictions }) => {
+    const common = commonHoursBySensor.get(cfg.sensor)!;
+    const metrics = validate(predictions.filter(p => common.has(p.time)), validationWindow);
+
+    return {
       sensor: cfg.sensor,
       lookbackWeeks: cfg.lookbackWeeks,
       dayFilter: cfg.dayFilter,
@@ -111,12 +141,10 @@ function scoreOnData(
       rmse: metrics.rmse,
       mape: metrics.mape,
       n: metrics.n,
-      nSkipped: metrics.nSkipped,
+      nSkipped: predictions.filter(p => p.predicted === null).length,
       validationPredictions: includePredictions ? predictions : [],
-    });
-  }
-
-  return results;
+    };
+  });
 }
 
 /**
@@ -136,15 +164,33 @@ export async function scoreStrategies(
 }
 
 /**
- * Run full validation across all config combinations.
+ * Run full validation across all config combinations. Returns metrics only:
+ * the per-hour predictions of a single strategy are fetched on demand with
+ * `scoreStrategyPredictions` (the UI opens one chart at a time, and shipping
+ * 80 strategies × every window hour per sensor was ~15 MB uncompressed).
  */
 export async function runValidation(config: PredictionRunConfig): Promise<ValidationRunResult> {
   // validationWindow is always set by loadPredictionConfig()
   const validationWindow = config.validationWindow!;
   const data = await fetchHistory(config, fetchHorizonWeeks(DEFAULT_LOOKBACK_WEEKS, validationWindow));
   const sensorNames = getSensorNames(data);
-  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow, true);
+  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow, false);
   return { sensorNames, results };
+}
+
+/**
+ * Per-hour actual vs predicted for one strategy over the comparison window
+ * (the data behind the comparison table's Chart button). Scored alone, so its
+ * metrics are not on the table's common-hour basis — only the predictions are
+ * returned.
+ */
+export async function scoreStrategyPredictions(
+  config: PredictionRunConfig,
+  strategy: PredictConfig,
+): Promise<{ strategy: PredictConfig; validationPredictions: PredictionResult[] }> {
+  const validationWindow = config.validationWindow!;
+  const [entry] = await scoreStrategies(config, [strategy], validationWindow, { includePredictions: true });
+  return { strategy, validationPredictions: entry.validationPredictions };
 }
 
 /**

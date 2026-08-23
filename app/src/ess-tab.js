@@ -164,7 +164,7 @@ function buildBatteryCard(name) {
             <div class="flex items-center gap-2">
               <span data-calibrate-current class="whitespace-nowrap text-sm text-slate-600 dark:text-slate-300"></span>
               <input data-calibrate-input type="number" min="0" max="100" step="1" inputmode="numeric" placeholder="%"
-                class="form-input !mt-0 !w-20" aria-label="New SoC in percent">
+                class="form-input mt-0 w-20" aria-label="New SoC in percent">
               <button data-calibrate-send
                 class="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white shadow-xs hover:bg-sky-700 active:scale-[0.99] focus:outline-hidden focus:ring-2 focus:ring-sky-400/50 transition-all disabled:opacity-50">
                 Send

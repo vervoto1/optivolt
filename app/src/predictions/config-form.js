@@ -2,6 +2,7 @@ import { fetchPredictionConfig, savePredictionConfig } from '../api/api.js';
 import { debounce } from '../utils.js';
 import { initValidation, rerenderTable } from '../predictions-validation.js';
 import { getLastAutoSelectRun, initAutoSelect } from './auto-select.js';
+import { formatStrategy } from './strategy.js';
 
 /** Form fields whose values make up `historicalPredictor`. */
 const STRATEGY_FIELD_IDS = ['pred-active-sensor', 'pred-active-lookback', 'pred-active-filter', 'pred-active-agg'];
@@ -80,8 +81,8 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
     renderHistoricalConfig,
     setComparisonStatus,
     getHighlights: () => {
-      // The run record's top-level `sensor` is the declared field; best.sensor
-      // is an undeclared ValidationEntry leftover, so don't depend on it.
+      // The run record's `best` is a bare strategy score; the sensor it was
+      // scored for is the record's top-level `sensor`.
       const run = getLastAutoSelectRun();
       return {
         active: readPredictionFormValues().historicalPredictor ?? null,
@@ -94,14 +95,16 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
   void initAutoSelect({
     getCurrentStrategy: () => readPredictionFormValues().historicalPredictor ?? null,
     applyStrategy: applyStrategyToForm,
+    // After Apply suggestion the form holds the new strategy, so the table's
+    // ACTIVE badge has to move — same re-render the Use button does.
+    onApplied: () => rerenderTable(validationDeps),
     onRunComplete: (run) => {
       // In auto mode the run may have just rewritten historicalPredictor
       // server-side; pull it into the form so the display matches and the next
       // save does not carry the pre-switch strategy.
       if (run?.action === 'applied' && run.best) {
         const { lookbackWeeks, dayFilter, aggregation } = run.best;
-        // Keep the form's sensor: the selector never moves between sensors, and
-        // run.best carries the one it scored.
+        // Keep the form's sensor: the selector never moves between sensors.
         renderHistoricalConfig({ sensor: getVal('pred-active-sensor'), lookbackWeeks, dayFilter, aggregation });
         strategyDirty = false;
       }
@@ -132,22 +135,23 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
 }
 
 /**
- * Apply a strategy (from the auto-selector) the same way the comparison
- * table's "Use" button does: push it into the form, force the historical
- * predictor type, and persist. The sensor stays whatever the form has —
- * destructure the three strategy fields explicitly, because the run record's
- * `best` is a ValidationEntry that also carries `sensor` (and would otherwise
- * silently move the active predictor to whichever sensor the run scored).
+ * Apply a strategy from the auto-selector's suggestion: push the three
+ * strategy fields into the form, force the historical predictor type, and
+ * persist. Unlike the comparison table's "Use" button this keeps the form's
+ * current sensor (the selector only ever scores the active one) and refreshes
+ * the fixed/historical field visibility, since the predictor type may change.
+ * Only the three strategy fields are read from the argument on purpose.
  */
 export async function applyStrategyToForm({ lookbackWeeks, dayFilter, aggregation }) {
+  const strategy = { lookbackWeeks, dayFilter, aggregation };
   const current = readPredictionFormValues().historicalPredictor ?? {};
-  renderHistoricalConfig({ ...current, lookbackWeeks, dayFilter, aggregation });
+  renderHistoricalConfig({ ...current, ...strategy });
   setVal('pred-active-type', 'historical');
   updatePredictorFieldVisibility();
   // An explicit user choice, so this save must carry the strategy.
   markStrategyDirty();
   await savePredictionFormToServer();
-  setComparisonStatus(`Active config updated: ${lookbackWeeks}w / ${dayFilter} / ${aggregation}`);
+  setComparisonStatus(`Active config updated: ${formatStrategy(strategy)}`);
 }
 
 export async function savePredictionFormToServer() {

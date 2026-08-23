@@ -80,9 +80,18 @@ describe('prediction-auto-select-store', () => {
   });
 
   it('treats a non-array file as empty', async () => {
-    const path = Object.keys(_getStore())[0] ?? '/tmp/test-data/prediction-auto-select.json';
+    // Seed through the store's own writer so the key is whatever path the
+    // module really uses, then corrupt that entry. (Deriving the key from an
+    // already-reset store handed back undefined and a hardcoded fallback path,
+    // which turned this into an ENOENT test that passed for the wrong reason.)
+    await appendAutoSelectRun(makeRun());
+    const [path] = Object.keys(_getStore());
+    expect(path).toMatch(/prediction-auto-select\.json$/);
     _getStore()[path] = { not: 'an array' };
+    readJson.mockClear();
+
     expect(await loadAutoSelectHistory()).toEqual([]);
+    expect(readJson).toHaveBeenCalledWith(path);
   });
 
   it('starts fresh on a corrupted file', async () => {
