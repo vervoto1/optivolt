@@ -46,7 +46,7 @@ Plan and control a home energy system with forecasts, dynamic tariffs, and a day
 
 **Alternative: manual rsync deployment** — If you prefer to deploy from a local clone rather than using the GHCR image, expose the HA `/addons` directory via the Samba share add-on, mount it on your computer, and sync with:
 ```bash
-rsync -av --delete --exclude 'node_modules' --exclude '.git' --exclude '.DS_Store' --exclude 'tests' --exclude 'vendor/highs-js' ~/Code/optivolt/ /Volumes/addons/optivolt/
+rsync -av --delete --exclude 'node_modules' --exclude '.git' --exclude '.DS_Store' --exclude 'tests' ~/Code/optivolt/ /Volumes/addons/optivolt/
 ```
 Then reload local add-ons (**Settings → Apps → Install App**, click **Check for Updates**), find **Optivolt**, and install.
 

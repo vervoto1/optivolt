@@ -21,7 +21,6 @@ Vendored dependencies bundled with the project. Currently contains the HiGHS lin
 | Directory | Purpose |
 |-----------|---------|
 | `highs-build/` | Precompiled HiGHS WASM solver |
-| `highs-js/` | Git submodule pointing at the `lovasoa/highs-js` commit the build came from (provenance only; not checked out, nothing imports it) |
 
 ## For AI Agents
 

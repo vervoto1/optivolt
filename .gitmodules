@@ -1,3 +1,0 @@
-[submodule "vendor/highs-js"]
-	path = vendor/highs-js
-	url = https://github.com/lovasoa/highs-js.git

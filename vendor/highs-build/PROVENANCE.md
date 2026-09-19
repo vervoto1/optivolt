@@ -21,9 +21,11 @@ Previous build, for rollback (`git checkout 3fe075e -- vendor/highs-build`, the 
 highs-js `98c35cc8071104828e881cadfcfcba034c596411` (v1.8.0 + the stack-size
 fix) bundling HiGHS v1.8.0, `highs.wasm` sha256 `57c508b9…04226b`.
 
-The `vendor/highs-js` git submodule is not checked out in normal development
-(it is only the provenance pointer; nothing imports from it) and is excluded
-from the add-on image.
+The source commits above are the whole provenance record. There used to be a
+`vendor/highs-js` git submodule pointing at the same commit; it was removed
+because nothing imported it and Home Assistant Supervisor runs
+`git submodule update --init --recursive` on every add-on store refresh, which
+pulled highs-js *and* its nested HiGHS repository onto every HA host.
 
 ## Refresh procedure
 
@@ -52,9 +54,7 @@ toolchain** — copy the release artifacts instead.
    the full suite (`npm run test:run` — the `tests/lib/` solver tests exercise
    the real binary), then update the **Current build** table above: source
    commit/tag, HiGHS commit/version, new sha256 hashes, and replace "Built by"
-   with the npm version. Move the `vendor/highs-js` submodule pointer to the
-   matching tag (or drop the submodule) so the pointer never disagrees with the
-   binaries.
+   with the npm version.
 5. Ship it as its **own PR**, with the gate output in the description. A solver
    bump changes every plan the add-on writes, so it is never folded into a
    dependency-refresh commit.
