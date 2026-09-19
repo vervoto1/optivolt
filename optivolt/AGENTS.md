@@ -12,8 +12,7 @@ Home Assistant add-on packaging for OptiVolt. Contains the Dockerfile, add-on ma
 | File | Description |
 |------|-------------|
 | `config.yaml` | HA add-on manifest: name, version, arch, ingress, ports, options schema, image reference |
-| `Dockerfile` | Alpine-based image: installs Node.js, copies source, runs npm ci, sets up s6 services |
-| `build.yaml` | Base images per architecture and OCI labels for the HA builder |
+| `Dockerfile` | Alpine-based image: base image (`ARG BUILD_FROM`) + OCI labels, installs Node.js, copies source, runs npm ci, sets up s6 services |
 | `CHANGELOG.md` | Release notes shown in the HA add-on store |
 | `DOCS.md` | User-facing documentation displayed in HA |
 | `icon.png` | 256x256 add-on icon for the HA store |
@@ -58,12 +57,12 @@ Home Assistant add-on packaging for OptiVolt. Contains the Dockerfile, add-on ma
 - `../app/` — Static UI (served by Express)
 - `../lib/` — Core logic
 - `../vendor/highs-build/` — HiGHS WASM solver
-- `../.github/workflows/builder.yaml` — CI/CD that builds and publishes the Docker image
+- `../.github/workflows/builder.yaml` + `build-addon.yaml` — CI/CD that builds and publishes the Docker image
 
 ### External
 
 - `ghcr.io/home-assistant/{arch}-base:3.15` — HA base image (Alpine + s6-overlay)
-- `home-assistant/builder` — GitHub Action for multi-arch builds
+- `home-assistant/builder/actions/*` — composable GitHub Actions (BuildKit) for the per-arch image builds
 - bashio — HA config helper in run scripts
 
 <!-- MANUAL: -->
