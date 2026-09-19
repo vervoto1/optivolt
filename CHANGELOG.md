@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.57 - 2026-09-19
+
+Dependency refresh. No behaviour changes; the only runtime dependency that moves is `mqtt`.
+
+- **Everything current, `npm audit` clean.** `npm audit fix` cleared one moderate advisory in the transitive `qs` (array-limit bypass and an `isBuffer` DoS, now 6.16.0). In-range updates: `mqtt` 5.16.0, `eslint` 10.11.0, `jsdom` 30.1.0, `globals` 17.12.0. Two major bumps were drop-in: `vitest` + `@vitest/coverage-v8` 5.0.1 (test-only — all 2732 tests pass, coverage unchanged) and `@eslint/css` 2.0.0 (lint-only, no new findings).
+- **The add-on image pins `tsx`.** The Dockerfile installed `tsx` unversioned, so every image build picked up whatever was latest that day; it is now `tsx@4.23.13` and moves with the dependency refresh.
+- **CI actions:** `actions/checkout` v7, `actions/setup-node` v7, `codecov/codecov-action` v7, `docker/login-action` v4.6.0. `home-assistant/builder` deliberately stays at `2026.02.1`: the action has been deprecated since 2026.03.0 and later tags still wrap the legacy builder but try to pull a `*-builder` image for their own tag, which was never published after 2026.02.1 — bumping the pin would break the image build. Moving to the composable `home-assistant/builder/actions/*` replacements is a separate job.
+- **Skipped on purpose, each in its own PR:** the HA base image (Alpine 3.22 / Node 22 → Alpine 3.24 / Node 24) and the vendored HiGHS solver (1.8.0; npm `highs` is at 1.15.3), per the policy in `vendor/highs-build/PROVENANCE.md`.
+
 ## 0.7.56 - 2026-08-23
 
 Follow-ups from the v0.7.55 review of automatic strategy selection (see `TODOS.md`). Nothing changes for installs that do not enable `predictionAutoSelect`, except the hardened prediction-config write path, the per-hour chart fetch, and the faster comparison scoring.
