@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.60 - 2026-09-19
+
+Build-pipeline migration. The add-on's code is unchanged; this version exists so the first image from the new pipeline is a distinct, roll-back-able tag.
+
+- **The add-on image is built with the composable `home-assistant/builder` actions.** The `home-assistant/builder` container action has been deprecated since 2026.03.0 and is announced for removal; it was pinned at `2026.02.1`, the last tag with a published builder image. `builder.yaml` now keeps only the change detection and calls a reusable `build-addon.yaml`, which uses `prepare-multi-arch-matrix` + `build-image` at `2026.09.0`: native Docker BuildKit, **aarch64 on an ARM runner instead of QEMU emulation**, and GitHub Actions layer caching. PRs still build both architectures without pushing; a push to `main` publishes `<version>` and `latest` to the same `ghcr.io/vervoto1/{arch}-addon-optivolt` images Supervisor already pulls, so `config.yaml` is untouched.
+- **`optivolt/build.yaml` is gone.** The new actions do not read it (and Supervisor warns about it). The base image moves into the Dockerfile as `ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24` — the multi-arch manifest, whose amd64/arm64 entries are the same digests as the per-arch `amd64-base` / `aarch64-base:3.24` images used until now — and the static OCI labels become a `LABEL` instruction. The `io.hass.type/name/description/url` labels, which the old builder derived from `config.yaml`, are passed explicitly by the workflow; a local build through the new path produces the same label set as the published 0.7.59 image.
+- **Published versions are immutable.** `build-image` runs with `skip-existing: <version>`: a push that touches the add-on without bumping `config.yaml` still builds (so breakage is caught) but no longer overwrites an already-published tag.
+- **A change to the build workflows rebuilds the add-on**, so a pipeline edit is exercised by its own PR instead of first running on `main`.
+- Not adopted: Cosign signing (the old builder did not sign either; enabling it needs `id-token: write`) and the generic multi-arch `ghcr.io/vervoto1/addon-optivolt` manifest (would be a new GHCR package; `{arch}` naming keeps working).
+
 ## 0.7.59 - 2026-09-19
 
 - **The solver is HiGHS 1.15.1 (was 1.8.0).** `vendor/highs-build/` now holds the verbatim release artifacts of npm `highs@1.15.3` (highs-js `v1.15.3`, 2026-09-11), replacing the custom February build of v1.8.0 from October 2024 — two years of HiGHS presolve, MIP and numerical fixes. Refreshed per `vendor/highs-build/PROVENANCE.md`: hashes, source commits and the `vendor/highs-js` submodule pointer all move together, and the previous build is one `git checkout 3fe075e -- vendor/highs-build` away.

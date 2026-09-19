@@ -48,8 +48,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 
 ### `optivolt/` — Home Assistant add-on
 - **`config.yaml`** — Add-on manifest (options, schema, image reference for GHCR).
-- **`Dockerfile`** — Multi-stage build. Stage 1 runs `npm ci` and `tsx` install on native `node:24-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation. Stage 2 copies `node_modules` and tsx into the HA base image (Alpine 3.24, Node.js 24).
-- **`build.yaml`** — Base images per architecture for the HA builder.
+- **`Dockerfile`** — Multi-stage build; also carries the base image (`ARG BUILD_FROM`, the multi-arch `ghcr.io/home-assistant/base`) and the static OCI labels that used to live in `build.yaml`. Stage 1 runs `npm ci` and `tsx` install on native `node:24-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation. Stage 2 copies `node_modules` and tsx into the HA base image (Alpine 3.24, Node.js 24).
 - **`rootfs/`** — s6-overlay service scripts (run, finish, init).
 - **`translations/en.yaml`** — HA configuration UI labels.
 - **`repository.yaml`** (at repo root) — HA add-on repository metadata.
@@ -90,7 +89,7 @@ The version must be updated in **3 locations** when bumping, plus the changelog:
 
 - **origin**: `vervoto1/optivolt` (fork) — CI runs here (Tests + Builder workflows).
 - **upstream**: `bmesuere/optivolt` (original) — no CI for our pushes.
-- The **Builder** workflow produces HA add-on Docker images (aarch64 + amd64) published to GHCR. It only triggers when files under `optivolt/` change (Dockerfile, config.yaml, build.yaml, rootfs). Bump `optivolt/config.yaml` version to trigger a new image build.
+- The **Builder** workflow (`builder.yaml` → reusable `build-addon.yaml`) produces HA add-on Docker images (aarch64 + amd64) published to GHCR, using the composable `home-assistant/builder/actions/*` (native BuildKit, aarch64 on an ARM runner — no QEMU). It only builds when `optivolt/` files change (Dockerfile, config.yaml, rootfs) or the build workflows themselves change. PRs build without pushing; a push to `main` publishes `<version>` + `latest`. A version tag that already exists is never overwritten (`skip-existing`), so bump `optivolt/config.yaml` version to publish a new image.
 - The **Tests** workflow runs lint, typecheck, and vitest on every push to main.
 
 ## Victron control modes

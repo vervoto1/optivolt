@@ -1,6 +1,8 @@
 # Home Assistant add-on Dockerfile for OptiVolt.
-# BUILD_FROM is passed automatically by the HA builder.
-ARG BUILD_FROM
+# The base image lives here (build.yaml is retired). ghcr.io/home-assistant/base
+# is a multi-arch manifest, so BuildKit picks the variant for the target platform;
+# BUILD_FROM stays overridable for local experiments.
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 #
 # Stage 1: install npm deps on the native builder platform to avoid QEMU
 # "Illegal instruction" crashes when cross-compiling for aarch64.
@@ -50,3 +52,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fs http://127.0.0.1:3000/health || exit 1
 
 EXPOSE 3000
+
+# Static image labels (formerly build.yaml). The io.hass.* labels and the
+# version/created/source labels are added by the build workflow.
+LABEL \
+  org.opencontainers.image.title="Home Assistant Add-on: OptiVolt" \
+  org.opencontainers.image.description="Plan and control Victron ESS with forecasts & dynamic tariffs" \
+  org.opencontainers.image.licenses="MIT"

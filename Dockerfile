@@ -1,7 +1,6 @@
 # Home Assistant add-on Dockerfile for OptiVolt.
-# Home Assistant passes BUILD_FROM automatically; default to amd64 for local builds.
-ARG BUILD_ARCH=amd64
-ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base:3.24
+# The multi-arch base manifest resolves to the platform being built.
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 
 # Install npm deps on the native builder platform to avoid cross-arch npm issues
 # when the final image is built for Home Assistant add-on targets.

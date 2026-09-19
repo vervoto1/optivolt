@@ -1,8 +1,7 @@
 name: Builder
 
 env:
-  BUILD_ARGS: "--test"
-  MONITORED_FILES: "build.yaml config.yaml Dockerfile rootfs"
+  MONITORED_FILES: "config.yaml Dockerfile rootfs"
 
 on:
   push:
@@ -11,6 +10,9 @@ on:
   pull_request:
     branches:
       - main
+
+permissions:
+  contents: read
 
 jobs:
   init:
@@ -26,18 +28,24 @@ jobs:
           # Need full history so the PR diff base (origin/<base_ref>) resolves;
           # the default shallow clone has no origin/main ref and the diff below dies.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Get changed files
         id: changed_files
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
           else
             changed=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || git ls-files)
           fi
-          echo "all<<EOF" >> $GITHUB_OUTPUT
-          echo "$changed" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "all<<EOF"
+            echo "$changed"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find add-on directories
         id: addons
@@ -45,96 +53,50 @@ jobs:
 
       - name: Get changed add-ons
         id: changed_addons
+        env:
+          ADDONS: ${{ steps.addons.outputs.addons }}
+          CHANGED_FILES: ${{ steps.changed_files.outputs.all }}
         run: |
-          declare -a changed_addons
-          for addon in ${{ steps.addons.outputs.addons }}; do
-            if [[ "${{ steps.changed_files.outputs.all }}" =~ $addon ]]; then
-              for file in ${{ env.MONITORED_FILES }}; do
-                  if [[ "${{ steps.changed_files.outputs.all }}" =~ $addon/$file ]]; then
-                    if [[ ! "${changed_addons[@]}" =~ $addon ]]; then
-                      changed_addons+=("\"${addon}\",");
-                    fi
-                  fi
-              done
-            fi
-          done
+          changed_addons=()
 
-          changed=$(echo ${changed_addons[@]} | rev | cut -c 2- | rev)
-
-          if [[ -n ${changed} ]]; then
-            echo "Changed add-ons: $changed";
-            echo "changed=true" >> $GITHUB_OUTPUT;
-            echo "addons=[$changed]" >> $GITHUB_OUTPUT;
+          # A change to the build workflows themselves rebuilds every add-on, so a
+          # pipeline edit is exercised by its own PR.
+          if [[ "${CHANGED_FILES}" =~ \.github/workflows/(builder|build-addon)\.yaml ]]; then
+            read -r -a changed_addons <<< "${ADDONS}"
           else
-            echo "No add-on had any monitored files changed (${{ env.MONITORED_FILES }})";
+            for addon in ${ADDONS}; do
+              for file in ${MONITORED_FILES}; do
+                if [[ "${CHANGED_FILES}" =~ ${addon}/${file} ]]; then
+                  changed_addons+=("${addon}")
+                  break
+                fi
+              done
+            done
+          fi
+
+          if [[ ${#changed_addons[@]} -gt 0 ]]; then
+            echo "Changed add-ons: ${changed_addons[*]}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "addons=$(jq -nc '$ARGS.positional' --args "${changed_addons[@]}")" >> "$GITHUB_OUTPUT"
+          else
+            echo "No add-on had any monitored files changed (${MONITORED_FILES})"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   build:
+    name: Build ${{ matrix.addon }} add-on
     needs: init
-    runs-on: ubuntu-latest
     if: needs.init.outputs.changed == 'true'
-    name: Build ${{ matrix.arch }} ${{ matrix.addon }} add-on
-    strategy:
-      matrix:
-        addon: ${{ fromJson(needs.init.outputs.changed_addons) }}
-        arch: ["aarch64", "amd64"]
     permissions:
       contents: read
       packages: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Copy source into add-on directory
-        run: |
-          cp -r api/ ${{ matrix.addon }}/api/
-          cp -r app/ ${{ matrix.addon }}/app/
-          cp -r lib/ ${{ matrix.addon }}/lib/
-          mkdir -p ${{ matrix.addon }}/vendor
-          cp -r vendor/highs-build/ ${{ matrix.addon }}/vendor/highs-build/
-          cp package.json ${{ matrix.addon }}/
-          cp package-lock.json ${{ matrix.addon }}/ 2>/dev/null || true
-
-      - name: Get information
-        id: info
-        uses: home-assistant/actions/helpers/info@master
-        with:
-          path: "./${{ matrix.addon }}"
-
-      - name: Check if add-on should be built
-        id: check
-        run: |
-          if [[ "${{ steps.info.outputs.image }}" == "null" ]]; then
-            echo "Image property is not defined, skipping build"
-            echo "build_arch=false" >> $GITHUB_OUTPUT;
-          elif [[ "${{ steps.info.outputs.architectures }}" =~ ${{ matrix.arch }} ]]; then
-            echo "build_arch=true" >> $GITHUB_OUTPUT;
-            echo "image=$(echo ${{ steps.info.outputs.image }} | cut -d'/' -f3)" >> $GITHUB_OUTPUT;
-            if [[ -z "${{ github.head_ref }}" ]] && [[ "${{ github.event_name }}" == "push" ]]; then
-                echo "BUILD_ARGS=" >> $GITHUB_ENV;
-            fi
-          else
-            echo "${{ matrix.arch }} is not a valid arch for ${{ matrix.addon }}, skipping build";
-            echo "build_arch=false" >> $GITHUB_OUTPUT;
-          fi
-
-      - name: Login to GitHub Container Registry
-        if: env.BUILD_ARGS != '--test'
-        uses: docker/login-action@v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build ${{ matrix.addon }} add-on
-        if: steps.check.outputs.build_arch == 'true'
-        uses: home-assistant/builder@2026.02.1
-        with:
-          args: |
-            ${{ env.BUILD_ARGS }} \
-            --${{ matrix.arch }} \
-            --target /data/${{ matrix.addon }} \
-            --image "${{ steps.check.outputs.image }}" \
-            --docker-hub "ghcr.io/${{ github.repository_owner }}" \
-            --addon
+    strategy:
+      fail-fast: false
+      matrix:
+        addon: ${{ fromJSON(needs.init.outputs.changed_addons) }}
+    uses: ./.github/workflows/build-addon.yaml
+    with:
+      addon: ${{ matrix.addon }}
+      # PRs build both architectures without pushing; only a push to main publishes.
+      publish: ${{ github.event_name == 'push' }}
+    secrets: inherit

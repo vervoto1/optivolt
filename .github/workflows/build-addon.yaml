@@ -1,0 +1,134 @@
+name: Build add-on
+
+# Builds one add-on with the composable home-assistant/builder actions (native
+# BuildKit on per-architecture runners), which replace the retired
+# home-assistant/builder container action. Called from builder.yaml.
+
+on:
+  workflow_call:
+    inputs:
+      addon:
+        description: Add-on directory (e.g. "optivolt")
+        required: true
+        type: string
+      publish:
+        description: Push the images to the registry (false = build only)
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      build_matrix: ${{ steps.matrix.outputs.matrix }}
+      name: ${{ steps.normalize.outputs.name }}
+      description: ${{ steps.normalize.outputs.description }}
+      url: ${{ steps.normalize.outputs.url }}
+      version: ${{ steps.normalize.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get add-on information
+        id: info
+        uses: home-assistant/actions/helpers/info@master
+        with:
+          path: "./${{ inputs.addon }}"
+
+      - name: Normalize add-on information
+        id: normalize
+        env:
+          # The info helper emits JSON-encoded values.
+          IMAGE: ${{ steps.info.outputs.image }}
+          VERSION: ${{ steps.info.outputs.version }}
+          NAME: ${{ steps.info.outputs.name }}
+          DESCRIPTION: ${{ steps.info.outputs.description }}
+          URL: ${{ steps.info.outputs.url }}
+        run: |
+          image=$(jq -r '. // empty' <<< "${IMAGE}")
+          if [[ -z "${image}" ]]; then
+            echo "::error::config.yaml has no 'image' — nothing to build"
+            exit 1
+          fi
+          # config.yaml keeps the per-arch form "registry/owner/{arch}-name", which
+          # is what Supervisor pulls; the matrix action rebuilds "{arch}-name" per
+          # architecture from the bare name.
+          image_name="${image##*/}"
+          if [[ "${image_name}" != "{arch}-"* ]]; then
+            echo "::error::image '${image}' must use the '{arch}-<name>' form"
+            exit 1
+          fi
+          {
+            echo "image_name=${image_name#\{arch\}-}"
+            echo "registry_prefix=${image%/*}"
+            echo "version=$(jq -r '.' <<< "${VERSION}")"
+            echo "name=$(jq -r '.' <<< "${NAME}")"
+            echo "description=$(jq -r '.' <<< "${DESCRIPTION}")"
+            echo "url=$(jq -r '. // empty' <<< "${URL}")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.09.0
+        with:
+          architectures: ${{ steps.info.outputs.architectures }}
+          image-name: ${{ steps.normalize.outputs.image_name }}
+          registry-prefix: ${{ steps.normalize.outputs.registry_prefix }}
+
+  build:
+    name: Build ${{ matrix.arch }} ${{ inputs.addon }} add-on
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copy source into add-on directory
+        env:
+          ADDON: ${{ inputs.addon }}
+        run: |
+          cp -r api/ "${ADDON}/api/"
+          cp -r app/ "${ADDON}/app/"
+          cp -r lib/ "${ADDON}/lib/"
+          mkdir -p "${ADDON}/vendor"
+          cp -r vendor/highs-build/ "${ADDON}/vendor/highs-build/"
+          cp package.json package-lock.json "${ADDON}/"
+
+      - name: Build image
+        uses: home-assistant/builder/actions/build-image@2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: "./${{ inputs.addon }}"
+          # Parity with the legacy builder, which did not sign. Turning this on
+          # also needs `id-token: write` here and in the calling job.
+          cosign: "false"
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          # The actions no longer derive these from config.yaml.
+          labels: |
+            io.hass.type=addon
+            io.hass.name=${{ needs.prepare.outputs.name }}
+            io.hass.description=${{ needs.prepare.outputs.description }}
+            ${{ needs.prepare.outputs.url && format('io.hass.url={0}', needs.prepare.outputs.url) || '' }}
+          push: ${{ inputs.publish }}
+          # A published version is immutable: a push that touches the add-on
+          # without bumping config.yaml builds but does not overwrite the tag.
+          skip-existing: ${{ needs.prepare.outputs.version }}
+          version: ${{ needs.prepare.outputs.version }}
