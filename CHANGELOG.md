@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.58 - 2026-09-19
+
+- **The add-on runs on Alpine 3.24 / Node.js 24.** `optivolt/build.yaml` moves the Home Assistant base image from `3.22` (Node 22.23) to `3.24`, the current HA default, which ships Node 24.18 (LTS "Krypton"). The `deps` build stage moves to `node:24-alpine` so `npm ci` runs on the same major as the runtime, and the repo-root `Dockerfile` used for local add-on installs — still on the `3.21` base — moves with it. Nothing in the app changes: `engines` already allowed `>=24` and CI has been running the suite on Node 24. Verified on a local amd64 build: the image boots on Node 24.18.1 / Alpine 3.24.1, serves `/health` and the UI, and the vendored HiGHS build solves the default dataset to the reference plan (objective −57.482223, 0 of 96 rows differ).
+
 ## 0.7.57 - 2026-09-19
 
 Dependency refresh. No behaviour changes; the only runtime dependency that moves is `mqtt`.

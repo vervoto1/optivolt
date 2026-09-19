@@ -1,11 +1,11 @@
 # Home Assistant add-on Dockerfile for OptiVolt.
 # Home Assistant passes BUILD_FROM automatically; default to amd64 for local builds.
 ARG BUILD_ARCH=amd64
-ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base:3.21
+ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base:3.24
 
 # Install npm deps on the native builder platform to avoid cross-arch npm issues
 # when the final image is built for Home Assistant add-on targets.
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
@@ -19,7 +19,7 @@ ENV \
   S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
   NODE_ENV=production
 
-# Alpine 3.21 ships Node.js 22 for the TypeScript API runtime.
+# Alpine 3.24 ships Node.js 24 for the TypeScript API runtime.
 RUN apk add --no-cache nodejs npm curl
 
 # Workdir for the app

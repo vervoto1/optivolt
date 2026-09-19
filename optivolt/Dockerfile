@@ -9,7 +9,7 @@ ARG BUILD_FROM
 # (express, highs/WASM, mqtt) are arch-independent and dev-only native binaries
 # are stripped by `npm prune --omit=dev`, so the pruned node_modules copied into
 # the target-arch stage 2 below is portable across architectures.
-FROM --platform=$BUILDPLATFORM node:22-alpine AS deps
+FROM --platform=$BUILDPLATFORM node:24-alpine AS deps
 WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
@@ -24,7 +24,7 @@ ENV \
   S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
   NODE_ENV=production
 
-# Alpine 3.22 ships Node.js 22 which supports native TypeScript execution.
+# Alpine 3.24 ships Node.js 24 (the s6 service still launches through tsx).
 RUN apk add --no-cache nodejs npm curl
 
 # Workdir for the app

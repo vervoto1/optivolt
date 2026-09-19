@@ -48,7 +48,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 
 ### `optivolt/` — Home Assistant add-on
 - **`config.yaml`** — Add-on manifest (options, schema, image reference for GHCR).
-- **`Dockerfile`** — Multi-stage build. Stage 1 runs `npm ci` and `tsx` install on native `node:22-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation. Stage 2 copies `node_modules` and tsx into the HA base image (Alpine 3.22, Node.js 22).
+- **`Dockerfile`** — Multi-stage build. Stage 1 runs `npm ci` and `tsx` install on native `node:24-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation. Stage 2 copies `node_modules` and tsx into the HA base image (Alpine 3.24, Node.js 24).
 - **`build.yaml`** — Base images per architecture for the HA builder.
 - **`rootfs/`** — s6-overlay service scripts (run, finish, init).
 - **`translations/en.yaml`** — HA configuration UI labels.
