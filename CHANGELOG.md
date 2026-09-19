@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The `vendor/highs-js` git submodule is gone.** It was only a provenance pointer — nothing imported it and it was never in the add-on image — but Home Assistant Supervisor runs `git submodule update --init --recursive --depth 1` on every add-on store refresh, so each HA host cloned `lovasoa/highs-js` *and* its nested `ERGO-Code/HiGHS` repository (the Supervisor's copy of this repo grew from 7 MB to 37 MB) and every "Check for updates" depended on two more remotes answering. The source commits stay recorded in `vendor/highs-build/PROVENANCE.md`, pinned by the provenance test. No add-on change, so no version bump; Supervisor picks it up on its next refresh (an already-cloned `vendor/highs-js` directory may linger on the host until the repository is re-added — harmless).
+
 ## 0.7.60 - 2026-09-19
 
 Build-pipeline migration. The add-on's code is unchanged; this version exists so the first image from the new pipeline is a distinct, roll-back-able tag.
