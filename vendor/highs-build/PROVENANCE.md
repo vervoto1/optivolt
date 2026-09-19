@@ -43,7 +43,10 @@ toolchain** — copy the release artifacts instead.
    solves the default dataset with both builds and reports status, objective,
    solve time and per-slot plan differences. Run it again against a snapshot of
    the production `DATA_DIR` (`data.json` + `settings.json`) so the gate covers
-   the plan that actually runs. Status or objective differences fail the gate;
+   the plan that actually runs — `scripts/prod-solver-gate.sh <addon-host>`
+   fetches the snapshot from the running add-on (or takes the two files) and
+   compares against the build of a given commit (`REF=`), so it also works
+   after the swap. Status or objective differences fail the gate;
    differing rows at an equal objective are alternative optima — review them.
 4. Copy the two files over `highs.js` / `highs.wasm` (keep `package.json`), run
    the full suite (`npm run test:run` — the `tests/lib/` solver tests exercise
@@ -86,5 +89,18 @@ both builds). Solve time with the planner's MIP options (x86-64, Node 22, warm):
 default dataset 33 → 36 ms, 2 h rebalance 127 → 149 ms, and a 192-slot
 CV-phase + rebalance MILP 320 ms → 1.13 s — 1.15 is 10–15 % slower on
 day-ahead plans and ~3.5× slower on the largest MILP tried, at an equal
-objective. The gate was **not** run on a production `DATA_DIR` snapshot —
-none was available on the dev box; see the PR for the one-liner to run it.
+objective. The gate was not run on production data before the merge (no snapshot on the
+dev box); it was run afterwards, below.
+
+**Production gate, 2026-09-19** (`scripts/prod-solver-gate.sh <addon-host>`,
+HiGHS 1.15.1 vs the 1.8.0 build from `3fe075e`, live `data.json` +
+`settings.json`: 99 slots, 35 kWh battery at 6 % SoC, 16 kW charge/discharge,
+EV enabled, MILP): both `Optimal`, objective −490.684232 on both, for the full
+stored horizon and from the current slot; solve time 129 vs 126 ms. Review of
+the differing rows: the DESS schedule is the same — 0 of 99 slots differ in
+strategy, restrictions, feed-in or flags, and target SoC differs by at most
+0.022 %. The only flow difference above rounding is ~32 W of PV routed to the
+load instead of the battery in one 06:15 slot and the reverse at 06:30, two
+slots at the same price (cost-neutral); energy totals match to 1 Wh. The gate
+does not feed live EV state into the config, so EV charging decisions are
+outside what it compares.
