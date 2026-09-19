@@ -10,7 +10,7 @@ WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
   && npm prune --omit=dev \
-  && npm_config_ignore_scripts=true npm install -g tsx
+  && npm_config_ignore_scripts=true npm install -g tsx@4.23.13
 
 FROM $BUILD_FROM
 
