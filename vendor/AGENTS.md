@@ -11,8 +11,8 @@ Vendored dependencies bundled with the project. Currently contains the HiGHS lin
 
 | File | Description |
 |------|-------------|
-| `highs-build/highs.wasm` | HiGHS 1.8.0 compiled to WebAssembly (~2.5 MB) |
-| `highs-build/highs.js` | Minified Emscripten `MODULARIZE` wrapper for the WASM module (CommonJS) |
+| `highs-build/highs.wasm` | HiGHS 1.15.1 compiled to WebAssembly (~3.5 MB), from npm `highs@1.15.3` |
+| `highs-build/highs.js` | Emscripten `MODULARIZE` wrapper for the WASM module (CommonJS) |
 | `highs-build/package.json` | Minimal package metadata (`"type": "commonjs"`) |
 | `highs-build/PROVENANCE.md` | Source commits, HiGHS version, sha256 hashes, refresh procedure and policy |
 

@@ -57,7 +57,7 @@ Business logic and external integration layer. Orchestrates the full pipeline: d
 
 ### External
 
-- `highs` (v1.8.0) — LP/MIP solver
+- HiGHS 1.15.1 (vendored `vendor/highs-build`, from npm `highs@1.15.3`) — LP/MIP solver
 - `mqtt` (v5.15.0) — MQTT client (via lib/victron-mqtt.ts)
 - `fs/promises` — file I/O for JSON stores
 
