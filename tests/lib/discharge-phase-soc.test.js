@@ -11,6 +11,13 @@ import { parseSolution } from '../../lib/parse-solution.ts';
 // @ts-ignore
 import highsFactory from '../../vendor/highs-build/highs.js';
 
+// The optimum often parks SoC exactly ON a threshold to buy one more slot at the
+// higher power cap, and at equality the dp binary is free. Solvers report that
+// SoC to within float noise of the threshold (HiGHS 1.15: 2499.9999999999995 Wh
+// for 25 %), far inside the feasibility tolerance, so "below the threshold"
+// must not be a strict comparison on a double.
+const SOC_EPS_percent = 1e-6;
+
 function makeConfig(overrides = {}) {
   const T = 16; // 4 hours of 15-min slots
   return {
@@ -63,7 +70,7 @@ describe('Discharge phase SoC consistency', () => {
       const prevSocPercent = rows[i - 1].soc_percent;
       const totalDischarge = rows[i].b2l + rows[i].b2g;
 
-      if (prevSocPercent < 30) {
+      if (prevSocPercent < 30 - SOC_EPS_percent) {
         // Below 30%: discharge should not exceed 2000W (+ small tolerance)
         expect(totalDischarge).toBeLessThanOrEqual(2000 + 1);
       }
@@ -149,9 +156,9 @@ describe('Discharge phase SoC consistency', () => {
       const prevSocPercent = rows[i - 1].soc_percent;
       const totalDischarge = rows[i].b2l + rows[i].b2g;
 
-      if (prevSocPercent < 25) {
+      if (prevSocPercent < 25 - SOC_EPS_percent) {
         expect(totalDischarge).toBeLessThanOrEqual(1000 + 1);
-      } else if (prevSocPercent < 40) {
+      } else if (prevSocPercent < 40 - SOC_EPS_percent) {
         expect(totalDischarge).toBeLessThanOrEqual(3000 + 1);
       }
     }
@@ -182,7 +189,7 @@ describe('Discharge phase SoC consistency', () => {
       const prevSocPercent = rows[i - 1].soc_percent;
       const totalDischarge = rows[i].b2l + rows[i].b2g;
 
-      if (prevSocPercent < 30) {
+      if (prevSocPercent < 30 - SOC_EPS_percent) {
         expect(totalDischarge).toBeLessThanOrEqual(2000 + 1);
       }
     }

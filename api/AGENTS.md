@@ -56,7 +56,7 @@ Express.js HTTP server providing the OptiVolt REST API. Handles settings persist
 ### External
 
 - `express` (v5.2.1) — HTTP framework
-- `highs` (v1.8.0) — LP/MIP solver
+- HiGHS 1.15.1 (vendored `vendor/highs-build`, from npm `highs@1.15.3`) — LP/MIP solver
 - `mqtt` (v5.15.0) — Victron MQTT client
 
 <!-- MANUAL: -->
