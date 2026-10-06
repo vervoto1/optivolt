@@ -13,11 +13,13 @@
  * plan that actually runs on the box. NOW=<ISO timestamp> overrides the plan
  * start (defaults to the start of the load series so the whole horizon solves).
  *
- * Exit code is 1 when the solver statuses differ, either build returns no
- * usable solution (parseSolution's SolverStatusError, e.g. infeasible or a
- * time limit hit without an incumbent), or the objectives differ by more than
- * the MIP gap the planner solves with; differing rows at an equal objective
- * are alternative optima and are reported, not failed. The solves use the
+ * Exit code is 1 when either build returns no usable solution (parseSolution's
+ * SolverStatusError, e.g. infeasible or a time limit hit without an incumbent),
+ * either build stops short of Optimal (an early-stop incumbent, e.g. the time
+ * limit hit with a feasible plan, proves nothing about equivalence and the
+ * planner would never act on it), or the objectives differ by more than the
+ * MIP gap the planner solves with; differing rows at an equal objective are
+ * alternative optima and are reported, not failed. The solves use the
  * planner's options, time limit included.
  */
 import { createRequire } from 'node:module';
@@ -81,6 +83,13 @@ for (const [label, run] of [['vendored', vendored], ['candidate', candidate]] as
 }
 if (vendored.unusable || candidate.unusable) {
   console.error('FAIL: a build returned no usable solution');
+  process.exit(1);
+}
+// The planner only acts on Optimal plans. Two builds that both stop early (for
+// example both hitting the time limit with an incumbent) can still land within
+// the MIP gap of each other, which says nothing about the candidate.
+if (vendored.status !== 'Optimal' || candidate.status !== 'Optimal') {
+  console.error('FAIL: a build did not reach an Optimal solution (the planner never acts on an early-stop incumbent)');
   process.exit(1);
 }
 

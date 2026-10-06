@@ -30,6 +30,7 @@ import { loadData, saveData } from '../../../api/services/data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
+import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const SLOTS = 48;
@@ -55,6 +56,27 @@ const settings = {
   dessAlgorithm: 'v1',
   rebalanceEnabled: true,
   rebalanceHoldHours: 1,
+};
+
+// Native EV mode with the car unplugged: an Optimal solve also caches an EV
+// preview (the schedule as it would be if plugged in now).
+const evPreviewSettings = {
+  ...settings,
+  evEnabled: true,
+  evSource: 'native',
+  evSocSensor: 'sensor.ev_soc',
+  evPlugSensor: 'binary_sensor.ev_plug',
+  evChargePhases: 1,
+  evMinChargeCurrent_A: 6,
+  evMaxChargeCurrent_A: 16,
+  evBatteryCapacity_kWh: 10,
+  evTargetSoc_percent: 80,
+  evChargeEfficiency_percent: 100,
+  evDepartureTime: '2024-01-01T04:00:00Z',
+  evStartTime: '',
+  evMinSoc_percent: 0,
+  evApplyPriceLimit: false,
+  evOpportunisticEnabled: false,
 };
 
 // No grid import and no battery discharge: the hard load balance cannot be met.
@@ -140,5 +162,29 @@ describe('POST /calculate — solver status', () => {
     expect(last.status).toBe(200);
     expect(last.body.solverStatus).toBe('Optimal');
     expect(last.body.computedAtMs).toBe(previous.computedAtMs);
+  });
+
+  it('does not pair an early-stop incumbent with the previous plan\'s EV preview', async () => {
+    // Car disconnected; the SoC sensor still reads.
+    fetchHaEntityState.mockImplementation(async ({ entityId }) =>
+      entityId === 'binary_sensor.ev_plug' ? { state: 'off' } : { state: '55' });
+    loadSettings.mockResolvedValue(structuredClone(evPreviewSettings));
+    const previous = await seedOptimalPlan();
+    expect(previous.evPreview?.hasSchedule).toBe(true);
+
+    vi.setSystemTime(new Date(Date.parse(NOW_STRING) + 60_000));
+    solverCtl.extraOptions = { objective_target: 1e12 };
+
+    const shown = await post(calculateRouter, '/', {});
+    expect(shown.status).toBe(200);
+    expect(shown.body.solverStatus).toBe('Target for objective reached');
+    expect(shown.body.rows).toHaveLength(SLOTS);
+    expect(shown.body.evPreview).toBeNull();
+
+    // The cached Optimal plan still carries its own preview.
+    const last = await get(calculateRouter, '/last');
+    expect(last.status).toBe(200);
+    expect(last.body.computedAtMs).toBe(previous.computedAtMs);
+    expect(last.body.evPreview).toEqual(previous.evPreview);
   });
 });

@@ -21,8 +21,11 @@ function planResponseBody(plan: ComputePlanResult) {
     rebalanceWindow,
     rebalanceNudge,
     // Present only when the car is disconnected: the EV schedule as it WOULD
-    // be if plugged in now (display-only; never written to Victron).
-    evPreview: getLastEvPreview(),
+    // be if plugged in now (display-only; never written to Victron). The cached
+    // preview belongs to the last Optimal plan; computePlan returns an early-stop
+    // incumbent before the preview step, so pairing it with that older preview
+    // would show a preview that does not match the rows on screen.
+    evPreview: result.Status === 'Optimal' ? getLastEvPreview() : null,
     computedAtMs,
   };
 }
