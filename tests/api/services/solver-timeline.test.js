@@ -74,4 +74,86 @@ describe('Solver Timeline Logic (Refactored)', () => {
     const configFull = buildSolverConfigFromSettings(mockSettings, longData);
     expect(configFull.load_W.length).toBe(96); // 24h * 4
   });
+
+  it('rejects load and price series that start after the plan window begins', () => {
+    const baseData = {
+      load: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(100) },
+      pv: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(0) },
+      importPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(10) },
+      exportPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(5) },
+      soc: { timestamp: '2024-01-01T12:00:00Z', value: 50 }
+    };
+
+    // extractWindow would zero-pad the leading slots of these series, which
+    // for load/prices means planning against free energy.
+    for (const key of ['load', 'importPrice', 'exportPrice']) {
+      const data = {
+        ...baseData,
+        [key]: { ...baseData[key], start: '2024-01-01T12:30:00Z' }, // after now (12:00)
+      };
+      let caught;
+      try {
+        buildSolverConfigFromSettings(mockSettings, data);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught?.message).toBe(`Series '${key}' starts after the plan window begins`);
+      expect(caught.statusCode).toBe(422);
+      expect(caught.details).toEqual({
+        now: '2024-01-01T12:00:00.000Z',
+        seriesStart: '2024-01-01T12:30:00.000Z',
+      });
+    }
+
+    // A series starting exactly at the window start is fine.
+    const exactStart = {
+      ...baseData,
+      importPrice: { ...baseData.importPrice, start: '2024-01-01T12:00:00Z' },
+    };
+    expect(() => buildSolverConfigFromSettings(mockSettings, exactStart)).not.toThrow();
+  });
+
+  it('allows a PV series that starts after the plan window begins (leading zeros = no sun)', () => {
+    const data = {
+      load: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(100) },
+      pv: { start: '2024-01-01T14:00:00Z', step: 15, values: Array(84).fill(500) },
+      importPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(10) },
+      exportPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(5) },
+      soc: { timestamp: '2024-01-01T12:00:00Z', value: 50 }
+    };
+
+    const config = buildSolverConfigFromSettings(mockSettings, data);
+    // Slots between 12:00 and 14:00 are zero-padded PV.
+    expect(config.pv_W.slice(0, 8).every(v => v === 0)).toBe(true);
+    expect(config.pv_W[8]).toBe(500);
+  });
+
+  it('allows an injected evLoad series that starts after the plan window begins', () => {
+    const data = {
+      load: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(100) },
+      pv: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(0) },
+      importPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(10) },
+      exportPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(5) },
+      evLoad: { start: '2024-01-01T13:00:00Z', step: 15, values: Array(80).fill(7000) },
+      soc: { timestamp: '2024-01-01T12:00:00Z', value: 50 }
+    };
+
+    const config = buildSolverConfigFromSettings(mockSettings, data);
+    expect(config.evLoad_W.slice(0, 4)).toEqual([0, 0, 0, 0]);
+    expect(config.evLoad_W[4]).toBe(7000);
+  });
+
+  it('still reports a fully stale series as insufficient future data (refresh retry path)', () => {
+    // A series that both starts and ends before now hits the end check first,
+    // so auto-calculate keeps its refresh-and-retry behaviour.
+    const data = {
+      load: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(4).fill(100) }, // ends 11:00
+      pv: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(0) },
+      importPrice: { start: '2024-01-01T13:00:00Z', step: 15, values: Array(100).fill(10) },
+      exportPrice: { start: '2024-01-01T10:00:00Z', step: 15, values: Array(100).fill(5) },
+      soc: { timestamp: '2024-01-01T12:00:00Z', value: 50 }
+    };
+
+    expect(() => buildSolverConfigFromSettings(mockSettings, data)).toThrow('Insufficient future data');
+  });
 });

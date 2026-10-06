@@ -10,7 +10,7 @@ import { resolveEvMode } from './ev-mode.ts';
 import { resolveDepartureMs } from './ev-departure.ts';
 import { fetchEvTargetSoc } from './ev-target-soc.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
-import type { SolverConfig, EvConfig } from '../../lib/types.ts';
+import type { SolverConfig, EvConfig, TimeSeries } from '../../lib/types.ts';
 import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 /**
@@ -58,7 +58,8 @@ function startTimeToSlot(
 /**
  * Build a fully resolved SolverConfig from stored settings + data.
  * Settings and data are already validated by their respective stores.
- * Throws 422 when there is insufficient future data to optimise.
+ * Throws 422 when there is insufficient future data to optimise, or when the
+ * load or a price series starts after the plan window begins.
  *
  * `nowMs` defaults to the start of the current slot so tests can call this
  * directly without worrying about timing. Production callers should pass a
@@ -89,6 +90,28 @@ export function buildSolverConfigFromSettings(
         ...(data.evLoad ? { evLoadEnd: new Date(evLoadEndMs).toISOString() } : {}),
       },
     });
+  }
+
+  // A series that starts after the plan window begins would be zero-padded by
+  // extractWindow for the leading slots. Zero PV just means "no sun yet" and an
+  // injected evLoad legitimately starts when the EV draw starts, but zero load
+  // or zero prices would make the solver plan against free energy in exactly
+  // the slots that are written to Victron first, so reject those outright.
+  const mustCoverStart: Array<[string, TimeSeries]> = [
+    ['load',        data.load],
+    ['importPrice', data.importPrice],
+    ['exportPrice', data.exportPrice],
+  ];
+  for (const [name, series] of mustCoverStart) {
+    const seriesStartMs = new Date(series.start).getTime();
+    if (seriesStartMs > nowMs) {
+      throw new HttpError(422, `Series '${name}' starts after the plan window begins`, {
+        details: {
+          now:         new Date(nowMs).toISOString(),
+          seriesStart: new Date(seriesStartMs).toISOString(),
+        },
+      });
+    }
   }
 
   const base: SolverConfig = {
