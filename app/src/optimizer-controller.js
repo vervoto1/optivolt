@@ -61,8 +61,13 @@ export function createOptimizerController({ els, services = {} }) {
       runBtn.disabled = true;
     }
 
+    let settingsError = null;
     try {
-      await persistConfig();
+      // A rejected save (e.g. a 400 for a blank efficiency field) does not
+      // stop the solve, which then runs on the settings already stored. The
+      // rejection must stay on screen though: the success label below would
+      // otherwise replace it, and every later edit would be dropped unseen.
+      settingsError = await savePendingConfig();
 
       const updateData = !!els.updateDataBeforeRun?.checked;
       const writeToVictron = !!els.pushToVictron?.checked;
@@ -77,14 +82,18 @@ export function createOptimizerController({ els, services = {} }) {
       const renderFailures = renderPlanResult(result);
       if (renderFailures.length > 0) {
         showDisplayFailure(
-          writeToVictron ? "Plan calculated and sent to Victron" : "Plan calculated",
+          isNonOptimal(solverStatus)
+            ? `Plan status: ${solverStatus}`
+            : writeToVictron ? "Plan calculated and sent to Victron" : "Plan calculated",
           renderFailures,
         );
       }
+      if (settingsError != null) showSettingsNotSaved(settingsError);
     } catch (err) {
       console.error(err);
       if (els.status) {
-        els.status.textContent = `Error: ${err.message}`;
+        const notSaved = settingsError != null ? ` (settings not saved: ${settingsError})` : "";
+        els.status.textContent = `Error: ${err.message}${notSaved}`;
         els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
       }
       deps.updateSummaryUI(els, null);
@@ -151,6 +160,15 @@ export function createOptimizerController({ els, services = {} }) {
     els.status.className = "text-sm font-medium text-amber-600 dark:text-amber-400";
   }
 
+  // Red notice put in front of whatever the run reported: the plan on screen
+  // was computed from the previously stored settings, not the edited form.
+  function showSettingsNotSaved(message) {
+    if (!els.status) return;
+    els.status.textContent =
+      `Settings not saved: ${message}. ${els.status.textContent} (using the previously saved settings)`;
+    els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
+  }
+
   // Hydrate the UI from the server's cached plan (kept fresh by auto-calculate)
   // without triggering a solve. Returns { ageMs } when a plan was rendered, or
   // null when none is available (fresh server start, or the fetch failed) so
@@ -172,12 +190,17 @@ export function createOptimizerController({ els, services = {} }) {
       ? Math.max(0, Date.now() - result.computedAtMs)
       : Infinity;
 
+    const solverStatus =
+      typeof result.solverStatus === "string" ? result.solverStatus : "OK";
     if (renderFailures.length > 0) {
-      showDisplayFailure(`Plan loaded (${formatPlanAge(ageMs)})`, renderFailures);
+      showDisplayFailure(
+        isNonOptimal(solverStatus)
+          ? `Plan status: ${solverStatus}`
+          : `Plan loaded (${formatPlanAge(ageMs)})`,
+        renderFailures,
+      );
     } else if (els.status) {
-      const solverStatus =
-        typeof result.solverStatus === "string" ? result.solverStatus : "OK";
-      if (solverStatus.toLowerCase() !== "optimal") {
+      if (isNonOptimal(solverStatus)) {
         els.status.textContent = `Plan status: ${solverStatus}`;
         els.status.className = "text-sm font-medium text-amber-600 dark:text-amber-400";
       } else {
@@ -235,17 +258,28 @@ export function createOptimizerController({ els, services = {} }) {
     );
   }
 
-  async function persistConfig(cfg = deps.snapshotUI(els)) {
-    // Skip the POST when nothing changed since the last successful persist —
-    // notably the unconditional persist at the start of the boot-time run.
+  // POST the snapshot unless it matches the last successful persist —
+  // notably the unconditional persist at the start of the boot-time run.
+  // Resolves to the error message when the save failed, else null. A failed
+  // save leaves the baseline alone, so the next attempt POSTs again.
+  async function savePendingConfig(cfg = deps.snapshotUI(els)) {
     const json = JSON.stringify(cfg);
-    if (json === lastPersistedConfigJson) return;
+    if (json === lastPersistedConfigJson) return null;
     try {
       await deps.saveConfig(cfg);
       lastPersistedConfigJson = json;
+      return null;
     } catch (error) {
       console.error("Failed to persist settings", error);
-      if (els.status) els.status.textContent = `Settings error: ${error.message}`;
+      return error?.message ?? String(error);
+    }
+  }
+
+  async function persistConfig(cfg = deps.snapshotUI(els)) {
+    const settingsError = await savePendingConfig(cfg);
+    if (settingsError != null && els.status) {
+      els.status.textContent = `Settings error: ${settingsError}`;
+      els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
     }
   }
 
@@ -263,9 +297,7 @@ export function createOptimizerController({ els, services = {} }) {
   function updateRunStatus(solverStatus, writeToVictron) {
     if (!els.status) return;
 
-    const nonOptimal =
-      typeof solverStatus === "string" &&
-      solverStatus.toLowerCase() !== "optimal";
+    const nonOptimal = isNonOptimal(solverStatus);
 
     let label;
     let colorClass = "text-emerald-600 dark:text-emerald-400";
@@ -308,6 +340,10 @@ export function createOptimizerController({ els, services = {} }) {
     renderScheduleTable,
     seedPersistedConfig,
   };
+}
+
+function isNonOptimal(solverStatus) {
+  return typeof solverStatus === "string" && solverStatus.toLowerCase() !== "optimal";
 }
 
 function formatPlanAge(ageMs) {

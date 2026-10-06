@@ -252,12 +252,18 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
   let departureIdx = departureMs != null
     ? (evRows.findIndex(r => r.timestampMs >= departureMs))
     : -1;
-  // The "ready" badge marks the user's departure row, which sits on or just
-  // after the pinned row. Anywhere else (an elapsed "today" deadline the
-  // server moved to the end of the horizon) it would not be where the plan
-  // is ready, so it is dropped.
-  if (pinnedTarget && departureIdx !== pinnedTarget.idx && departureIdx !== pinnedTarget.idx + 1) {
-    departureIdx = -1;
+  // The "ready" badge marks the user's departure row. The server floors the
+  // deadline to a slot boundary and pins the target on the slot ending there,
+  // so a deadline it honoured lies within one step after the pinned row's
+  // end (on or off a boundary). Any other deadline (an elapsed "today" one
+  // the server moved to the end of the horizon) is not where the plan is
+  // ready, so its badge is dropped.
+  if (pinnedTarget && departureIdx >= 0) {
+    const step_ms = stepSize_m * 60_000;
+    const pinnedEndMs = evRows[pinnedTarget.idx].timestampMs + step_ms;
+    if (!(departureMs >= pinnedEndMs && departureMs < pinnedEndMs + step_ms)) {
+      departureIdx = -1;
+    }
   }
   const targetIdx = pinnedTarget ? pinnedTarget.idx : departureIdx;
   const targetSoc_percent = pinnedTarget ? pinnedTarget.targetSoc_percent : evSettings.targetSoc_percent;
