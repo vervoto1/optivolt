@@ -57,7 +57,7 @@ npm install
 npm run api       # or: npm run dev  (loads .env.local via dotenv-cli + nodemon)
 ```
 
-Requires Node.js `^22.18.0 || >=24` from an official build: the server is TypeScript run by Node's built-in type stripping. Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) cannot parse `api/index.ts`; run `npx tsx api/index.ts` there instead.
+Requires Node.js `^22.18.0 || >=24` from an official build: the server is TypeScript run by Node's built-in type stripping. Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) cannot parse `api/index.ts`; there, run `npx --no-install tsx api/index.ts` instead (tsx is a devDependency).
 
 By default the server listens on `http://localhost:3000`.
 

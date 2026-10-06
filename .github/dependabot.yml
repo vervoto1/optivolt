@@ -9,3 +9,20 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: 'monthly'
+
+  # Workflow actions, including the SHA-pinned home-assistant/actions helpers.
+  # Grouped into one monthly PR. A change to the build workflows triggers a full
+  # (non-pushing) add-on build on the PR, and skip-existing keeps a merge from
+  # overwriting a published version tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: 'monthly'
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # No "docker" entry: Dependabot cannot follow `ARG BUILD_FROM` + `FROM $BUILD_FROM`
+  # (the HA base in optivolt/Dockerfile), so it would only propose Node-major bumps
+  # of the node:24-alpine deps stage, drifting away from the Alpine runtime's Node.
+  # Bump the base by hand.

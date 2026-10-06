@@ -16,6 +16,7 @@ hashes below, so a swapped binary fails CI until this file is updated with it.
 | Built by | upstream release build: npm `highs@1.15.3` (published 2026-09-11, tarball sha1 `516181f8c1c6fd0c7d8698073e01f3e07671a82a`), `package/build/` copied verbatim |
 | `highs.wasm` | sha256 `528be4365bea1d4188988646b244263f50320df55782e14d6af5bce7cd45c840` (3 531 385 bytes) |
 | `highs.js` | sha256 `0bd23843c9795753f2276e9901eb2a1e66288547b6bcba84fa0665dc037b5c7c` (168 432 bytes, Emscripten `MODULARIZE` wrapper, CommonJS — hence the sibling `package.json`) |
+| License | MIT ("Copyright (c) 2023 highs-js / Copyright (c) 2026 HiGHS"): `LICENSE` is `package/LICENSE` of the same tarball, verbatim. It ships with the binaries in the add-on image. HiGHS lists the licenses of code it bundles in its [`THIRD_PARTY_NOTICES.md`](https://github.com/ERGO-Code/HiGHS/blob/04024d701f79feb8e2f18bc3df0dffc04ef05088/THIRD_PARTY_NOTICES.md) |
 
 Previous build, for rollback (`git checkout 3fe075e -- vendor/highs-build`, the v0.7.56 commit):
 highs-js `98c35cc8071104828e881cadfcfcba034c596411` (v1.8.0 + the stack-size
@@ -39,9 +40,9 @@ toolchain** — copy the release artifacts instead.
    `git ls-tree v<version> HiGHS` in a highs-js clone).
 2. Fetch it without installing: `npm pack highs@<version>` and extract the
    tarball; the artifacts are `package/build/highs.js` and
-   `package/build/highs.wasm`.
+   `package/build/highs.wasm`, and the license is `package/LICENSE`.
 3. Gate it **before** copying anything:
-   `npx tsx scripts/compare-highs-builds.ts <extracted>/package/build/highs.js`
+   `npx --no-install tsx scripts/compare-highs-builds.ts <extracted>/package/build/highs.js`
    solves the default dataset with both builds and reports status, objective,
    solve time and per-slot plan differences. Run it again against a snapshot of
    the production `DATA_DIR` (`data.json` + `settings.json`) so the gate covers
@@ -50,7 +51,8 @@ toolchain** — copy the release artifacts instead.
    compares against the build of a given commit (`REF=`), so it also works
    after the swap. Status or objective differences fail the gate;
    differing rows at an equal objective are alternative optima — review them.
-4. Copy the two files over `highs.js` / `highs.wasm` (keep `package.json`), run
+4. Copy the two files over `highs.js` / `highs.wasm` and `package/LICENSE` over
+   `LICENSE` (keep `package.json`), run
    the full suite (`npm run test:run` — the `tests/lib/` solver tests exercise
    the real binary), then update the **Current build** table above: source
    commit/tag, HiGHS commit/version, new sha256 hashes, and replace "Built by"

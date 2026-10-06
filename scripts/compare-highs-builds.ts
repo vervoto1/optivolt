@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S npx --no-install tsx
 /**
  * Refresh gate for the vendored HiGHS solver (see vendor/highs-build/PROVENANCE.md).
  *
@@ -6,7 +6,7 @@
  * status, objective, solve time and any per-slot differences in the parsed plan.
  *
  * Usage:
- *   npx tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]
+ *   npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]
  *
  * With no data/settings arguments the bundled defaults are used. Point it at a
  * snapshot of a real DATA_DIR (data.json + settings.json) to compare on the
@@ -35,7 +35,7 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
 const [candidateArg, dataArg, settingsArg] = process.argv.slice(2);
 if (!candidateArg) {
-  console.error('usage: npx tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]');
+  console.error('usage: npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]');
   process.exit(2);
 }
 

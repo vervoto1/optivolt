@@ -6,12 +6,20 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Least privilege: the jobs only read the repository (Codecov uses CODECOV_TOKEN,
+# not GITHUB_TOKEN). Without this the repo default (write) applies on pushes to
+# main and own-branch PRs, and npm install scripts could read that token.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
 
     - name: Use Node.js 24
       uses: actions/setup-node@v7
@@ -44,3 +52,73 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: vervoto1/optivolt
+
+  # Builds the add-on image the way the Builder does, boots it without a
+  # Supervisor and solves one plan in it. The Builder only builds when files under
+  # optivolt/ change and never starts the image, so a change to api/, lib/, app/,
+  # vendor/ or the lockfile that breaks the boot (a runtime dependency in
+  # devDependencies, a missing COPY, Node/WASM trouble on Alpine) would otherwise
+  # surface only after the production add-on updates. amd64 only.
+  docker-smoke:
+    name: Add-on image smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    # Same staging as build-addon.yaml ("Copy source into add-on directory").
+    - name: Copy source into add-on directory
+      run: |
+        cp -r api/ optivolt/api/
+        cp -r app/ optivolt/app/
+        cp -r lib/ optivolt/lib/
+        mkdir -p optivolt/vendor
+        cp -r vendor/highs-build/ optivolt/vendor/highs-build/
+        cp package.json package-lock.json optivolt/
+
+    - name: Build image
+      run: docker build --platform linux/amd64 -t optivolt-smoke:ci optivolt/
+
+    # No Supervisor: bashio::config returns empty options, so VRM and MQTT stay
+    # unconfigured. Every controller defaults to off, so nothing talks to a Victron.
+    - name: Start container
+      run: docker run -d --name optivolt-smoke -p 127.0.0.1:3000:3000 optivolt-smoke:ci
+
+    - name: Wait for /health
+      run: |
+        for i in $(seq 1 30); do
+          if curl -fsS -m 5 http://127.0.0.1:3000/health; then
+            echo
+            echo "Server is up and healthy."
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::the add-on image did not answer /health within 60 s"
+        exit 1
+
+    # Runs the vendored HiGHS WASM inside the image. The default SoC source is a
+    # Victron MQTT read, so switch it to the stored value first; updateData and
+    # writeToVictron default to false, so the solve fetches and writes nothing.
+    - name: Solve a plan
+      run: |
+        curl -fsS -m 15 -X POST -H 'content-type: application/json' \
+          -d '{"dataSources":{"soc":"api"}}' http://127.0.0.1:3000/settings > /dev/null
+        curl -fsS -m 60 -X POST -H 'content-type: application/json' \
+          -d '{}' http://127.0.0.1:3000/calculate -o plan.json
+        jq -e '.solverStatus == "Optimal" and (.rows | length) > 0' plan.json > /dev/null || {
+          echo "::error::the image did not return an Optimal plan"
+          jq '{solverStatus, rows: (.rows | length)}' plan.json || cat plan.json
+          exit 1
+        }
+        jq -r '"Optimal plan with \(.rows | length) slots from \(.tsStart)"' plan.json
+
+    - name: Dump container logs on failure
+      if: failure()
+      run: docker logs optivolt-smoke
+
+    - name: Remove container
+      if: always()
+      run: docker rm -f optivolt-smoke || true
