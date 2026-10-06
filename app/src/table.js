@@ -1,5 +1,5 @@
 import { SOLUTION_COLORS } from "./charts.js";
-import { escapeHtml } from "./utils.js";
+import { escapeHtml, findEvTargetRow } from "./utils.js";
 
 /**
  * Render the results table and unit label.
@@ -26,10 +26,15 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
   const fmtTime = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
   const fmtDate = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit" });
 
+  // Highlight the row the plan's EV target is pinned to; without one, the
+  // first row at or after the browser-side departure time.
+  const pinnedTarget = findEvTargetRow(rows);
   const departureMs = evSettings?.departureTime ? new Date(evSettings.departureTime).getTime() : null;
-  const departureIdx = departureMs != null
-    ? rows.findIndex(r => r.timestampMs >= departureMs)
-    : -1;
+  const departureIdx = pinnedTarget
+    ? pinnedTarget.idx
+    : departureMs != null
+      ? rows.findIndex(r => r.timestampMs >= departureMs)
+      : -1;
 
   const timesDisp = rows.map((row) => {
     const dt = new Date(row.timestampMs);
@@ -320,7 +325,9 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     const neg = s.startsWith("-") ? "-" : "";
     const body = neg ? s.slice(1) : s;
     const parts = body.split(".");
-    const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, "\u2009");
+    // U+202F (narrow no-break space), not U+2009 (thin space): a thin space
+    // lets a narrow column wrap "5 310" onto two lines mid-number.
+    const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
     // v8 ignore next — null path of ternary (no decimal part) is untestable with valid numbers
     return parts.length > 1 ? `${neg}${intPart}.${parts[1]}` : `${neg}${intPart}`;
   }

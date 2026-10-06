@@ -1,4 +1,5 @@
 import { fmtHHMM } from './core.js';
+import { findEvTargetRow } from '../utils.js';
 
 export function findDepartureSlotIdx(rows, departureTime) {
   if (!departureTime) return -1;
@@ -41,9 +42,17 @@ export function makeEvDeparturePlugin(rows, departureTime) {
 }
 
 export function makeEvTargetPlugin(rows, departureTime, targetSoc_percent) {
-  if (!departureTime || !(targetSoc_percent > 0)) return null;
+  // Prefer the target the server pinned on the plan rows; otherwise fall
+  // back to the browser's departure/target settings.
+  const pinned = findEvTargetRow(rows);
+  if (pinned) {
+    targetSoc_percent = pinned.targetSoc_percent;
+  } else if (!departureTime) {
+    return null;
+  }
+  if (!(targetSoc_percent > 0)) return null;
 
-  const depIdx = findDepartureSlotIdx(rows, departureTime);
+  const depIdx = pinned ? pinned.idx : findDepartureSlotIdx(rows, departureTime);
   const color = 'rgba(16, 185, 129, 0.75)';
 
   return {

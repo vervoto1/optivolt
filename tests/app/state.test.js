@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { snapshotUI, hydrateUI, updatePlanMeta, updateSummaryUI, updateTerminalCustomUI } from '../../app/src/state.js';
+import { snapshotUI, hydrateUI, updatePlanMeta, updateSummaryUI, updateTerminalCustomUI, updateRebalanceNudgeUI } from '../../app/src/state.js';
 
 function makeEls() {
   return {
@@ -903,5 +903,21 @@ describe('updateTerminalCustomUI', () => {
   it('handles missing elements', () => {
     updateTerminalCustomUI({});
     updateTerminalCustomUI({ terminal: null, terminalCustom: null });
+  });
+});
+
+describe('updateRebalanceNudgeUI', () => {
+  it('shows the last full-SoC time on a 24-hour clock even under a 12-hour locale', () => {
+    const format = Date.prototype.toLocaleString;
+    const spy = vi.spyOn(Date.prototype, 'toLocaleString')
+      .mockImplementation(function (_locale, options) { return format.call(this, 'en-US', options); });
+    const els = { rebalanceToggleLabel: document.createElement('label') };
+    try {
+      updateRebalanceNudgeUI(els, { lastFullSocAt: '2026-10-01T13:05:00.000Z' });
+      expect(els.rebalanceToggleLabel.title).toMatch(/^Schedule battery rebalancing\. Last 100% SoC: .*\d{2}:05\.$/);
+      expect(els.rebalanceToggleLabel.title).not.toMatch(/\b[AP]M\b/);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

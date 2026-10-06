@@ -231,7 +231,11 @@ export function refreshAllChartThemes() {
   const fontFamily = getComputedStyle(document.documentElement).fontFamily;
 
   for (const chart of getRenderedCharts()) {
-    const options = chart.options || {};
+    // Recolour config.options, the object Chart.js resolves from on update.
+    // chart.options is the resolved view: there a scriptable x-axis colour
+    // reads back as the string it last returned, so the callback would be
+    // overwritten with one colour and a line drawn at every slot.
+    const options = chart.config?.options ?? chart.options ?? {};
     updateLegendTheme(options, theme, fontFamily);
 
     for (const [scaleId, scaleOptions] of Object.entries(options.scales || {})) {

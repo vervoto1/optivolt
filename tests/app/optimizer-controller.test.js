@@ -523,3 +523,71 @@ describe('optimizer controller', () => {
     expect(services.saveConfig).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('optimizer controller — render failure isolation', () => {
+  it('keeps a solved plan on screen when one chart throws, drawing every other panel', async () => {
+    const { controller, els, services, summary } = setupController();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    services.drawSocChart.mockImplementation(() => { throw new Error('bad SoC data'); });
+
+    await controller.onRun();
+
+    expect(els.status.textContent).toBe('Plan calculated, but display failed: SoC chart: bad SoC data');
+    expect(els.status.className).toContain('text-amber-600');
+    // The summary is the one from the plan, never cleared.
+    expect(services.updateSummaryUI).toHaveBeenCalledWith(els, summary);
+    expect(services.updateSummaryUI).not.toHaveBeenCalledWith(els, null);
+    // Panels after the failing chart still render.
+    expect(services.drawPricesStepLines).toHaveBeenCalled();
+    expect(services.drawLoadPvGrouped).toHaveBeenCalled();
+    expect(services.updateEvPanel).toHaveBeenCalled();
+    expect(services.renderTable).toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith('Failed to render SoC chart:', expect.any(Error));
+    expect(els.run.disabled).toBe(false);
+  });
+
+  it('says the plan was sent to Victron and counts further failures', async () => {
+    const { controller, els, services } = setupController();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    els.pushToVictron.checked = true;
+    services.updatePlanMeta.mockImplementation(() => { throw new Error('meta'); });
+    services.updateEvPanel.mockImplementation(() => { throw new Error('ev'); });
+
+    await controller.onRun();
+
+    expect(services.requestRemoteSolve).toHaveBeenCalledWith({ updateData: true, writeToVictron: true });
+    expect(els.status.textContent).toBe('Plan calculated and sent to Victron, but display failed: plan info: meta (+1 more)');
+    expect(els.status.className).toContain('text-amber-600');
+    expect(services.drawFlowsBarStackSigned).toHaveBeenCalled();
+  });
+
+  it('a cached plan whose render fails still counts as loaded, so boot does not re-solve', async () => {
+    const { controller, els, services, rows } = setupController();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    services.fetchLastPlan.mockResolvedValue({
+      rows,
+      summary: {},
+      solverStatus: 'Optimal',
+      computedAtMs: Date.now() - 5 * 60_000,
+    });
+    services.renderTable.mockImplementation(() => { throw new Error('table blew up'); });
+
+    const hydrated = await controller.hydrateFromCachedPlan();
+
+    expect(hydrated).toEqual({ ageMs: expect.any(Number) });
+    expect(els.status.textContent).toBe('Plan loaded (5 min ago), but display failed: schedule: table blew up');
+    expect(els.status.className).toContain('text-amber-600');
+    expect(services.drawSocChart).toHaveBeenCalled();
+    expect(services.requestRemoteSolve).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a render failure without a status element', async () => {
+    const { controller, els, services } = setupController();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    els.status = null;
+    services.drawPricesStepLines.mockImplementation(() => { throw 'not an Error'; });
+
+    await expect(controller.onRun()).resolves.toBeUndefined();
+    expect(services.drawLoadPvGrouped).toHaveBeenCalled();
+  });
+});

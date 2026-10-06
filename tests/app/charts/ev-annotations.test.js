@@ -139,6 +139,20 @@ describe('makeEvTargetPlugin', () => {
     expect(makeEvTargetPlugin(rows, undefined, 80)).toBeNull();
   });
 
+  it('prefers the target the server pinned on the rows, even without a departure time', () => {
+    const pinnedRows = rows.map((r, i) => (i === rows.length - 1 ? { ...r, ev_target_soc_percent: 90 } : r));
+    const ctx = makeCtx();
+    // No departure set and a stale browser-side target of 80: the plan's 90 at the last row wins.
+    const plugin = makeEvTargetPlugin(pinnedRows, null, 80);
+    const chart = makeChart(ctx, { xPx: 77, yPx: 12 });
+
+    plugin.afterDatasetsDraw(chart);
+
+    expect(chart.scales.y.getPixelForValue).toHaveBeenCalledWith(90);
+    expect(chart.scales.x.getPixelForValue).toHaveBeenCalledWith(pinnedRows.length - 1);
+    expect(ctx.calls).toContainEqual(['fillText', '90%', 196, 8]);
+  });
+
   it('returns null when target SoC is not positive', () => {
     const depIso = new Date(2000).toISOString();
     expect(makeEvTargetPlugin(rows, depIso, 0)).toBeNull();

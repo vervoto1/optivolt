@@ -424,6 +424,38 @@ describe('ev-tab.js', () => {
       expect(els.evScheduleTable.innerHTML).toContain('ready');
     });
 
+    it('shows the pinned plan target on its row even with no departure time set', () => {
+      const t0 = Date.now();
+      const row = (i, extra = {}) => ({ timestampMs: t0 + i * 900_000, ev_soc_percent: 50 + i, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 3000, ic: 12, ...extra });
+      const rows = [row(0), row(1), row(2, { ev_target_soc_percent: 90 })];
+      const els = makeEls();
+      els.evTargetSoc = { value: '80' }; // stale static setting; the plan used 90
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 2 });
+
+      const html = els.evScheduleTable.innerHTML;
+      expect(html).toContain('Target');
+      expect(html).toContain('90%');
+      expect(html).not.toContain('80%');
+      expect(html).not.toContain('>ready<');
+    });
+
+    it('drops the ready badge when the departure row is nowhere near the pinned target', () => {
+      const t0 = Date.now();
+      const row = (i, extra = {}) => ({ timestampMs: t0 + i * 900_000, ev_soc_percent: 50 + i, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 3000, ic: 12, ...extra });
+      const rows = [row(0), row(1), row(2), row(3, { ev_target_soc_percent: 90 })];
+      const els = makeEls();
+      // Departure resolves to row 0 (an elapsed deadline); the server pinned the target at the end.
+      els.evDepartureTime = { value: new Date(t0 - 3_600_000).toISOString() };
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 2 });
+      expect(els.evScheduleTable.innerHTML).not.toContain('>ready<');
+
+      // A departure on the row right after the pinned one keeps its badge.
+      const rows2 = [row(0), row(1, { ev_target_soc_percent: 90 }), row(2)];
+      els.evDepartureTime = { value: new Date(t0 + 2 * 900_000).toISOString() };
+      updateEvPanel(els, rows2, { evChargeTotal_kWh: 2 });
+      expect(els.evScheduleTable.innerHTML).toContain('>ready<');
+    });
+
     it('shows Target column when targetSoc_percent is set', () => {
       const rows = [
         { timestampMs: Date.now(), ev_soc_percent: 30, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 1500, b2ev: 500, pv2ev: 1000, ic: 12 },

@@ -4,6 +4,7 @@ import {
   toDatetimeLocal,
   resolveDepartureMs,
   effectiveTargetSoc,
+  findEvTargetRow,
   escapeHtml,
 } from '../../app/src/utils.js';
 
@@ -152,5 +153,18 @@ describe('effectiveTargetSoc', () => {
   it('returns null when neither source is usable', () => {
     expect(effectiveTargetSoc(undefined, '')).toBeNull();
     expect(effectiveTargetSoc('unavailable', undefined)).toBeNull();
+  });
+});
+
+describe('findEvTargetRow', () => {
+  it('returns the first row carrying a finite pinned target, with its index', () => {
+    const rows = [{ ev_soc_percent: 50 }, { ev_target_soc_percent: 90 }, { ev_target_soc_percent: 70 }];
+    expect(findEvTargetRow(rows)).toEqual({ idx: 1, targetSoc_percent: 90 });
+  });
+
+  it('returns null when no row carries one (or the input is not an array)', () => {
+    expect(findEvTargetRow([{ ev_soc_percent: 50 }, { ev_target_soc_percent: null }, null])).toBeNull();
+    expect(findEvTargetRow([{ ev_target_soc_percent: Number.NaN }])).toBeNull();
+    expect(findEvTargetRow(undefined)).toBeNull();
   });
 });

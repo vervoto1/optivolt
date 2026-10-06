@@ -428,10 +428,13 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
 }
 
 function formatAdjustmentTime(value) {
+  // hourCycle pins a 24-hour clock like the rest of the UI, whatever the
+  // browser locale (en-US would otherwise show AM/PM).
   return new Date(value).toLocaleString([], {
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
+    hourCycle: 'h23',
   });
 }
 

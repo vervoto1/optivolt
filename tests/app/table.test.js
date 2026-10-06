@@ -151,19 +151,36 @@ describe('renderTable', () => {
     expect(table.innerHTML).toContain('title=');
   });
 
-  it('formats large numbers with thin space grouping', () => {
+  it('formats large numbers with narrow no-break space grouping', () => {
     const table = document.createElement('table');
     const rows = [makeRow({ g2l: 12345 })];
     renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
-    // 12345 → "12 345" with thin space (\u2009)
-    expect(table.innerHTML).toContain('12\u2009345');
+    // 12345 → "12 345" with a narrow no-break space (\u202f)
+    expect(table.innerHTML).toContain('12\u202f345');
   });
 
   it('handles negative numbers in groupThin', () => {
     const table = document.createElement('table');
     const rows = [makeRow({ ic: -1234.56 })];
     renderTable({ rows, cfg: { stepSize_m: 15 }, targets: { table }, showKwh: false });
-    expect(table.innerHTML).toContain('-1\u2009234.56');
+    expect(table.innerHTML).toContain('-1\u202f234.56');
+  });
+
+  it('groups thousands with a non-breaking space so a number never wraps mid-value', () => {
+    const table = document.createElement('table');
+    renderTable({
+      rows: [makeRow({ load: 5310, pv: 12345 })],
+      cfg: { stepSize_m: 60 },
+      targets: { table },
+      showKwh: false,
+    });
+
+    const cells = table.querySelector('tbody tr').children;
+    // U+202F, not U+2009: in a narrow column the thin space is a break
+    // opportunity, and "5 310" wrapped onto two lines.
+    expect(cells[1].textContent).toBe('5\u202f310');
+    expect(cells[2].textContent).toBe('12\u202f345');
+    expect(table.innerHTML).not.toContain('\u2009');
   });
 
   it('handles feedin string values', () => {
@@ -252,6 +269,26 @@ describe('renderTable', () => {
     });
     expect(table.innerHTML).toContain('ring-emerald-200');
     expect(table.innerHTML).toContain('text-emerald-600');
+  });
+
+  it('highlights the row the plan pinned the EV target to, over the browser departure time', () => {
+    const table = document.createElement('table');
+    const rows = [
+      makeRow({ timestampMs: new Date('2024-01-15T08:00:00Z').getTime(), ev_charge: 3000, ev_soc_percent: 40 }),
+      makeRow({ timestampMs: new Date('2024-01-15T08:15:00Z').getTime(), ev_charge: 3000, ev_soc_percent: 60 }),
+      makeRow({ timestampMs: new Date('2024-01-15T08:30:00Z').getTime(), ev_charge: 0, ev_soc_percent: 90, ev_target_soc_percent: 90 }),
+    ];
+    renderTable({
+      rows,
+      cfg: { stepSize_m: 15 },
+      targets: { table },
+      showKwh: false,
+      // An elapsed deadline would point at row 0; the plan pinned the target on row 2.
+      evSettings: { departureTime: new Date('2024-01-15T07:00:00Z').toISOString() },
+    });
+    const bodyRows = table.querySelectorAll('tbody tr');
+    expect(bodyRows[0].className).not.toContain('ring-emerald-200');
+    expect(bodyRows[2].className).toContain('ring-emerald-200');
   });
 
   it('applies departure ring style to row', () => {
