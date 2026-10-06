@@ -254,7 +254,7 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
 
     const result = await computePlan();
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-solving with the hold window free to move'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('hold window free to move'));
     expect(result.result.Status).toBe('Optimal');
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(result.summary.rebalanceHoldMaxStartSlot).toBe(4);

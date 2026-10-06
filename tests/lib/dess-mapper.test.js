@@ -417,6 +417,50 @@ describe('mapRowsToDessV2', () => {
     expect(perSlot[3].restrictions).toBe(Restrictions.batteryToGrid);
   });
 
+  describe('Segmentation', () => {
+    it('creates a segment boundary at max SoC so price lookups are scoped', () => {
+      // Row 0: grid covers load at a high price (50) with SoC at max (100 %).
+      // Row 1: no flow, medium price (30), mid-range SoC.
+      // With the max-SoC boundary row 1 is in its own segment with no grid
+      // usage: gridBatteryTp = -Infinity, so ic 30 -> selfConsumption.
+      // Without it row 1 would share row 0's segment, see its 50 c grid usage
+      // as the tipping point, and ic 30 <= 50 -> proBattery.
+      const rows = [
+        makeRow({ g2l: 500, ic: 50, soc_percent: 100 }),
+        makeRow({ ic: 30, soc_percent: 50 }),
+      ];
+      const { perSlot } = mapRowsToDessV2(rows, cfg);
+      expect(perSlot[1].strategy).toBe(Strategy.selfConsumption);
+
+      // Same rows with row 0 at a mid-range SoC: one segment, proBattery.
+      const rowsNoBoundary = [
+        makeRow({ g2l: 500, ic: 50, soc_percent: 50 }),
+        makeRow({ ic: 30, soc_percent: 50 }),
+      ];
+      const { perSlot: perSlotNoBoundary } = mapRowsToDessV2(rowsNoBoundary, cfg);
+      expect(perSlotNoBoundary[1].strategy).toBe(Strategy.proBattery);
+    });
+
+    it('keeps rows in the same segment when SoC is not at a boundary', () => {
+      // One segment: gridBatteryTp = 10 from row 0, row 1 ic 50 > 10 -> selfConsumption.
+      const rows = [
+        makeRow({ g2l: 500, ic: 10, soc_percent: 50 }),
+        makeRow({ ic: 50, soc_percent: 50 }),
+      ];
+      const { perSlot } = mapRowsToDessV2(rows, cfg);
+      expect(perSlot[1].strategy).toBe(Strategy.selfConsumption);
+    });
+
+    it('treats SoC within epsilon of max as the boundary', () => {
+      const rows = [
+        makeRow({ g2l: 500, ic: 50, soc_percent: 99.6 }), // within the 0.5 % epsilon,
+        makeRow({ ic: 30, soc_percent: 50 }),
+      ];
+      const { perSlot } = mapRowsToDessV2(rows, cfg);
+      expect(perSlot[1].strategy).toBe(Strategy.selfConsumption);
+    });
+  });
+
   it('returns diagnostics including pvExportTippingPoint', () => {
     const rows = [
       makeRow({ g2b: 100, g2l: 200, b2g: 50, pv2g: 300, ic: 15, ec: 25 }),

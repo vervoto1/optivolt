@@ -3,10 +3,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // The search that relaxes a started hold's slot-0 pin when it is infeasible.
 // Real HiGHS and the real planner pipeline; the vendored highs factory is
 // wrapped so a test can override the answer for a given start cap (read back
-// from the LP's c_balance_start row) and record which caps were solved.
+// from the LP's c_balance_start row), rewrite the real answer (`post`), and
+// record which caps were solved with which time limit.
 const solverCtl = vi.hoisted(() => ({
   hook: null,
+  post: null,
   caps: [],
+  timeLimits_s: [],
 }));
 
 vi.mock('../../../vendor/highs-build/highs.js', async (importOriginal) => {
@@ -20,8 +23,11 @@ vi.mock('../../../vendor/highs-build/highs.js', async (importOriginal) => {
           const row = /c_balance_start:([^\n]*)/.exec(lp);
           const cap = row ? row[1].split('start_balance_').length - 2 : null;
           solverCtl.caps.push(cap);
+          solverCtl.timeLimits_s.push(options?.time_limit);
           const override = solverCtl.hook?.(cap);
-          return override ?? instance.solve(lp, options);
+          if (override) return override;
+          const real = instance.solve(lp, options);
+          return solverCtl.post ? solverCtl.post(cap, real) : real;
         },
       };
     },
@@ -92,7 +98,9 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW_STRING));
   vi.resetAllMocks();
   solverCtl.hook = null;
+  solverCtl.post = null;
   solverCtl.caps = [];
+  solverCtl.timeLimits_s = [];
   refreshSeriesFromVrmAndPersist.mockResolvedValue();
   saveSettings.mockResolvedValue();
   wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
@@ -141,11 +149,43 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
 
     const result = await computePlan();
 
-    // gallop 1, 2, 4, 8, then the next step reaches T - D = 11: the unpinned solve
-    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, 11]);
+    // gallop 1, 2, 4, 8, then the next step reaches T - D = 11: the unpinned
+    // solve, then bisect (8, 11]: 9, 10 both infeasible
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, 11, 9, 10]);
+    expect(result.result.Status).toBe('Optimal');
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(result.summary.rebalanceHoldMaxStartSlot).toBe(SLOTS - 1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-solving with the hold window free to move'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no start cap below slot 11 found, 6 relaxed solves); hold window free to move'));
+  });
+
+  it('bisects below T - D when the gallop overshoots to it', async () => {
+    // Caps below 9 infeasible: the gallop jumps from 8 straight to T - D = 11,
+    // but 9 still holds, so the window must not be freed.
+    solverCtl.hook = (cap) => (cap != null && cap < 9 ? INFEASIBLE : undefined);
+
+    const result = await computePlan();
+
+    // gallop 1, 2, 4, 8, unpinned 11 (feasible); bisect (8, 11]: 9
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, 11, 9]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(9);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBe(9);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('allowed to start up to slot 9 (5 relaxed solves)'));
+  });
+
+  it('does not bisect below a free-window solve that is not Optimal', async () => {
+    solverCtl.hook = (cap) => {
+      if (cap === SLOTS - 1) return NO_INCUMBENT;
+      return cap != null ? INFEASIBLE : undefined;
+    };
+
+    // The free-window answer is returned as is; with no incumbent the plan
+    // fails exactly as an unpinned solve without one would.
+    await expect(computePlan()).rejects.toThrow('without a feasible incumbent');
+
+    // gallop up to T - D, whose solve has no answer: no bisection
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, 11]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('free window solved with status "Time limit reached"'));
   });
 
   it('a pinned solve that stops without an incumbent is re-solved unpinned', async () => {
@@ -167,6 +207,32 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     expect(solverCtl.caps).toEqual([0, 1, SLOTS - 1]);
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('relaxed probe ended with solver status'));
+  });
+
+  it('a time-limited incumbent never counts as a feasible cap', async () => {
+    // Caps below 3 infeasible; cap 3 stops at the time limit with an
+    // incumbent, cap 4 is Optimal.
+    solverCtl.hook = (cap) => (cap != null && cap < 3 ? INFEASIBLE : undefined);
+    solverCtl.post = (cap, real) => (cap === 3 ? { ...real, Status: 'Time limit reached' } : real);
+
+    const result = await computePlan();
+
+    // gallop 1, 2, 4 (Optimal); bisect (2, 4]: 3 is only an incumbent, keep 4
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 3]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(4);
+  });
+
+  it('a gallop probe with only an incumbent releases the pin', async () => {
+    solverCtl.hook = (cap) => (cap === 0 ? INFEASIBLE : undefined);
+    solverCtl.post = (cap, real) => (cap === 1 ? { ...real, Status: 'Time limit reached' } : real);
+
+    const result = await computePlan();
+
+    expect(solverCtl.caps).toEqual([0, 1, SLOTS - 1]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('relaxed probe ended with solver status "Time limit reached"'));
   });
 
   it('a bisection probe without an answer keeps the feasible cap already found', async () => {
@@ -200,39 +266,88 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     expect(result.cfg.rebalanceMaxStartSlot).toBe(24);
   });
 
-  it('the EV preview seeds its search with the main plan cap and does not repeat the warning', async () => {
+  const evPreviewSettings = {
+    ...settings,
+    evEnabled: true,
+    evSource: 'native',
+    evSocSensor: 'sensor.ev_soc',
+    evPlugSensor: 'binary_sensor.ev_plug',
+    evChargePhases: 1,
+    evMinChargeCurrent_A: 6,
+    evMaxChargeCurrent_A: 16,
+    evBatteryCapacity_kWh: 10,
+    evTargetSoc_percent: 80,
+    evChargeEfficiency_percent: 100,
+    evDepartureTime: '2024-01-01T08:00:00Z',
+    evStartTime: '',
+    evMinSoc_percent: 0,
+    evApplyPriceLimit: false,
+    evOpportunisticEnabled: false,
+  };
+
+  it('the EV preview starts its search at the main plan cap and does not repeat the warning', async () => {
     // Native EV mode, car unplugged: computePlan runs a second (preview) solve
     // on the same sagged hold.
     fetchHaEntityState.mockImplementation(async ({ entityId }) =>
       entityId === 'binary_sensor.ev_plug' ? { state: 'off' } : { state: '55' });
     solverCtl.hook = (cap) => (cap != null && cap < 3 ? INFEASIBLE : undefined);
-    loadSettings.mockResolvedValue({
-      ...settings,
-      evEnabled: true,
-      evSource: 'native',
-      evSocSensor: 'sensor.ev_soc',
-      evPlugSensor: 'binary_sensor.ev_plug',
-      evChargePhases: 1,
-      evMinChargeCurrent_A: 6,
-      evMaxChargeCurrent_A: 16,
-      evBatteryCapacity_kWh: 10,
-      evTargetSoc_percent: 80,
-      evChargeEfficiency_percent: 100,
-      evDepartureTime: '2024-01-01T08:00:00Z',
-      evStartTime: '',
-      evMinSoc_percent: 0,
-      evApplyPriceLimit: false,
-      evOpportunisticEnabled: false,
-    });
+    loadSettings.mockResolvedValue({ ...evPreviewSettings });
 
     const result = await computePlan();
 
-    // main: pin 0, gallop 1, 2, 4 (feasible), bisect 3; preview: pin 0, then the hint 3
-    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 3, 0, 3]);
+    // main: pin 0, gallop 1, 2, 4 (feasible), bisect 3; preview: no pinned
+    // solve, straight to the hint 3
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 3, 3]);
     expect(result.cfg.rebalanceMaxStartSlot).toBe(3);
     expect(getLastEvPreview()?.hasSchedule).toBe(true);
     const rebalanceWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes('rebalance hold'));
     expect(rebalanceWarnings).toHaveLength(1);
+  });
+
+  it('the EV preview goes straight to the free window when the main plan freed it', async () => {
+    fetchHaEntityState.mockImplementation(async ({ entityId }) =>
+      entityId === 'binary_sensor.ev_plug' ? { state: 'off' } : { state: '55' });
+    solverCtl.hook = (cap) => (cap != null && cap < SLOTS - 1 ? INFEASIBLE : undefined);
+    loadSettings.mockResolvedValue({ ...evPreviewSettings });
+
+    const result = await computePlan();
+
+    // main: pin 0, gallop 1, 2, 4, 8, free 11, bisect 9, 10; preview: free 11 only
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, 11, 9, 10, 11]);
+    expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+    expect(getLastEvPreview()?.hasSchedule).toBe(true);
+  });
+
+  it('cuts each relaxed probe time limit to the remaining budget', async () => {
+    // Every solve "takes" 7 s: the pinned solve and the free-window solve get
+    // the full 30 s; probes get what is left of the 20 s budget.
+    let clock_ms = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock_ms);
+    solverCtl.hook = (cap) => {
+      clock_ms += 7_000;
+      return cap != null && cap < 9 ? INFEASIBLE : undefined;
+    };
+
+    await computePlan();
+
+    // pin 0 (30), gallop 1 (20), 2 (13), 4 (6), budget gone -> free solve (30)
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, SLOTS - 1]);
+    expect(solverCtl.timeLimits_s).toEqual([30, 20, 13, 6, 30]);
+  });
+
+  it('never gives a relaxed probe less than a 1 s time limit', async () => {
+    let clock_ms = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock_ms);
+    solverCtl.hook = (cap) => {
+      clock_ms += cap === 1 ? 19_900 : 0;
+      return cap != null && cap < 5 ? INFEASIBLE : undefined;
+    };
+
+    await computePlan();
+
+    // probe 2 starts with 0.1 s of budget left
+    expect(solverCtl.caps.slice(0, 3)).toEqual([0, 1, 2]);
+    expect(solverCtl.timeLimits_s.slice(0, 3)).toEqual([30, 20, 1]);
   });
 
   it('releases the pin when the search runs out of wall-clock budget', async () => {

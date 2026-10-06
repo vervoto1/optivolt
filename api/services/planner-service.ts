@@ -267,9 +267,13 @@ interface PinnedHoldSolve {
 // Bounds on the pin-relaxation search below. Each probe is a full solve that
 // runs synchronously on the event loop, so the search stops after this many
 // probes or this much wall-clock time, keeping the best cap found so far
-// (or, when none is feasible yet, releasing the pin).
+// (or, when none is feasible yet, releasing the pin). Each probe's own solver
+// time limit is cut to what is left of the budget (never below
+// PIN_RELAX_MIN_PROBE_LIMIT_S), so one probe cannot overrun it by a full
+// SOLVE_TIME_LIMIT_S.
 const PIN_RELAX_MAX_PROBES = 8;
 const PIN_RELAX_BUDGET_MS = 20_000;
+const PIN_RELAX_MIN_PROBE_LIMIT_S = 1;
 
 /**
  * A lower bound on the latest start slot a sagged hold needs: the window
@@ -307,24 +311,33 @@ function hasUsableSolution(result: HighsSolution, T: number): boolean {
  * running, so the pin is relaxed only as far as needed: the smallest start cap
  * k at which the hold is feasible (feasibility only grows with k), found by a
  * galloping search from a physical lower bound plus bisection, both bounded
- * (PIN_RELAX_*). Only when no cap below T - D is feasible, or a probe ends
- * without a usable answer, is the window freed entirely (the pre-pin
- * behaviour) rather than failing the plan and leaving a stale schedule on the
- * GX. A pinned solve that ends with no usable incumbent for any other reason
- * (e.g. a time limit) is re-solved unpinned the same way.
+ * (PIN_RELAX_*). When the gallop reaches T - D (a cap that equals no cap) it
+ * solves the window free to move and still bisects below it, so a feasible
+ * cap under T - D is not skipped. Only a probe Status of "Optimal" counts as
+ * feasible: a time-limited incumbent would make computePlan show the plan
+ * without caching or writing it, so it never replaces an Optimal answer.
  *
- * `startHint` is the smallest cap the search considers (the EV preview passes
- * the main plan's cap); `quiet` suppresses the warnings (the preview would
- * repeat the main plan's).
+ * The window is freed entirely (the pre-pin behaviour) rather than failing the
+ * plan and leaving a stale schedule on the GX when no cap below T - D is
+ * found, the budget runs out before any feasible cap, or a pinned or gallop
+ * solve ends with a status other than Optimal or Infeasible (e.g. a time
+ * limit).
+ *
+ * `startHint` is the main plan's relaxed cap, passed by the EV preview: the
+ * pin already failed there and the preview only adds EV charging, so the
+ * pinned solve is skipped and the search starts at the hint. `quiet`
+ * suppresses the warnings (the preview would repeat the main plan's).
  */
 function solveWithPinnedHoldFallback(
   highs: HighsInstance,
   solveCfg: SolverConfig,
   { startHint, quiet = false }: { startHint?: number; quiet?: boolean } = {},
 ): PinnedHoldSolve {
-  const solveOnce = (c: SolverConfig): HighsSolution => {
+  const solveOnce = (c: SolverConfig, timeLimit_s?: number): HighsSolution => {
+    const options = solveOptionsFor(c);
+    if (timeLimit_s !== undefined) options.time_limit = Math.min(options.time_limit, timeLimit_s);
     try {
-      return highs.solve(buildLP(c), solveOptionsFor(c));
+      return highs.solve(buildLP(c), options);
     } catch (err) {
       /* v8 ignore start */
       highsPromise = undefined; // force re-initialisation on next call
@@ -332,28 +345,37 @@ function solveWithPinnedHoldFallback(
       /* v8 ignore stop */
     }
   };
-  const result = solveOnce(solveCfg);
   const pin = solveCfg.rebalanceMaxStartSlot;
-  const T = solveCfg.load_W.length;
-  if (pin == null || hasUsableSolution(result, T)) {
-    return { cfg: solveCfg, result };
-  }
+  if (pin == null) return { cfg: solveCfg, result: solveOnce(solveCfg) };
 
+  const T = solveCfg.load_W.length;
   const D = Math.min(T, Math.max(0, Math.trunc(solveCfg.rebalanceRemainingSlots ?? 0)));
   const maxStart = T - D; // the cap that equals no cap at all
   const { rebalanceMaxStartSlot: _pinnedStartSlot, ...unpinnedCfg } = solveCfg;
+  const warn = (message: string) => {
+    if (!quiet) console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (${message}`);
+  };
   const release = (reason: string): PinnedHoldSolve => {
-    if (!quiet) {
-      console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (${reason}); re-solving with the hold window free to move`);
-    }
+    warn(`${reason}); re-solving with the hold window free to move`);
     return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg), relaxedMaxStartSlot: maxStart };
   };
-  if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
 
+  if (startHint === undefined) {
+    const result = solveOnce(solveCfg);
+    if (hasUsableSolution(result, T)) return { cfg: solveCfg, result };
+    if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
+  }
+
+  const isOptimal = (r: HighsSolution) => r.Status === 'Optimal' && hasUsableSolution(r, T);
   const capped = (k: number): SolverConfig => ({ ...solveCfg, rebalanceMaxStartSlot: k });
   const deadlineMs = performance.now() + PIN_RELAX_BUDGET_MS;
+  const remainingBudget_s = () => (deadlineMs - performance.now()) / 1000;
   let probes = 0;
-  const canProbe = () => probes < PIN_RELAX_MAX_PROBES && performance.now() < deadlineMs;
+  const canProbe = () => probes < PIN_RELAX_MAX_PROBES && remainingBudget_s() > 0;
+  const probe = (k: number): HighsSolution => {
+    probes++;
+    return solveOnce(capped(k), Math.max(PIN_RELAX_MIN_PROBE_LIMIT_S, remainingBudget_s()));
+  };
 
   // Gallop: lo is the largest cap known infeasible, hi the smallest known feasible.
   // Caps below the physical lower bound are infeasible without a solve. Caps
@@ -367,11 +389,21 @@ function solveWithPinnedHoldFallback(
   let step = 1;
   let k = k0;
   while (hi === undefined) {
-    if (k >= maxStart) return release('infeasible');
+    if (k >= maxStart) {
+      // A cap of T - D is no cap: this is the release solve (full time limit,
+      // not a probe). Keep it as the fallback and bisect below it.
+      const r = solveOnce(unpinnedCfg);
+      if (!isOptimal(r)) {
+        warn(`infeasible; free window solved with status "${r.Status}"); hold window free to move`);
+        return { cfg: unpinnedCfg, result: r, relaxedMaxStartSlot: maxStart };
+      }
+      hi = maxStart;
+      best = r;
+      break;
+    }
     if (!canProbe()) return release('infeasible; relaxation search budget exhausted');
-    probes++;
-    const r = solveOnce(capped(k));
-    if (hasUsableSolution(r, T)) {
+    const r = probe(k);
+    if (isOptimal(r)) {
       hi = k;
       best = r;
     } else if (r.Status === 'Infeasible') {
@@ -385,20 +417,21 @@ function solveWithPinnedHoldFallback(
   // Bisect (lo, hi] down to the smallest feasible cap while the budget lasts.
   while (hi - lo > 1 && canProbe()) {
     const mid = Math.floor((lo + hi) / 2);
-    probes++;
-    const r = solveOnce(capped(mid));
-    if (hasUsableSolution(r, T)) {
+    const r = probe(mid);
+    if (isOptimal(r)) {
       hi = mid;
       best = r;
     } else if (r.Status === 'Infeasible') {
       lo = mid;
     } else {
-      break; // keep the feasible cap already found
+      break; // keep the Optimal cap already found
     }
   }
-  if (!quiet) {
-    console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (infeasible); hold window allowed to start up to slot ${hi} (${probes} relaxed solves)`);
+  if (hi >= maxStart) {
+    warn(`infeasible; no start cap below slot ${maxStart} found, ${probes} relaxed solves); hold window free to move`);
+    return { cfg: unpinnedCfg, result: best!, relaxedMaxStartSlot: maxStart };
   }
+  warn(`infeasible); hold window allowed to start up to slot ${hi} (${probes} relaxed solves)`);
   return { cfg: capped(hi), result: best!, relaxedMaxStartSlot: hi };
 }
 
