@@ -60,6 +60,7 @@ import {
 } from '../../../app/src/charts/overlays.js';
 import {
   aggregateLoadPvBuckets,
+  aggregateRows,
   drawFlowsBarStackSigned,
   drawLoadPvGrouped,
   drawPricesStepLines,
@@ -191,9 +192,41 @@ describe('drawFlowsBarStackSigned', () => {
     const cfg = lastRenderConfig();
     expect(cfg.data.labels).toEqual(['t0', 't1']); // two buckets
     const pv = cfg.data.datasets.find(d => d.label === 'Solar → Load');
-    // After sorting: first bucket = T0 (1000 W -> 1 kWh), second = T0+1h (4000 W -> 4 kWh)
-    expect(pv.data[0]).toBeCloseTo(1);
-    expect(pv.data[1]).toBeCloseTo(4);
+    // After sorting: first bucket = T0, second = T0+1h. Each bucket holds a
+    // single 15-min slot, so its energy is one quarter of an hour:
+    // 1000 W -> 0.25 kWh, 4000 W -> 1 kWh (absent slots count as zero).
+    expect(pv.data[0]).toBeCloseTo(0.25);
+    expect(pv.data[1]).toBeCloseTo(1);
+  });
+
+  it('does not inflate a partial first hour (plan starting at :30)', () => {
+    // Plan starts at 10:30: the 10:00 bucket only has two 15-min slots. Their
+    // energy is 2 x 1000 W x 0.25 h = 0.5 kWh, not the 1 kWh a plain average
+    // over the present slots would report.
+    const rows = [
+      { timestampMs: T0 + 30 * MIN, soc_percent: 10, ic: 20, ec: 2, g2l: 1000 },
+      { timestampMs: T0 + 45 * MIN, soc_percent: 11, ic: 30, ec: 4, g2l: 1000 },
+      { timestampMs: T0 + 60 * MIN, soc_percent: 12, ic: 40, ec: 6, g2l: 1000 },
+      { timestampMs: T0 + 75 * MIN, soc_percent: 13, ic: 40, ec: 6, g2l: 1000 },
+      { timestampMs: T0 + 90 * MIN, soc_percent: 14, ic: 40, ec: 6, g2l: 1000 },
+      { timestampMs: T0 + 105 * MIN, soc_percent: 15, ic: 40, ec: 6, g2l: 1000 },
+    ];
+
+    drawFlowsBarStackSigned(canvas(), rows, 15, null, null, 60);
+
+    const cfg = lastRenderConfig();
+    expect(cfg.data.labels).toEqual(['t0', 't1']);
+    const g2l = cfg.data.datasets.find(d => d.label === 'Grid → Load');
+    expect(g2l.data[0]).toBeCloseTo(-0.5); // partial hour: 0.5 kWh
+    expect(g2l.data[1]).toBeCloseTo(-1); // full hour: 1 kWh
+
+    // The tooltip and the negative-injection overlay receive the same
+    // energy-preserving rows with h = 1 h.
+    const external = cfg.options.overrides.plugins.tooltip.external;
+    expect(external(0, { title: ['10:00'] })).toContain('Grid → Load|KWH(0.500) kWh');
+    const [overlayRows, overlayH] = makeNegativePriceInjectionPlugin.mock.calls.at(-1);
+    expect(overlayH).toBe(1);
+    expect(overlayRows[0].g2l).toBeCloseTo(500);
   });
 
   it('does not aggregate when aggregateMinutes equals the step size', () => {
@@ -468,7 +501,86 @@ describe('drawPricesStepLines', () => {
   });
 });
 
+describe('aggregateRows', () => {
+  it('divides energy by slots per bucket but averages prices over present slots', () => {
+    const T = Date.parse('2099-01-01T10:00:00.000Z');
+    const rows = [
+      { timestampMs: T + 30 * MIN, soc: 1, soc_percent: 10, ev_soc_percent: 5, ic: 20, ec: -4, pv2g: 4000, load: 800, imp: 0, exp: 4000 },
+      { timestampMs: T + 45 * MIN, soc: 2, soc_percent: 20, ev_soc_percent: 6, ic: 30, ec: -6, pv2g: 2000, load: 400, imp: 0, exp: 2000 },
+    ];
+
+    const [bucket] = aggregateRows(rows, 15, 60);
+
+    expect(bucket.timestampMs).toBe(T);
+    // Energy-preserving average power over the full hour: (4000 + 2000) / 4.
+    expect(bucket.pv2g).toBeCloseTo(1500);
+    expect(bucket.exp).toBeCloseTo(1500);
+    expect(bucket.load).toBeCloseTo(300);
+    // Missing keys stay zero.
+    expect(bucket.b2g).toBe(0);
+    // Prices are the mean of the slots that exist.
+    expect(bucket.ic).toBeCloseTo(25);
+    expect(bucket.ec).toBeCloseTo(-5);
+    // SoC is the last slot of the bucket.
+    expect(bucket).toMatchObject({ soc: 2, soc_percent: 20, ev_soc_percent: 6 });
+  });
+
+  it('keeps both hours of the autumn DST change apart (epoch buckets)', () => {
+    // 2026-10-25 Europe/Amsterdam: 02:00-03:00 local happens twice
+    // (00:00Z CEST and 01:00Z CET). Eight 15-min slots from 00:00Z.
+    const start = Date.parse('2026-10-25T00:00:00Z');
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      timestampMs: start + i * 15 * MIN, ic: 10, ec: 1, g2l: 1000,
+    }));
+
+    const buckets = aggregateRows(rows, 15, 60);
+
+    expect(buckets.map(b => new Date(b.timestampMs).toISOString())).toEqual([
+      '2026-10-25T00:00:00.000Z', '2026-10-25T01:00:00.000Z',
+    ]);
+    expect(buckets.map(b => b.g2l)).toEqual([1000, 1000]);
+  });
+});
+
 describe('aggregateLoadPvBuckets', () => {
+  it('keeps the repeated autumn DST hour as its own bucket (no doubled bar)', () => {
+    // vitest pins TZ=Europe/Amsterdam. 2026-10-24T22:00Z is 00:00 CEST on
+    // 2026-10-25; the 02:00 local hour occurs at 00:00Z (CEST) and again at
+    // 01:00Z (CET). 24 x 15-min slots at 1000 W = 6 hours of 1 kWh each.
+    const start = Date.parse('2026-10-24T22:00:00Z');
+    const rows = Array.from({ length: 24 }, (_, i) => ({
+      timestampMs: start + i * 15 * MIN, load: 1000, pv: 0,
+    }));
+
+    const buckets = aggregateLoadPvBuckets(rows, 15);
+
+    expect(buckets.map(b => b.dtHour.toISOString())).toEqual([
+      '2026-10-24T22:00:00.000Z',
+      '2026-10-24T23:00:00.000Z',
+      '2026-10-25T00:00:00.000Z',
+      '2026-10-25T01:00:00.000Z',
+      '2026-10-25T02:00:00.000Z',
+      '2026-10-25T03:00:00.000Z',
+    ]);
+    for (const b of buckets) expect(b.loadKWh).toBeCloseTo(1);
+    // Local labels: the 02:00 hour shows twice, which is correct for that night.
+    expect(buckets.map(b => b.dtHour.getHours())).toEqual([0, 1, 2, 2, 3, 4]);
+  });
+
+  it('handles the spring-forward day (23-hour day) without empty or merged hours', () => {
+    // 2026-03-29 Europe/Amsterdam: 02:00 local does not exist (01:00Z is 03:00 CEST).
+    const start = Date.parse('2026-03-28T23:00:00Z'); // 00:00 CET
+    const rows = Array.from({ length: 16 }, (_, i) => ({
+      timestampMs: start + i * 15 * MIN, load: 1000, pv: 0,
+    }));
+
+    const buckets = aggregateLoadPvBuckets(rows, 15);
+
+    expect(buckets).toHaveLength(4);
+    for (const b of buckets) expect(b.loadKWh).toBeCloseTo(1);
+    expect(buckets.map(b => b.dtHour.getHours())).toEqual([0, 1, 3, 4]);
+  });
+
   it('sums hourly load/pv kWh and tracks original adjusted slots', () => {
     const buckets = aggregateLoadPvBuckets([
       { timestampMs: Date.parse('2099-01-01T10:00:00.000Z'), load: 150, originalLoad: 100, pv: 20 },
