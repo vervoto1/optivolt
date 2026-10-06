@@ -104,8 +104,24 @@ describe('prediction sensor check', () => {
     expect(lines()).toEqual([]);
   });
 
+  it('paints no unreachable-HA warning in quiet mode', async () => {
+    checkPredictionSensors.mockResolvedValue({
+      reachable: false, error: 'Home Assistant connection is not configured', sensors: [], derived: [],
+    });
+    await runSensorCheck({ quiet: true });
+    expect(lines()).toEqual([]);
+    await runSensorCheck();
+    expect(lines()[0].text).toContain('Could not reach Home Assistant');
+  });
+
+  it('sends nothing to HA when the form is wired (no check on page load)', async () => {
+    wireSensorCheck();
+    await Promise.resolve();
+    expect(checkPredictionSensors).not.toHaveBeenCalled();
+  });
+
   it('drops a reply for text that was edited while the check was in flight', async () => {
-    wireSensorCheck(); // quiet initial check
+    wireSensorCheck();
     const pending = deferred();
     checkPredictionSensors.mockReset();
     checkPredictionSensors.mockReturnValueOnce(pending.promise);
@@ -124,11 +140,10 @@ describe('prediction sensor check', () => {
   it('re-checks when an editor change is committed and on the button', async () => {
     checkPredictionSensors.mockResolvedValue({ reachable: true, sensors: [ok()], derived: [] });
     wireSensorCheck();
-    await vi.waitFor(() => expect(checkPredictionSensors).toHaveBeenCalledTimes(1));
 
     document.getElementById('pred-derived').dispatchEvent(new Event('change', { bubbles: true }));
     document.getElementById('pred-sensor-check').click();
-    await vi.waitFor(() => expect(checkPredictionSensors).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(checkPredictionSensors).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(lines()).toHaveLength(1));
   });
 

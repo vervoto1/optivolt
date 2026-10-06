@@ -23,9 +23,26 @@ let chartCache = new Map();
 /** Bumped per Chart click; a response for an older click is dropped. */
 let chartRequestSeq = 0;
 
-export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, applyTemperatureRow, setComparisonStatus, getHighlights, assertCanSave }) {
+export function initValidation({
+  readFormValues,
+  renderHistoricalConfig,
+  renderLoadConfig,
+  useTemperatureRow,
+  refreshPredictorFields,
+  setComparisonStatus,
+  getHighlights,
+  assertCanSave,
+}) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
-  const deps = { readFormValues, renderHistoricalConfig: renderFn, applyTemperatureRow, setComparisonStatus, getHighlights, assertCanSave };
+  const deps = {
+    readFormValues,
+    renderHistoricalConfig: renderFn,
+    useTemperatureRow,
+    refreshPredictorFields,
+    setComparisonStatus,
+    getHighlights,
+    assertCanSave,
+  };
   const runBtn = document.getElementById('pred-run-validation');
   if (runBtn) {
     runBtn.addEventListener('click', () => onRunValidation(deps));
@@ -112,7 +129,9 @@ async function onRunValidation(deps) {
       const warnings = result.warnings ?? [];
       const done = `Validation complete — ${result.results.length} combinations evaluated`;
       if (warnings.length > 0) {
-        setComparisonStatus(`${done} (${warnings.join('; ')})`, true);
+        // The comparison itself succeeded; the warnings are caveats (e.g. no
+        // temperature rows without coordinates), so amber, not error red.
+        setComparisonStatus(`${done} (${warnings.join('; ')})`, 'warning');
       } else {
         setComparisonStatus(done);
       }
@@ -254,6 +273,8 @@ async function onUseConfig(row, deps) {
     renderHistoricalConfig(historicalPredictor);
     const activeTypeEl = document.getElementById('pred-active-type');
     if (activeTypeEl) activeTypeEl.value = 'historical';
+    // Setting .value fires no change event: hide the temperature fields too.
+    deps.refreshPredictorFields?.();
     const partial = readFormValues();
     await savePredictionConfig(partial);
     setComparisonStatus(`Active config updated: ${row.sensor} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.aggregation}`);
@@ -266,17 +287,18 @@ async function onUseConfig(row, deps) {
 /**
  * Use on a temperature row switches the live load forecast to the temperature
  * predictor. That is the only way besides the Predictor Type select: the
- * auto-selector never picks it.
+ * auto-selector never picks it. The form applies and saves it
+ * (`useTemperatureRow`), keeping the stored historical strategy as the
+ * fallback and moving only its sensor to the row's.
  */
 async function onUseTemperatureRow(row, deps) {
-  const { readFormValues, applyTemperatureRow, setComparisonStatus } = deps;
+  const { useTemperatureRow, setComparisonStatus } = deps;
   try {
     deps.assertCanSave?.();
-    if (!applyTemperatureRow) throw new Error('temperature predictor is not available in this form');
-    applyTemperatureRow({ sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, bins: row.bins });
-    await savePredictionConfig(readFormValues());
+    if (!useTemperatureRow) throw new Error('temperature predictor is not available in this form');
+    await useTemperatureRow({ sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, bins: row.bins });
     setComparisonStatus(
-      `Active config updated: ${describeRow(row)}. The historical strategy stays as its fallback; select Historical to switch back.`,
+      `Active config updated: ${describeRow(row)}. The historical strategy stays as its fallback (now on ${row.sensor}); select Historical to switch back.`,
     );
     rerenderTable(deps);
   } catch (err) {

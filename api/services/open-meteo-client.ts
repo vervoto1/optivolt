@@ -63,7 +63,9 @@ export async function fetchForecastIrradiance(
 
 /**
  * Fetch hourly outside temperature (past + forecast) from the Open-Meteo
- * Forecast API. pastDays is capped at 92 and forecastDays at 16 (API limits).
+ * Forecast API. pastDays is capped at 92 and forecastDays at 16 (API limits);
+ * hours older than about 68 days come back null and are dropped by the parser
+ * (OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA).
  */
 export async function fetchTemperatureSeries(
   lat: number,

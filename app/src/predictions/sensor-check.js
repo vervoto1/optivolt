@@ -10,10 +10,12 @@
  * Advisory only: a failed check, or an HA that cannot be reached, never
  * blocks or undoes a save; it is shown as a warning.
  *
- * Runs on demand (the Check button), after an edit to either JSON editor is
- * committed (its change event), and once quietly when the form is wired.
- * Every edit invalidates a check still in flight, so a slow reply for the
- * old text cannot label the new one.
+ * Runs on demand (the Check button) and after an edit to either JSON editor
+ * is committed (its change event, which is also what saves it) — never on
+ * page load: every check is a full `GET /api/states` against HA, and a
+ * standalone install without HA would see an unreachable warning on every
+ * visit. Every edit invalidates a check still in flight, so a slow reply for
+ * the old text cannot label the new one.
  */
 
 import { checkPredictionSensors } from '../api/api.js';
@@ -80,8 +82,8 @@ export function renderSensorCheck(result) {
 
 /**
  * Check the editors' current sensors/derived. `quiet` skips the "Checking…"
- * placeholder and leaves the block untouched on a request error (the wiring
- * call on tab open must not paint an error for a transient blip).
+ * placeholder and leaves the block untouched on a request error or when HA
+ * could not be reached — only a check someone asked for reports those.
  */
 export async function runSensorCheck({ quiet = false } = {}) {
   const el = statusEl();
@@ -101,7 +103,7 @@ export async function runSensorCheck({ quiet = false } = {}) {
   try {
     const result = await checkPredictionSensors(body);
     if (seq !== checkSeq) return null;
-    renderSensorCheck(result);
+    if (!quiet || result.reachable) renderSensorCheck(result);
     return result;
   } catch (err) {
     if (seq !== checkSeq) return null;
@@ -123,5 +125,4 @@ export function wireSensorCheck() {
     el?.addEventListener('input', invalidateSensorCheck);
     el?.addEventListener('change', () => { void runSensorCheck(); });
   }
-  void runSensorCheck({ quiet: true });
 }

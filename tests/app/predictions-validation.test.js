@@ -626,11 +626,11 @@ describe('predictions-validation', () => {
       expect(second.slice(0, 4)).toEqual(['historical', '2w', 'all', 'median']);
     });
 
-    it('puts the temperature-skip warning on the status line', async () => {
+    it('puts the temperature-skip warning on the status line as a warning, not an error', async () => {
       const { setComparisonStatus } = await renderRows({ warnings: ['Temperature strategies skipped: no coordinates'] });
       expect(setComparisonStatus).toHaveBeenLastCalledWith(
         'Validation complete — 2 combinations evaluated (Temperature strategies skipped: no coordinates)',
-        true,
+        'warning',
       );
     });
 
@@ -648,15 +648,39 @@ describe('predictions-validation', () => {
       expect(document.querySelectorAll('#pred-metrics-body tr')[0].textContent).not.toContain('active');
     });
 
-    it('Use on a temperature row switches the form to it and saves — an explicit user choice', async () => {
-      const applyTemperatureRow = vi.fn();
-      const { setComparisonStatus, readFormValues } = await renderRows({ deps: { applyTemperatureRow } });
+    it('Use on a temperature row hands the row to the form, which applies and saves it', async () => {
+      const useTemperatureRow = vi.fn().mockResolvedValue(undefined);
+      const { setComparisonStatus } = await renderRows({ deps: { useTemperatureRow } });
       savePredictionConfig.mockClear();
       document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(useTemperatureRow).toHaveBeenCalledOnce());
+      expect(useTemperatureRow).toHaveBeenCalledWith({ sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 });
+      // The form owns the save (it must not push a stale historical strategy).
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(setComparisonStatus).toHaveBeenLastCalledWith(expect.stringContaining('Load / temperature / 4w / all / 3 bins')));
+    });
+
+    it('Use on a temperature row reports a failed save', async () => {
+      const useTemperatureRow = vi.fn().mockRejectedValue(new Error('HTTP 500'));
+      const { setComparisonStatus } = await renderRows({ deps: { useTemperatureRow } });
+      document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(setComparisonStatus).toHaveBeenLastCalledWith('Failed to save active config: HTTP 500', true));
+    });
+
+    it('Use on a historical row while the temperature type is active refreshes the predictor fields', async () => {
+      const refreshPredictorFields = vi.fn();
+      const renderHistoricalConfig = vi.fn();
+      await renderRows({ deps: { refreshPredictorFields, renderHistoricalConfig } });
+      const type = document.createElement('select');
+      type.id = 'pred-active-type';
+      type.innerHTML = '<option value="historical">h</option><option value="temperature">t</option>';
+      type.value = 'temperature';
+      document.body.appendChild(type);
+      savePredictionConfig.mockClear();
+      document.querySelectorAll('#pred-metrics-body tr')[1].querySelector('.btn-use').click();
       await vi.waitFor(() => expect(savePredictionConfig).toHaveBeenCalledOnce());
-      expect(applyTemperatureRow).toHaveBeenCalledWith({ sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 });
-      expect(savePredictionConfig).toHaveBeenCalledWith(readFormValues.mock.results.at(-1).value);
-      expect(setComparisonStatus).toHaveBeenLastCalledWith(expect.stringContaining('Load / temperature / 4w / all / 3 bins'));
+      expect(type.value).toBe('historical');
+      expect(refreshPredictorFields).toHaveBeenCalledOnce();
     });
 
     it('Use on a temperature row refuses when the form cannot apply it', async () => {

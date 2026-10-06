@@ -10,12 +10,14 @@ import {
   predictTemperatureLoadRolling,
   summarizeTemperatureDays,
   temperaturePastDays,
+  missingTemperatureDays,
   dayKey,
   dayStartMs,
   shiftDayKey,
   TEMPERATURE_GRID_BINS,
   TEMPERATURE_GRID_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-temperature.ts';
+import { OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA } from '../../lib/open-meteo.ts';
 
 // Ported from upstream tests/lib/load-predictor-temperature.test.js (e318148),
 // adapted to the fork's local-calendar day/hour keys. The suite runs with
@@ -363,13 +365,29 @@ describe('grid and Open-Meteo window helpers', () => {
     expect(configs[0]).toEqual({ sensor: 'A', lookbackWeeks: 2, dayFilter: 'same', bins: 2 });
   });
 
-  it('keeps the grid inside Open-Meteo past_days for a 7-day comparison window', () => {
+  it('keeps the grid inside the past days Open-Meteo fills, for a 7-day comparison window', () => {
     const maxLookback = Math.max(...TEMPERATURE_GRID_LOOKBACK_WEEKS);
-    expect(temperaturePastDays(maxLookback, 8)).toBeLessThanOrEqual(92);
+    // Window start can be up to 8 days back (just before UTC midnight).
+    expect(temperaturePastDays(maxLookback, 8)).toBe(67);
+    expect(temperaturePastDays(maxLookback, 8)).toBeLessThanOrEqual(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
   });
 
-  it('keeps the live predictor’s largest lookback inside past_days with the recent week', () => {
-    expect(temperaturePastDays(11, 7)).toBe(87);
-    expect(temperaturePastDays(12, 7)).toBeGreaterThan(92);
+  it('keeps the live predictor’s largest lookback inside those days with the recent week', () => {
+    expect(temperaturePastDays(8, 7)).toBe(66);
+    expect(temperaturePastDays(9, 7)).toBeGreaterThan(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
+  });
+
+  it('lists the days of a range that have no effective temperature', () => {
+    const effTemps = new Map([['2026-03-01', 5], ['2026-03-03', 6], ['2026-03-04', 7]]);
+    expect(missingTemperatureDays(effTemps, '2026-02-27', '2026-03-04'))
+      .toEqual({ missing: ['2026-02-27', '2026-02-28', '2026-03-02'], total: 5 });
+    expect(missingTemperatureDays(effTemps, '2026-03-03', '2026-03-05')).toEqual({ missing: [], total: 2 });
+    expect(missingTemperatureDays(effTemps, '2026-03-05', '2026-03-05')).toEqual({ missing: [], total: 0 });
+  });
+
+  it('steps calendar days across a DST switch', () => {
+    // 2026-03-29 is the spring-forward day in Europe/Amsterdam (the test TZ).
+    const { total } = missingTemperatureDays(new Map(), '2026-03-28', '2026-03-31');
+    expect(total).toBe(3);
   });
 });

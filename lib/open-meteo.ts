@@ -73,6 +73,17 @@ export function buildForecastUrl({
 export const OPEN_METEO_MAX_PAST_DAYS = 92;
 export const OPEN_METEO_MAX_FORECAST_DAYS = 16;
 
+/**
+ * Past days of hourly `temperature_2m` the Forecast API actually fills. It
+ * accepts `past_days` up to 92, but hours older than this come back as null
+ * (a probe on 2026-10-06 returned 576 null hours, the first non-null one 68
+ * days back). `parseTemperatureResponse` drops the nulls, so a window sized
+ * past this silently loses its oldest days. Temperature lookbacks are capped
+ * to stay inside it, and the callers warn when lookback days come back
+ * without a temperature anyway.
+ */
+export const OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA = 68;
+
 interface TemperatureUrlParams {
   latitude: number;
   longitude: number;
@@ -82,9 +93,11 @@ interface TemperatureUrlParams {
 
 /**
  * Build URL for hourly outside temperature from the Open-Meteo Forecast API.
- * Uses the default best_match model (up to 16 forecast days, 92 past days) —
- * the ICON D2 model used for radiation only covers ~2 days. Day counts are
- * clamped to the API limits (an out-of-range value is a 400).
+ * Uses the default best_match model (up to 16 forecast days; `past_days` is
+ * accepted up to 92 but only about the last 68 days carry data, see
+ * OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA) — the ICON D2 model used for
+ * radiation only covers ~2 days. Day counts are clamped to the API limits (an
+ * out-of-range value is a 400).
  */
 export function buildTemperatureUrl({ latitude, longitude, pastDays, forecastDays }: TemperatureUrlParams): string {
   const past = Math.max(0, Math.min(Math.ceil(pastDays), OPEN_METEO_MAX_PAST_DAYS));

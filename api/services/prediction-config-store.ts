@@ -84,7 +84,7 @@ export async function loadPredictionConfig(): Promise<PredictionConfig> {
     // file would otherwise still reach predict() on every auto-calculate tick.
     historicalPredictor: clampHistoricalPredictor(rest.historicalPredictor),
     // Same for the temperature predictor: its lookback also sizes an
-    // Open-Meteo request, which rejects past_days over 92.
+    // Open-Meteo request, which only fills about the last 68 past days.
     ...(rest.temperaturePredictor !== undefined
       ? { temperaturePredictor: clampTemperaturePredictor(rest.temperaturePredictor) }
       : {}),

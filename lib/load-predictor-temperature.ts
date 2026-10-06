@@ -82,7 +82,11 @@ const MIN_HOURS_PER_DAY = 20;
  */
 const MIN_TEMP_HOURS_PER_DAY = 20;
 
-/** Lookbacks the comparison grid evaluates. Kept within Open-Meteo's 92-day `past_days`. */
+/**
+ * Lookbacks the comparison grid evaluates. The longest, with the 7-day
+ * comparison window and the margins of `temperaturePastDays`, needs 67 past
+ * days: inside the ~68 the Open-Meteo Forecast API fills with temperatures.
+ */
 export const TEMPERATURE_GRID_LOOKBACK_WEEKS: readonly number[] = [2, 4, 6, 8];
 /** Bin counts the comparison grid evaluates. */
 export const TEMPERATURE_GRID_BINS: readonly number[] = [2, 3, 4, 6];
@@ -412,6 +416,25 @@ export function generateTemperatureConfigs(
     }
   }
   return configs;
+}
+
+/**
+ * Local days in [fromKey, toKey) without an effective temperature. A lookback
+ * day missing here feeds no anchor, so the model is built from fewer days
+ * than configured — e.g. when Open-Meteo returns nulls for its oldest hours.
+ */
+export function missingTemperatureDays(
+  effTemps: Map<string, number>,
+  fromKey: string,
+  toKey: string,
+): { missing: string[]; total: number } {
+  const missing: string[] = [];
+  let total = 0;
+  for (let key = fromKey; key < toKey; key = shiftDayKey(key, -1)) {
+    total += 1;
+    if (!effTemps.has(key)) missing.push(key);
+  }
+  return { missing, total };
 }
 
 /**

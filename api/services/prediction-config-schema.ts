@@ -35,11 +35,13 @@ const ACTIVE_TYPES = ['historical', 'fixed', 'temperature'] as const;
 /**
  * Temperature predictor bounds. The lookback cap keeps the live forecast's
  * Open-Meteo window — the lookback plus the recent-accuracy week plus the
- * inertia and local-day margins (`temperaturePastDays`) — inside the API's
- * 92-day `past_days` limit: 11 weeks needs 87 days, 12 would need 94.
+ * inertia and local-day margins (`temperaturePastDays`) — inside the days the
+ * Forecast API actually fills with temperatures (about 68, see
+ * OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA; `past_days` itself accepts 92
+ * but returns nulls past that): 8 weeks needs 66 days, 9 would need 73.
  */
 export const TEMPERATURE_LOOKBACK_WEEKS_MIN = 1;
-export const TEMPERATURE_LOOKBACK_WEEKS_MAX = 11;
+export const TEMPERATURE_LOOKBACK_WEEKS_MAX = 8;
 export const TEMPERATURE_BINS_MIN = 2;
 export const TEMPERATURE_BINS_MAX = 8;
 const DEFAULT_TEMPERATURE_LOOKBACK_WEEKS = 4;

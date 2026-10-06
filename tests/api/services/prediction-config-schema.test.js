@@ -8,6 +8,8 @@ import {
   LOOKBACK_WEEKS_MAX,
   LOOKBACK_WEEKS_MIN,
 } from '../../../api/services/prediction-config-schema.ts';
+import { temperaturePastDays } from '../../../lib/load-predictor-temperature.ts';
+import { OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA } from '../../../lib/open-meteo.ts';
 
 const hp = (overrides = {}) => ({ sensor: 'Total Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', ...overrides });
 
@@ -117,9 +119,15 @@ describe('temperature predictor (opt-in)', () => {
     expect(out.temperaturePredictor).toEqual(tp());
   });
 
-  it('bounds lookbackWeeks to what fits Open-Meteo past_days, and bins to 2-8', () => {
-    expect(TEMPERATURE_LOOKBACK_WEEKS_MAX).toBe(11);
-    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 12 }) }))
+  it('bounds lookbackWeeks to the days Open-Meteo fills with temperatures, and bins to 2-8', () => {
+    // Lookback + recent week + margins must stay inside the ~68 past days the
+    // Forecast API actually returns data for (past_days accepts 92, but the
+    // older hours come back null).
+    expect(TEMPERATURE_LOOKBACK_WEEKS_MAX).toBe(8);
+    expect(temperaturePastDays(TEMPERATURE_LOOKBACK_WEEKS_MAX, 7)).toBeLessThanOrEqual(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
+    expect(temperaturePastDays(TEMPERATURE_LOOKBACK_WEEKS_MAX + 1, 7)).toBeGreaterThan(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
+    expect(normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 8 }) }).temperaturePredictor.lookbackWeeks).toBe(8);
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 9 }) }))
       .toThrow('temperaturePredictor.lookbackWeeks');
     expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 0 }) })).toThrow();
     expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ bins: 1 }) })).toThrow('temperaturePredictor.bins');
@@ -135,7 +143,7 @@ describe('temperature predictor (opt-in)', () => {
 
   it('clamps a stored temperature predictor on load without throwing', () => {
     expect(clampTemperaturePredictor(tp({ lookbackWeeks: 40, bins: 0, dayFilter: 'x' })))
-      .toEqual(tp({ lookbackWeeks: 11, bins: 2, dayFilter: 'all' }));
+      .toEqual(tp({ lookbackWeeks: 8, bins: 2, dayFilter: 'all' }));
     expect(clampTemperaturePredictor(tp({ lookbackWeeks: 'a', bins: null }))).toEqual(tp({ lookbackWeeks: 4, bins: 3 }));
     const ok = tp();
     expect(clampTemperaturePredictor(ok)).toBe(ok);

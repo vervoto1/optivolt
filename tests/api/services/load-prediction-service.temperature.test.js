@@ -57,6 +57,17 @@ function openMeteo(_lat, _lon, pastDays, forecastDays) {
   return Promise.resolve(records);
 }
 
+/**
+ * Open-Meteo as it really behaves: `past_days` is accepted up to 92, but
+ * hours older than `retainedDays` come back null, which the parser drops.
+ */
+function openMeteoRetaining(retainedDays) {
+  return async (lat, lon, pastDays, forecastDays) => {
+    const oldest = Math.floor(NOW_MS / DAY_MS) * DAY_MS - retainedDays * DAY_MS;
+    return (await openMeteo(lat, lon, pastDays, forecastDays)).filter(r => r.time >= oldest);
+  };
+}
+
 const window7 = { start: '2026-03-14T00:00:00.000Z', end: '2026-03-21T00:00:00.000Z' };
 
 const located = {
@@ -141,6 +152,15 @@ describe('runValidation — temperature strategies', () => {
     expect(fetchTemperatureSeries).not.toHaveBeenCalled();
     expect(result.results.every(r => r.type === 'historical')).toBe(true);
     expect(result.warnings).toEqual([expect.stringContaining('latitude/longitude')]);
+  });
+
+  it('warns when Open-Meteo returned no temperatures for the oldest lookback days', async () => {
+    fetchTemperatureSeries.mockImplementation(openMeteoRetaining(50));
+    const result = await runValidation(located);
+    expect(result.results.filter(r => r.type === 'temperature')).toHaveLength(64);
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/^Temperature strategies: \d+ of \d+ days behind the temperature rows .* have no Open-Meteo temperature/),
+    ]);
   });
 
   it('keeps the historical rows when Open-Meteo fails', async () => {
@@ -243,6 +263,46 @@ describe('runForecast — temperature predictor (opt-in)', () => {
     expect(fetchTemperatureSeries).not.toHaveBeenCalled();
     expect(result.warnings).toEqual([expect.stringContaining('latitude/longitude')]);
     expect(result.forecast.values.length).toBeGreaterThan(0);
+    // Only the historical forecast's own query: no history fetched for a model that cannot run.
+    expect(fetchHaStats).toHaveBeenCalledOnce();
+    const call = fetchHaStats.mock.calls[0][0];
+    expect(Math.abs(Date.parse(call.startTime) - (NOW_MS - 3 * WEEK_MS))).toBeLessThan(60_000);
+  });
+
+  it('reuses the fetched history for the fallback when it covers the historical lookback', async () => {
+    fetchTemperatureSeries.mockRejectedValue(new Error('Open-Meteo temperature request returned status 503'));
+    const result = await runForecast(temperatureActive);
+    expect(fetchHaStats).toHaveBeenCalledOnce();
+    fetchHaStats.mockClear();
+    const historical = await runForecast(located);
+    expect(result.forecast).toEqual(historical.forecast);
+    expect(result.recent).toEqual(historical.recent);
+    expect(result.metrics).toEqual(historical.metrics);
+  });
+
+  it('refetches for the fallback when the historical predictor reads further back or another sensor', async () => {
+    fetchTemperatureSeries.mockRejectedValue(new Error('Open-Meteo temperature request returned status 503'));
+    await runForecast({ ...temperatureActive, historicalPredictor: { ...located.historicalPredictor, lookbackWeeks: 6 } });
+    expect(fetchHaStats).toHaveBeenCalledTimes(2);
+    expect(Math.abs(Date.parse(fetchHaStats.mock.calls[1][0].startTime) - (NOW_MS - 7 * WEEK_MS))).toBeLessThan(60_000);
+  });
+
+  it('warns when Open-Meteo returned no temperatures for the oldest lookback days', async () => {
+    // 8-week lookback + recent week reaches 63 days back; only 50 have data.
+    fetchTemperatureSeries.mockImplementation(openMeteoRetaining(50));
+    const result = await runForecast({ ...temperatureActive, temperaturePredictor: { ...located.temperaturePredictor, lookbackWeeks: 8 } });
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/^1[0-9] of 63 days in the temperature lookback \(\d{4}-\d\d-\d\d…\d{4}-\d\d-\d\d\) have no Open-Meteo temperature/),
+    ]);
+    // Still a temperature forecast from the days that remain, not a fallback.
+    expect(result.warnings[0]).not.toContain('historical predictor was used');
+    expect(result.forecast.values.every(v => v > 0)).toBe(true);
+  });
+
+  it('adds no coverage warning when Open-Meteo returns the whole 8-week window (68 days of data)', async () => {
+    fetchTemperatureSeries.mockImplementation(openMeteoRetaining(68));
+    const result = await runForecast({ ...temperatureActive, temperaturePredictor: { ...located.temperaturePredictor, lookbackWeeks: 8 } });
+    expect(result.warnings).toBeUndefined();
   });
 
   it('fills hours without a temperature prediction from the historical predictor, never with 0', async () => {

@@ -122,7 +122,8 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
     readFormValues: readPredictionFormValues,
     assertCanSave: assertPredictionFormHydrated,
     renderHistoricalConfig,
-    applyTemperatureRow,
+    useTemperatureRow,
+    refreshPredictorFields: updatePredictorFieldVisibility,
     setComparisonStatus,
     getHighlights: () => {
       // The run record's `best` is a bare strategy score; the sensor it was
@@ -217,6 +218,32 @@ export function applyTemperatureRow({ sensor, lookbackWeeks, dayFilter, bins }) 
   setVal('pred-active-type', 'temperature');
   markTemperatureInUse();
   updatePredictorFieldVisibility();
+}
+
+/**
+ * Apply a temperature row and save it (the Use button). Unlike a plain form
+ * save this does not push the form's possibly stale historical strategy: the
+ * auto-selector may have rewritten `historicalPredictor` server-side since
+ * the page loaded, and a whole-form save would quietly revert that. Unless
+ * the user edited the strategy fields here, `historicalPredictor` is sent
+ * only when the row moves the fallback to another sensor, and then as the
+ * stored strategy with just the sensor changed. The form's strategy fields
+ * are refreshed from the stored one either way.
+ */
+export async function useTemperatureRow(row) {
+  assertPredictionFormHydrated();
+  // Read before touching the form, so a failed read leaves it as it was.
+  const stored = strategyDirty ? null : (await fetchPredictionConfig()).historicalPredictor ?? null;
+  applyTemperatureRow(row);
+  const partial = readPredictionFormValues();
+  if (stored) {
+    const fallback = { ...stored, sensor: row.sensor };
+    renderHistoricalConfig(fallback);
+    if (stored.sensor === row.sensor) delete partial.historicalPredictor;
+    else partial.historicalPredictor = fallback;
+  }
+  await savePredictionConfig(partial);
+  strategyDirty = false;
 }
 
 function markTemperatureInUse() {
@@ -348,13 +375,16 @@ function renderPvConfig(pvConfig) {
   setVal('pred-pv-model', pvConfig.pvModel ?? 'clearSkyRatio');
 }
 
+/** `isError`: true for red, 'warning' for amber (a result with caveats, not a failure). */
 function setComparisonStatus(msg, isError = false) {
   const el = document.getElementById('pred-status');
   if (!el) return;
   el.textContent = msg;
-  el.className = isError
-    ? 'text-sm text-red-600 dark:text-red-400'
-    : 'text-sm text-ink-soft dark:text-slate-400';
+  el.className = isError === 'warning'
+    ? 'text-sm text-amber-600 dark:text-amber-400'
+    : isError
+      ? 'text-sm text-red-600 dark:text-red-400'
+      : 'text-sm text-ink-soft dark:text-slate-400';
 }
 
 function setVal(id, value) {

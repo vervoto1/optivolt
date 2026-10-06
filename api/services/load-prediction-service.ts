@@ -19,10 +19,13 @@ import {
   buildTemperatureAnchors,
   computeDayMeanTemps,
   computeEffectiveDayTemps,
+  dayKey,
   generateTemperatureConfigs,
+  missingTemperatureDays,
   predictTemperatureLoad,
   predictTemperatureLoadRolling,
   summarizeTemperatureDays,
+  shiftDayKey,
   temperaturePastDays,
   TEMPERATURE_GRID_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-temperature.ts';
@@ -366,6 +369,27 @@ async function fetchEffectiveDayTemps(
 }
 
 /**
+ * A warning when days in [fromKey, toKey) have no effective temperature, or
+ * null when all do. Open-Meteo fills only about the last 68 `past_days`
+ * (OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA) and silently drops the null
+ * hours, so a window reaching past that would otherwise build its anchors
+ * from fewer days than configured without anyone noticing.
+ */
+function temperatureCoverageWarning(
+  effTemps: Map<string, number>,
+  fromKey: string,
+  toKey: string,
+  what: string,
+): string | null {
+  const { missing, total } = missingTemperatureDays(effTemps, fromKey, toKey);
+  if (missing.length === 0) return null;
+  const message = `${missing.length} of ${total} days ${what} (${missing[0]}…${missing[missing.length - 1]}) `
+    + 'have no Open-Meteo temperature; the temperature anchors use fewer days than configured';
+  console.warn(`[predict] ${message}`);
+  return message;
+}
+
+/**
  * Fetch history once and score an explicit list of strategies over a window.
  * Used by the auto-selector; `runValidation` (the UI comparison) shares the
  * same scoring core so both always agree on the numbers.
@@ -408,8 +432,17 @@ export async function runValidation(config: PredictionRunConfig): Promise<Valida
   if (sensorNames.length > 0) {
     try {
       const maxLookback = Math.max(...TEMPERATURE_GRID_LOOKBACK_WEEKS);
-      const effTemps = await fetchEffectiveDayTemps(config, maxLookback, new Date(validationWindow.start).getTime(), 2);
+      const windowStartMs = new Date(validationWindow.start).getTime();
+      const effTemps = await fetchEffectiveDayTemps(config, maxLookback, windowStartMs, 2);
       temperature = { coordsKey: coordsKey(config), effTemps };
+      // The longest-lookback rows read back to here from the first window day.
+      const coverage = temperatureCoverageWarning(
+        effTemps,
+        shiftDayKey(dayKey(windowStartMs), maxLookback * 7),
+        dayKey(new Date(validationWindow.end).getTime()),
+        'behind the temperature rows',
+      );
+      if (coverage) warnings.push(`Temperature strategies: ${coverage}`);
       // One sensor at a time, yielding in between: the 64-config rolling grid
       // is synchronous work on the process that also drives MQTT, and per
       // sensor it stays a short block instead of one long one.
@@ -520,7 +553,9 @@ function buildFutureTargets(nowMs: number, endMs: number): PredictTarget[] {
  * each with a `warnings` entry and a log line. Without a historical
  * predictor to fall back on it throws instead, and the caller keeps the
  * previous series — the same outcome as any other failed forecast.
- * An HA failure throws exactly like the historical path.
+ * An HA failure throws exactly like the historical path. Lookback days that
+ * came back from Open-Meteo without a temperature only add a `warnings`
+ * entry: the anchors are built from the days that remain.
  *
  * Recent accuracy is out of sample: anchors are rebuilt per scored day with
  * the cutoff at that day's start.
@@ -529,14 +564,21 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
   const { temperaturePredictor: tp, historicalPredictor: hp, haUrl, haToken, sensors, derived } = config;
   if (!tp) throw new Error('temperaturePredictor is required for the temperature activeType');
 
-  const fallback = async (reason: string): Promise<ForecastRunResult> => {
+  // `prefetched`: the history already fetched for the temperature model, passed
+  // on when it covers what the historical forecast reads, so a fallback does
+  // not run the same recorder query twice.
+  const fallback = async (reason: string, prefetched?: StatRecord[]): Promise<ForecastRunResult> => {
     if (!hp?.sensor) {
       throw new Error(`Temperature load forecast unavailable (${reason}) and no historical predictor is configured to fall back on`);
     }
     console.warn(`[predict] temperature load forecast fell back to the historical predictor: ${reason}`);
-    const result = await runHistoricalForecast(config);
+    const result = await runHistoricalForecast(config, prefetched);
     return { ...result, warnings: [`Temperature forecast unavailable (${reason}); the historical predictor was used instead`] };
   };
+
+  // Permanent until the user sets a location: fall back before any HA query
+  // rather than fetching history the temperature model cannot use.
+  if (!hasPvCoordinates(config.pvConfig)) return fallback(TEMPERATURE_MISSING_COORDINATES_MESSAGE);
 
   const includeRecent = config.includeRecent !== false;
   const extraWeeks = includeRecent ? 1 : 0;
@@ -555,20 +597,31 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
     fetchEffectiveDayTemps(config, tp.lookbackWeeks, nowMs - extraWeeks * WEEK_MS, forecastDays, nowMs),
   ]);
   if (rawRes.status === 'rejected') throw rawRes.reason;
+  const data = postprocess(rawRes.value, sensors, derived);
+  // Same entities and at least the weeks runHistoricalForecast would fetch.
+  const reusable = hp?.sensor === tp.sensor && hp.lookbackWeeks <= tp.lookbackWeeks ? data : undefined;
   if (tempRes.status === 'rejected') {
-    return fallback(tempRes.reason instanceof Error ? tempRes.reason.message : String(tempRes.reason));
+    return fallback(tempRes.reason instanceof Error ? tempRes.reason.message : String(tempRes.reason), reusable);
   }
 
-  const data = postprocess(rawRes.value, sensors, derived);
   const effTemps = tempRes.value;
   const model = buildTemperatureAnchors(data, effTemps, tp, nowMs);
   const future = predictTemperatureLoad(model, tp.dayFilter, futureTargets, effTemps);
   const missing = future.filter(p => p.predicted === null).length;
   if (future.length > 0 && missing === future.length) {
-    return fallback('no temperature anchors or forecast temperatures for the forecast window');
+    return fallback('no temperature anchors or forecast temperatures for the forecast window', reusable);
   }
 
   const warnings: string[] = [];
+  // Every day the anchors read: the lookback before today, and before the
+  // first recent-accuracy day when that backtest runs.
+  const coverage = temperatureCoverageWarning(
+    effTemps,
+    shiftDayKey(dayKey(includeRecent ? nowMs - WEEK_MS : nowMs), tp.lookbackWeeks * 7),
+    dayKey(nowMs),
+    'in the temperature lookback',
+  );
+  if (coverage) warnings.push(coverage);
   let values = future.map(p => p.predicted);
   if (missing > 0) {
     if (!hp?.sensor) {
@@ -658,26 +711,35 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
   return runHistoricalForecast(config);
 }
 
-/** Live load forecast from `historicalPredictor` (also the temperature predictor's fallback). */
-async function runHistoricalForecast(config: PredictionRunConfig): Promise<ForecastRunResult> {
+/**
+ * Live load forecast from `historicalPredictor` (also the temperature
+ * predictor's fallback). `prefetched` is postprocessed history the caller
+ * already holds for the same sensor's entities over at least the
+ * lookbackWeeks + 1 weeks this would fetch; `predict()` only reads back
+ * `lookbackWeeks` from each target, so a longer window changes nothing.
+ */
+async function runHistoricalForecast(config: PredictionRunConfig, prefetched?: StatRecord[]): Promise<ForecastRunResult> {
   const { historicalPredictor, haUrl, haToken, sensors, derived } = config;
 
-  // Every cycle refetches lookbackWeeks + 1 weeks; only the entities behind
-  // the predicted sensor are needed (merge- and derived-aware).
-  const entityIds = entityIdsForSensors(sensors, derived, [historicalPredictor!.sensor]);
+  let data = prefetched;
+  if (!data) {
+    // Every cycle refetches lookbackWeeks + 1 weeks; only the entities behind
+    // the predicted sensor are needed (merge- and derived-aware).
+    const entityIds = entityIdsForSensors(sensors, derived, [historicalPredictor!.sensor]);
 
-  const extraWeeks = config.includeRecent !== false ? 1 : 0;
-  const totalWeeks = historicalPredictor!.lookbackWeeks + extraWeeks;
-  const startTime = new Date(Date.now() - totalWeeks * 7 * 24 * 60 * 60 * 1000).toISOString();
+    const extraWeeks = config.includeRecent !== false ? 1 : 0;
+    const totalWeeks = historicalPredictor!.lookbackWeeks + extraWeeks;
+    const startTime = new Date(Date.now() - totalWeeks * 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const rawData = await fetchHaStats({
-    haUrl,
-    haToken,
-    entityIds,
-    startTime,
-  });
+    const rawData = await fetchHaStats({
+      haUrl,
+      haToken,
+      entityIds,
+      startTime,
+    });
 
-  const data = postprocess(rawData, sensors, derived);
+    data = postprocess(rawData, sensors, derived);
+  }
 
   const now = new Date();
   const { startIso, endIso } = getForecastTimeRange(now.getTime());
