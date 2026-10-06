@@ -166,15 +166,19 @@ function finalizeRun(run: Run): void {
  *   previous price forward, with a warning, so a single missing hour costs
  *   neither the horizon nor an hour without a plan. A second one splits the
  *   run like a larger hole.
- * - A larger hole splits the feed into contiguous runs; a duplicate or
- *   overlapping timestamp (or an out-of-order one in a bare wall-clock feed)
- *   ends the feed. Prices are never shifted onto the wrong slots.
+ * - A point at the same instant as the previous one is skipped (the first
+ *   one is kept): a tomorrow list that repeats today's last hour, or a naive
+ *   fold=0 feed that stamps both occurrences of the repeated autumn hour with
+ *   the first offset (the second occurrence is then filled like a merged hour).
+ * - A larger hole splits the feed into contiguous runs; an overlapping
+ *   timestamp (or an out-of-order one in a bare wall-clock feed) ends the
+ *   feed. Prices are never shifted onto the wrong slots.
  *
- * A clean feed returns its single run unchanged, unless that run starts after
- * the current slot: then null, so the caller keeps the previously stored
- * prices instead of replacing them with a series the planner refuses. A
- * defective feed returns the run that covers the current slot, or null when no
- * run covers it.
+ * A clean feed returns its single run unchanged, unless that run does not
+ * cover the current slot (it starts after it, or ended before it): then null,
+ * so the caller keeps the previously stored prices instead of replacing them
+ * with a series the planner refuses. A defective feed returns the run that
+ * covers the current slot, or null when no run covers it.
  */
 export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOptions): TimeSeries | null {
   const slotsPerPoint = opts.interval === 60 ? 4 : 1;
@@ -213,6 +217,7 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
   let run: Run | null = null;
   let lastMs: number | null = null;
   let lastOffsetMs = 0;
+  const repeated: string[] = [];
 
   for (const { price, candidates } of parsed) {
     const expectedMs: number = run ? runEndMs(run) : NaN;
@@ -220,9 +225,14 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
       ?? candidates.find(c => lastMs === null || c.ms >= lastMs + pointMs)
       ?? candidates[0];
 
+    if (lastMs !== null && chosen.ms === lastMs) {
+      // Same instant as the previous point: keep the first one, skip this one.
+      repeated.push(new Date(chosen.ms).toISOString());
+      continue;
+    }
     if (lastMs !== null && chosen.ms < lastMs + pointMs) {
-      // Out-of-order, duplicate or overlapping timestamp: nothing after it can
-      // be trusted.
+      // Out-of-order or overlapping timestamp: nothing after it can be
+      // trusted.
       defects++;
       break;
     }
@@ -288,6 +298,9 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
     lastOffsetMs = chosen.offsetMs;
   }
 
+  if (repeated.length > 0) {
+    console.log('[ha-price] Skipped price points repeating the previous timestamp (kept the first)', repeated);
+  }
   for (const r of runs) finalizeRun(r);
   const usable = runs.filter(r => r.values.length > 0);
 
@@ -317,6 +330,14 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
       console.warn('[ha-price] Price feed starts after the current slot; keeping previous prices', {
         now: new Date(windowStartMs).toISOString(),
         start: new Date(only.startMs).toISOString(),
+      });
+      return null;
+    }
+    if (runEndMs(only) <= windowStartMs) {
+      // A stale sensor (e.g. yesterday's list): its prices are all in the past.
+      console.warn('[ha-price] Price feed ends before the current slot; keeping previous prices', {
+        now: new Date(windowStartMs).toISOString(),
+        end: new Date(runEndMs(only)).toISOString(),
       });
       return null;
     }

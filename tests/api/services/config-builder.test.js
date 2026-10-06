@@ -24,7 +24,7 @@ vi.mock('../../../api/services/ha-client.ts', () => ({
   fetchHaEntityState: vi.fn(),
 }));
 
-import { buildSolverConfigFromSettings, buildPlannerConfig, applyCalibration, applyEvCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
+import { buildSolverConfigFromSettings, buildPlannerConfig, applyCalibration, applyEvCalibration, getSolverInputs, REBALANCE_PENDING_GIVE_UP_MS } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
 import { wireUpdateData } from '../helpers/data-store-mock.js';
@@ -124,6 +124,21 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     expect(cfg.rebalanceRemainingSlots).toBe(0);
     // Nothing left to hold: no start cap either
     expect(cfg.rebalanceMaxStartSlot).toBeUndefined();
+  });
+
+  it('gives up on a hold pending for REBALANCE_PENDING_GIVE_UP_MS (solves like a completed cycle)', () => {
+    const settings = { ...mockSettings, rebalanceEnabled: true, rebalanceHoldHours: 3 };
+    const pending = (ageMs) => buildSolverConfigFromSettings(
+      settings, makeData({ startMs: null, pendingSinceMs: NOW_MS - ageMs }), NOW_MS,
+    );
+    expect(pending(REBALANCE_PENDING_GIVE_UP_MS - 1).rebalanceRemainingSlots).toBe(12);
+    expect(pending(REBALANCE_PENDING_GIVE_UP_MS).rebalanceRemainingSlots).toBe(0);
+    expect(pending(REBALANCE_PENDING_GIVE_UP_MS).rebalanceMaxStartSlot).toBeUndefined();
+    // A started hold ignores a stale pending marker.
+    const started = buildSolverConfigFromSettings(
+      settings, makeData({ startMs: NOW_MS - 15 * 60_000, pendingSinceMs: NOW_MS - 10 * REBALANCE_PENDING_GIVE_UP_MS }), NOW_MS,
+    );
+    expect(started.rebalanceRemainingSlots).toBe(11);
   });
 
   it('uses Math.ceil so the hold is never shorter than requested (fractional hours)', () => {

@@ -781,6 +781,51 @@ describe('pv-curtailment service — persisted ownership and boot reconciliation
     expect(getPvCurtailmentStatus()).toMatchObject({ ownsDisable: false, restorePending: true });
   });
 
+  it('records nothing when stopped while the Victron serial was being detected', async () => {
+    let finishSerial;
+    getVictronSerial.mockImplementationOnce(() => new Promise((resolve) => { finishSerial = resolve; }));
+    startPvCurtailment(makeSettings({ portalId: '' }));
+    updatePvCurtailmentPlan(plan([row(0), row(1)]));
+    await flushPromises();
+
+    await stopPvCurtailment();
+    finishSerial('detected-serial');
+    await flushPromises();
+
+    expect(savePvCurtailmentState).not.toHaveBeenCalled();
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(stateFile.current).toBeNull();
+    expect(getPvCurtailmentStatus()).toMatchObject({ ownsDisable: false, restorePending: false });
+  });
+
+  it('restores a record saved after a restart switched the feature off', async () => {
+    // Settings saved with curtailment off while a disable's write-ahead record was being
+    // written: the record lands after the new (disabled) service started, so the
+    // standalone retry has to pick it up.
+    let finishSave;
+    savePvCurtailmentState.mockImplementationOnce(async (state) => {
+      await new Promise((resolve) => { finishSave = resolve; });
+      stateFile.current = { ...state };
+    });
+    startPvCurtailment(makeSettings());
+    updatePvCurtailmentPlan(plan([row(0), row(1)]));
+    await flushPromises();
+
+    await stopPvCurtailment();
+    startPvCurtailment(makeSettings({ enabled: false }));
+    finishSave();
+    await flushPromises();
+    expect(stateFile.current).not.toBeNull();
+    expect(getPvCurtailmentStatus()).toMatchObject({ ownsDisable: false, restorePending: true });
+
+    await vi.advanceTimersByTimeAsync(RESTORE_RETRY_MS);
+    await flushPromises();
+    expect(writeVictronSetting).toHaveBeenCalledWith('acsystem/0/Pv/Disable', 0, { serial: 'c0619ab6bd28' });
+    expect(writeVictronSetting).not.toHaveBeenCalledWith(expect.anything(), 1, expect.anything());
+    expect(stateFile.current).toBeNull();
+    expect(getPvCurtailmentStatus().restorePending).toBe(false);
+  });
+
   it('shares one restore between a tick and a concurrent stop', async () => {
     startPvCurtailment(makeSettings());
     updatePvCurtailmentPlan(plan([row(0), row(1)]));
@@ -1018,6 +1063,48 @@ describe('pv-curtailment service — persisted ownership and boot reconciliation
     expect(getPvCurtailmentStatus().restorePending).toBe(true);
   });
 
+  it('starts the unanswered read-back count over when a read-back answers Pv/Disable=1', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Unanswered for MAX_RESTORE_ATTEMPTS - 1 attempts, then one answer of 1, then
+    // unanswered again: the streak behind a give-up must not span the answer.
+    let reads = 0;
+    readVictronSetting.mockImplementation(async () => {
+      reads += 1;
+      if (reads === MAX_RESTORE_ATTEMPTS) return { value: 1 };
+      throw new Error('Timeout after 3000ms');
+    });
+    stateFile.current = persisted();
+    startPvCurtailment({ pvCurtailment: { enabled: false } });
+    await reconcilePvCurtailmentAtBoot();
+    for (let i = 0; i < MAX_RESTORE_ATTEMPTS + 2; i += 1) {
+      await vi.advanceTimersByTimeAsync(RESTORE_RETRY_MS);
+      await flushPromises();
+    }
+
+    expect(reads).toBe(MAX_RESTORE_ATTEMPTS + 3);
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('never read back'));
+    expect(stateFile.current).not.toBeNull();
+    expect(getPvCurtailmentStatus().restorePending).toBe(true);
+  });
+
+  it('measures the give-up span on a monotonic clock (a wall-clock jump does not give up early)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    stateFile.current = persisted({ serial: 'c0619ab6bd28', acsystemInstance: 0, enphaseSwitchEntity: 'switch.renamed' });
+    startPvCurtailment({
+      haUrl: 'ws://homeassistant.local:8123/api/websocket', haToken: 'tok',
+      ...makeSettings({ tickMs: 1000, enphaseSwitchEntity: 'switch.renamed' }),
+    });
+    await reconcilePvCurtailmentAtBoot();
+    // The RTC is corrected a day forward right after boot.
+    vi.setSystemTime(new Date(Date.now() + 24 * 3_600_000));
+    await vi.advanceTimersByTimeAsync(MAX_RESTORE_ATTEMPTS * 2 * 1000);
+    await flushPromises();
+
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('giving up'));
+    expect(stateFile.current).not.toBeNull();
+  });
+
   it('keeps retrying a failed stop restore after the feature is turned off in settings', async () => {
     // Settings save with pvCurtailment.enabled=false while Venus is unreachable: the stop
     // restore fails, so ownsDisable is still set when the disabled config starts.
@@ -1107,16 +1194,45 @@ describe('pv-curtailment service — persisted ownership and boot reconciliation
     expect(stateFile.current).toBeNull();
   });
 
-  it('leaves an unreadable record for the next start when no target can be resolved', async () => {
+  it('keeps an unreadable record pending and retries when the serial cannot be detected at boot', async () => {
     stateFile.current = 'unreadable';
     getVictronSerial.mockRejectedValueOnce(new Error('serial timeout'));
     startPvCurtailment(makeSettings({ enabled: false, portalId: '' }));
     await reconcilePvCurtailmentAtBoot();
+
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('could not resolve the Victron serial'), 'serial timeout');
+    expect(stateFile.current).toBe('unreadable');
+    expect(getPvCurtailmentStatus().restorePending).toBe(true);
+
+    // The GX answers on the next retry: the serial is detected and PV restored.
+    await vi.advanceTimersByTimeAsync(RESTORE_RETRY_MS);
+    await flushPromises();
+    expect(writeVictronSetting).toHaveBeenCalledWith('acsystem/0/Pv/Disable', 0, { serial: 'detected-serial' });
+    expect(stateFile.current).toBeNull();
+    expect(getPvCurtailmentStatus().restorePending).toBe(false);
+  });
+
+  it('retries an unreadable record from the live loop when the serial cannot be detected at boot', async () => {
+    stateFile.current = 'unreadable';
+    getVictronSerial.mockRejectedValueOnce(new Error('serial timeout'));
+    startPvCurtailment(makeSettings({ portalId: '' }));
+    await reconcilePvCurtailmentAtBoot();
+    expect(getPvCurtailmentStatus().restorePending).toBe(true);
+    expect(stateFile.current).toBe('unreadable');
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(writeVictronSetting).toHaveBeenCalledWith('acsystem/0/Pv/Disable', 0, { serial: 'detected-serial' });
+    expect(stateFile.current).toBeNull();
+  });
+
+  it('leaves an unreadable record for the next start without curtailment settings', async () => {
+    stateFile.current = 'unreadable';
     startPvCurtailment({});
     await reconcilePvCurtailmentAtBoot();
 
     expect(writeVictronSetting).not.toHaveBeenCalled();
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('could not resolve the Victron serial'), 'serial timeout');
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('no PV curtailment settings'));
     expect(stateFile.current).toBe('unreadable');
     expect(getPvCurtailmentStatus().restorePending).toBe(false);

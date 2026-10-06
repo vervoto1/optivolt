@@ -9,7 +9,7 @@ import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
-import { getSolverInputs, buildPlannerConfig } from './config-builder.ts';
+import { getSolverInputs, buildPlannerConfig, REBALANCE_PENDING_GIVE_UP_MS } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
 // Aliased: computePlan's `updateData` option means "refresh the series first".
@@ -244,6 +244,18 @@ async function readMqttSocForPlan(settings: Settings): Promise<number> {
  * patches of the current files, never the snapshots loaded for this plan.
  */
 async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Promise<{ settings: Settings; data: Data }> {
+  if (data.rebalanceState?.startMs == null) {
+    // remainingSlots is 0 without a started hold only when config-builder gave
+    // up on a hold that never started (REBALANCE_PENDING_GIVE_UP_MS).
+    const pendingSinceMs = data.rebalanceState?.pendingSinceMs;
+    const since = pendingSinceMs != null ? ` (pending since ${new Date(pendingSinceMs).toISOString()})` : '';
+    console.warn(
+      `[calculate] rebalance hold did not start within ${REBALANCE_PENDING_GIVE_UP_MS / 86_400_000} days of being enabled${since}; `
+      + 'switching rebalancing off so the battery is no longer held for it and export is not blocked indefinitely',
+    );
+  } else {
+    console.log('[calculate] rebalance hold cycle complete; switching rebalancing off');
+  }
   const rebalanceState = { startMs: null };
   await Promise.all([
     updateSettings(s => ({ ...s, rebalanceEnabled: false })),
@@ -321,7 +333,8 @@ function hasUsableSolution(result: HighsSolution, T: number): boolean {
  * plan and leaving a stale schedule on the GX when no cap below T - D is
  * found, the budget runs out before any feasible cap, or a pinned or gallop
  * solve ends with a status other than Optimal or Infeasible (e.g. a time
- * limit).
+ * limit, even with an incumbent). When the hold covers the whole horizon
+ * (T - D = 0) an infeasible pin is returned as is: the free LP is the same LP.
  *
  * `startHint` is the main plan's relaxed cap, passed by the EV preview: the
  * pin already failed there and the preview only adds EV charging, so the
@@ -362,8 +375,15 @@ function solveWithPinnedHoldFallback(
 
   if (startHint === undefined) {
     const result = solveOnce(solveCfg);
-    if (hasUsableSolution(result, T)) return { cfg: solveCfg, result };
+    if (result.Status === 'Optimal' && hasUsableSolution(result, T)) return { cfg: solveCfg, result };
+    // Neither Optimal nor Infeasible (e.g. a time-limited incumbent): free the window.
     if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
+    if (maxStart <= pin) {
+      // The hold covers the whole horizon, so there is no later start to relax
+      // to: the free LP is this same LP. Let the plan fail on it as it is.
+      warn('infeasible; the hold covers the whole horizon, so there is no later start to relax to)');
+      return { cfg: solveCfg, result };
+    }
   }
 
   const isOptimal = (r: HighsSolution) => r.Status === 'Optimal' && hasUsableSolution(r, T);
@@ -415,7 +435,12 @@ function solveWithPinnedHoldFallback(
     }
   }
   // Bisect (lo, hi] down to the smallest feasible cap while the budget lasts.
-  while (hi - lo > 1 && canProbe()) {
+  let stoppedBy: string | undefined;
+  while (hi - lo > 1) {
+    if (!canProbe()) {
+      stoppedBy = 'budget/time limit';
+      break;
+    }
     const mid = Math.floor((lo + hi) / 2);
     const r = probe(mid);
     if (isOptimal(r)) {
@@ -424,11 +449,15 @@ function solveWithPinnedHoldFallback(
     } else if (r.Status === 'Infeasible') {
       lo = mid;
     } else {
+      stoppedBy = `solver status "${r.Status}"`;
       break; // keep the Optimal cap already found
     }
   }
   if (hi >= maxStart) {
-    warn(`infeasible; no start cap below slot ${maxStart} found, ${probes} relaxed solves); hold window free to move`);
+    const outcome = stoppedBy
+      ? `search stopped (${stoppedBy}) before finding a start cap below slot ${maxStart}`
+      : `no start cap below slot ${maxStart} found`;
+    warn(`infeasible; ${outcome}, ${probes} relaxed solves); hold window free to move`);
     return { cfg: unpinnedCfg, result: best!, relaxedMaxStartSlot: maxStart };
   }
   warn(`infeasible); hold window allowed to start up to slot ${hi} (${probes} relaxed solves)`);
@@ -436,22 +465,50 @@ function solveWithPinnedHoldFallback(
 }
 
 /**
- * Post-solve: stamp the hold start once the battery has actually reached the
- * target SoC and this plan holds it from slot 0. A plan whose own window
- * starts later (e.g. it exports at a high price first) is not a hold yet;
- * stamping it would start the wall-clock countdown while the written schedule
- * drains the battery.
+ * How far below the rebalance target the live SoC may read and still start the
+ * hold clock. Packs whose system SoC tops out at 99 % (as in production) would
+ * otherwise never start the hold, and every plan would keep the battery held
+ * with battery-to-grid export blocked.
  */
-async function recordRebalanceStartIfAtTarget(
+export const REBALANCE_START_TOLERANCE_PERCENT = 1;
+
+/**
+ * Post-solve rebalance bookkeeping, run only for an Optimal plan (an early-stop
+ * incumbent is display-only and must not start the countdown).
+ *
+ * - With rebalancing on and no hold started yet: stamp the hold start once the
+ *   live SoC is within REBALANCE_START_TOLERANCE_PERCENT of the target and this
+ *   plan holds from slot 0. A plan whose own window starts later (e.g. it
+ *   exports at a high price first) is not a hold yet; stamping it would start
+ *   the wall-clock countdown while the written schedule drains the battery.
+ *   Otherwise record when the hold first became pending (`pendingSinceMs`), so
+ *   config-builder can give up on a hold that never starts.
+ * - With rebalancing off: drop a leftover `pendingSinceMs`, so re-enabling
+ *   later starts a fresh give-up period. Nothing is written when there is none.
+ */
+async function recordRebalanceProgress(
   settings: Settings,
+  cfg: SolverConfig,
   data: Data,
   startMs: number,
   rebalanceWindow: RebalanceWindow | undefined,
 ): Promise<Data> {
-  if (data.rebalanceState?.startMs != null) return data;
-  if (data.soc.value < settings.maxSoc_percent) return data;
-  if (rebalanceWindow?.startIdx !== 0) return data;
-  const rebalanceState = { startMs };
+  const state = data.rebalanceState;
+  if (!settings.rebalanceEnabled) {
+    if (state?.pendingSinceMs == null) return data;
+    const rebalanceState = { startMs: state.startMs ?? null };
+    await updateStoredData(d => ({ ...d, rebalanceState }));
+    return { ...data, rebalanceState };
+  }
+  if (state?.startMs != null) return data;
+  const target_percent = Math.min(cfg.rebalanceTargetSoc_percent ?? cfg.maxSoc_percent, cfg.maxSoc_percent);
+  if (data.soc.value >= target_percent - REBALANCE_START_TOLERANCE_PERCENT && rebalanceWindow?.startIdx === 0) {
+    const rebalanceState = { startMs };
+    await updateStoredData(d => ({ ...d, rebalanceState }));
+    return { ...data, rebalanceState };
+  }
+  if (state?.pendingSinceMs != null) return data;
+  const rebalanceState = { startMs: null, pendingSinceMs: startMs };
   await updateStoredData(d => ({ ...d, rebalanceState }));
   return { ...data, rebalanceState };
 }
@@ -521,11 +578,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   // Post-solve bookkeeping — reached only when the solve, parse and DESS
   // mapping succeeded, so a failure never flips settings or rebalance state.
+  // The hold start (and its pending marker) is recorded only from an Optimal
+  // plan: a non-Optimal incumbent is display-only (see below).
   if (rebalanceCycleComplete) {
     ({ settings, data } = await finishCompletedRebalanceCycle(settings, data));
-  }
-  if (settings.rebalanceEnabled) {
-    data = await recordRebalanceStartIfAtTarget(settings, data, timing.startMs, rebalanceWindow);
+  } else if (result.Status === 'Optimal') {
+    data = await recordRebalanceProgress(settings, cfg, data, timing.startMs, rebalanceWindow);
   }
 
   /* v8 ignore next 4 — rebalanceCtx undefined branch (tests cover enabled=true;

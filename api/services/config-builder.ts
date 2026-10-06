@@ -14,6 +14,16 @@ import type { SolverConfig, EvConfig, TimeSeries } from '../../lib/types.ts';
 import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 /**
+ * How long a rebalance hold may stay pending (rebalancing enabled, the hold
+ * clock never started) before the planner gives up and switches rebalancing
+ * off. With grid charging allowed the solver places a hold inside its 1–2 day
+ * horizon, so three days of pending means the hold cannot start on this
+ * system (e.g. the pack never gets within tolerance of the target). Persisted
+ * as `rebalanceState.pendingSinceMs`.
+ */
+export const REBALANCE_PENDING_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
  * Live EV readings that seed the plan. `targetSoc_percent` is present only when
  * an `evTargetSocEntity` was configured and readable; otherwise the static
  * `evTargetSoc_percent` setting is used.
@@ -166,9 +176,17 @@ export function buildSolverConfigFromSettings(
     const slotsElapsed = startMs_ != null
       ? Math.floor((nowMs - startMs_) / (settings.stepSize_m * 60_000))
       : 0;
+    // A hold that has been pending (enabled, never started) for
+    // REBALANCE_PENDING_GIVE_UP_MS solves like a completed cycle: no hold
+    // window, and the planner switches rebalancing off after the solve. The
+    // window's DESS hold blocks battery-to-grid export, so a hold that can
+    // never start must not stay mapped forever.
+    const pendingSinceMs = data.rebalanceState?.pendingSinceMs ?? null;
+    const pendingExpired = startMs_ == null && pendingSinceMs != null
+      && nowMs - pendingSinceMs >= REBALANCE_PENDING_GIVE_UP_MS;
     const remainingSlots = startMs_ != null
       ? Math.max(0, holdSlots - slotsElapsed)
-      : holdSlots;
+      : (pendingExpired ? 0 : holdSlots);
     base.rebalanceHoldSlots = holdSlots;
     base.rebalanceRemainingSlots = remainingSlots;
     base.rebalanceTargetSoc_percent = settings.maxSoc_percent;

@@ -18,7 +18,8 @@ import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
-import { computePlan, planAndMaybeWrite, getLastPlan } from '../../../api/services/planner-service.ts';
+import { computePlan, planAndMaybeWrite, getLastPlan, REBALANCE_START_TOLERANCE_PERCENT } from '../../../api/services/planner-service.ts';
+import { REBALANCE_PENDING_GIVE_UP_MS } from '../../../api/services/config-builder.ts';
 import { Strategy, Restrictions } from '../../../lib/dess-mapper.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
@@ -168,7 +169,8 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
 
     expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
     expect(result.rows[0].b2g).toBeGreaterThan(0);
-    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    // Not started; the pending marker that bounds a never-starting hold is set.
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
     // (saveData does run: the full-SoC observation is recorded pre-solve.)
     for (const [saved] of saveData.mock.calls) {
       expect(saved.rebalanceState?.startMs ?? null).toBeNull();
@@ -269,5 +271,118 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
 
     expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
     expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
+  });
+});
+
+describe('computePlan — hold start tolerance and the pending give-up', () => {
+  const savedStates = () => saveData.mock.calls.map(([saved]) => saved.rebalanceState);
+
+  it('starts the hold clock on a pack that tops out 1 point below the target (99 %)', async () => {
+    expect(REBALANCE_START_TOLERANCE_PERCENT).toBe(1);
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 99 },
+      rebalanceState: { startMs: null, pendingSinceMs: NOW_MS - 3_600_000 },
+    });
+
+    const result = await computePlan();
+
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 1 });
+    expect(result.data.rebalanceState).toEqual({ startMs: NOW_MS });
+    expect(savedStates()).toContainEqual({ startMs: NOW_MS });
+    expect(result.summary.rebalanceStatus).toBe('active');
+  });
+
+  it('does not start the hold clock more than the tolerance below the target', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 98.9 },
+      rebalanceState: { startMs: null },
+    });
+
+    const result = await computePlan();
+
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
+    expect(result.summary.rebalanceStatus).toBe('scheduled');
+  });
+
+  it('keeps an existing pending marker instead of restamping it', async () => {
+    const pendingSinceMs = NOW_MS - 24 * 3_600_000;
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 80 },
+      rebalanceState: { startMs: null, pendingSinceMs },
+    });
+
+    const result = await computePlan();
+
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs });
+    expect(result.rebalanceWindow).toBeDefined();
+    for (const state of savedStates()) expect(state).toEqual({ startMs: null, pendingSinceMs });
+  });
+
+  it('still maps the hold just before the give-up period ends', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      rebalanceState: { startMs: null, pendingSinceMs: NOW_MS - REBALANCE_PENDING_GIVE_UP_MS + 3_600_000 },
+    });
+
+    const result = await computePlan();
+
+    expect(result.cfg.rebalanceRemainingSlots).toBe(2);
+    expect(result.rebalanceWindow).toBeDefined();
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a hold that never started: no DESS hold, rebalancing switched off', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: false });
+    loadData.mockResolvedValue({ ...baseData, soc: { timestamp: NOW_STRING, value: 99 } });
+    const off = await computePlan();
+
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 99 },
+      rebalanceState: { startMs: null, pendingSinceMs: NOW_MS - REBALANCE_PENDING_GIVE_UP_MS },
+    });
+    saveSettings.mockClear();
+    const result = await computePlan();
+
+    expect(result.cfg.rebalanceRemainingSlots).toBe(0);
+    expect(result.rebalanceWindow).toBeUndefined();
+    expect(result.rows.map(r => r.dess)).toEqual(off.rows.map(r => r.dess));
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ rebalanceEnabled: false }));
+    expect(savedStates()).toContainEqual({ startMs: null });
+    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    expect(result.summary.rebalanceStatus).toBe('disabled');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rebalance hold did not start within 3 days of being enabled'));
+  });
+
+  it('drops a leftover pending marker once rebalancing is switched off', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: false });
+    loadData.mockResolvedValue({
+      ...baseData,
+      rebalanceState: { startMs: null, pendingSinceMs: NOW_MS - 5 * 86_400_000 },
+    });
+
+    const result = await computePlan();
+
+    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    expect(savedStates()).toContainEqual({ startMs: null });
+  });
+
+  it('writes no rebalance state when rebalancing is off and nothing is pending', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: false });
+    loadData.mockResolvedValue({ ...baseData, soc: { timestamp: NOW_STRING, value: 50 } });
+
+    const result = await computePlan();
+
+    expect(result.data.rebalanceState).toBeUndefined();
+    expect(saveData).not.toHaveBeenCalled();
   });
 });

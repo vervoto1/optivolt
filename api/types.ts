@@ -345,6 +345,11 @@ export interface SocData {
 
 export interface RebalanceState {
   startMs: number | null;
+  /**
+   * When rebalancing first became pending (enabled, hold not started). Cleared
+   * when the hold starts, the cycle ends or rebalancing is switched off.
+   */
+  pendingSinceMs?: number | null;
 }
 
 export type PredictionAdjustmentSeries = 'load' | 'pv';

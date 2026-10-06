@@ -199,6 +199,72 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('solver status "Time limit reached"'));
   });
 
+  it('a pinned solve that stops with only an incumbent frees the window (re-solved unpinned)', async () => {
+    // Battery at target: the pin is feasible, but the pinned solve hits the
+    // time limit with a usable incumbent.
+    loadData.mockResolvedValue({ ...structuredClone(data), soc: { timestamp: NOW_STRING, value: 100 } });
+    solverCtl.post = (cap, real) => (cap === 0 ? { ...real, Status: 'Time limit reached' } : real);
+
+    const result = await computePlan();
+
+    expect(solverCtl.caps).toEqual([0, SLOTS - 1]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBe(SLOTS - 1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('solver status "Time limit reached"); re-solving with the hold window free to move'));
+  });
+
+  it('does not re-solve the same LP when the hold covers the whole horizon (T - D = 0)', async () => {
+    // A 24 h hold started an hour ago: 23 slots remain on a 12-slot horizon,
+    // so the pin at slot 0 is the only possible start.
+    loadSettings.mockResolvedValue({ ...settings, rebalanceHoldHours: 24 });
+    solverCtl.hook = (cap) => (cap === 0 ? INFEASIBLE : undefined);
+
+    await expect(computePlan()).rejects.toThrow('"Infeasible"');
+
+    expect(solverCtl.caps).toEqual([0]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the hold covers the whole horizon'));
+  });
+
+  it('says the search stopped on the budget when it frees the window before bisecting', async () => {
+    // Every solve "takes" 6 s: the gallop (1, 2, 4, 8) uses up the 20 s
+    // budget, reaches T - D with the free solve, and cannot bisect below it.
+    let clock_ms = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock_ms);
+    solverCtl.hook = (cap) => {
+      clock_ms += 6_000;
+      return cap != null && cap < SLOTS - 1 ? INFEASIBLE : undefined;
+    };
+
+    const result = await computePlan();
+
+    expect(solverCtl.caps).toEqual([0, 1, 2, 4, 8, SLOTS - 1]);
+    expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('search stopped (budget/time limit) before finding a start cap below slot 11, 4 relaxed solves'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('no start cap below slot'));
+  });
+
+  it('does not start the hold clock from a non-Optimal (display-only) plan', async () => {
+    // Battery full, hold not started: an Optimal plan holding from slot 0
+    // would stamp the clock; a time-limited incumbent must not.
+    loadData.mockResolvedValue({ ...structuredClone(data), soc: { timestamp: NOW_STRING, value: 100 }, rebalanceState: { startMs: null } });
+    solverCtl.post = (_cap, real) => ({ ...real, Status: 'Time limit reached' });
+
+    const result = await computePlan();
+
+    expect(result.result.Status).toBe('Time limit reached');
+    expect(result.rebalanceWindow?.startIdx).toBe(0);
+    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    for (const [saved] of saveData.mock.calls) {
+      expect(saved.rebalanceState).toEqual({ startMs: null });
+    }
+
+    // The same plan, Optimal, does stamp it.
+    solverCtl.post = null;
+    const optimal = await computePlan();
+    expect(optimal.data.rebalanceState).toEqual({ startMs: NOW_MS });
+  });
+
   it('a relaxed probe that stops without an incumbent releases the pin', async () => {
     solverCtl.hook = (cap) => (cap === 0 ? INFEASIBLE : cap === 1 ? NO_INCUMBENT : undefined);
 
