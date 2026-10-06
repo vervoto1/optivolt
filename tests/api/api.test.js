@@ -248,6 +248,48 @@ describe('Route contracts', () => {
     expect(planAndMaybeWrite).not.toHaveBeenCalled();
   });
 
+  it('GET /calculate/last returns 404 for a cached plan that is not Optimal', async () => {
+    // computePlan never caches a non-Optimal solve; the route checks again.
+    getLastPlan.mockReturnValue({
+      cfg: { initialSoc_percent: 20 },
+      timing: { startMs: new Date('2024-01-01T00:00:00.000Z').getTime() },
+      result: { Status: 'Time limit reached', ObjectiveValue: 2.5 },
+      rows: [1, 2, 3],
+      summary: {},
+      rebalanceWindow: null,
+      rebalanceNudge: { show: false },
+      computedAtMs: 1704067100000,
+    });
+
+    const res = await get(routes.calculateRouter, '/last');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('No optimal plan cached');
+    expect(planAndMaybeWrite).not.toHaveBeenCalled();
+  });
+
+  it('POST /calculate maps a SolverStatusError to a 502 naming the solver status', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const spy2 = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Same module instance as the freshly imported routes (importRoutes resets modules).
+    const { SolverStatusError } = await import('../../lib/parse-solution.ts');
+    planAndMaybeWrite.mockRejectedValue(new SolverStatusError('Infeasible'));
+
+    // Handler called directly: the error middleware deadlocks under fake timers.
+    const mockNext = vi.fn();
+    const layer = routes.calculateRouter.stack.find(l => l.route?.path === '/' && l.route?.methods?.post);
+    await layer.route.stack[0].handle({ body: { writeToVictron: true } }, { json: vi.fn() }, mockNext);
+
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 502,
+      message: 'Solver produced no usable solution: status is "Infeasible"',
+      expose: true,
+      details: { solverStatus: 'Infeasible' },
+    }));
+    spy.mockRestore();
+    spy2.mockRestore();
+  });
+
   it('GET /plan-accuracy returns null report when no data exists', async () => {
     const res = await get(routes.planAccuracyRouter, '/');
     expect(res.status).toBe(200);

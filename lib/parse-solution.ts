@@ -12,6 +12,63 @@ export interface HighsSolution {
   Columns?: Record<string, HighsColumn>;
 }
 
+// Statuses that can carry a feasible primal solution: "Optimal", plus early
+// stops whose incumbent is still worth displaying (planner-service refuses to
+// cache, act on or write anything non-Optimal).
+const STATUSES_WITH_SOLUTION = new Set([
+  'Optimal',
+  'Time limit reached',
+  'Iteration limit reached',
+  'Bound on objective reached',
+  'Target for objective reached',
+]);
+
+/** Thrown when a HiGHS result carries no usable primal solution. */
+export class SolverStatusError extends Error {
+  status: string;
+
+  constructor(status: string, message = `Solver produced no usable solution: status is "${status}"`) {
+    super(message);
+    this.name = 'SolverStatusError';
+    this.status = status;
+  }
+}
+
+// An early stop can happen before any incumbent is found, so the status alone
+// is not proof of a solution. The vendored highs-js copies Primal values out
+// for every status outside its no-solution set, so a time limit hit with no
+// incumbent comes back as finite all-zero primals with ObjectiveValue
+// Infinity: the objective must be finite too. The always-present soc_* columns
+// must also carry finite primals (an "Unknown"-style result can report a
+// finite objective with no columns at all).
+function hasUsableIncumbent(result: HighsSolution, T: number): boolean {
+  if (typeof result.ObjectiveValue !== 'number' || !Number.isFinite(result.ObjectiveValue)) return false;
+  const columns = result.Columns ?? {};
+  for (let t = 0; t < T; t++) {
+    const primal = columns[`soc_${t}`]?.Primal;
+    if (typeof primal !== 'number' || !Number.isFinite(primal)) return false;
+  }
+  return true;
+}
+
+/**
+ * Throws a SolverStatusError unless `result` carries a usable primal solution:
+ * an "Optimal" status, or an early-stop status with a finite objective and a
+ * finite `soc_t` primal for every slot.
+ */
+export function assertUsableSolution(result: HighsSolution, T: number): void {
+  const status = result.Status ?? 'missing';
+  if (!STATUSES_WITH_SOLUTION.has(status)) {
+    throw new SolverStatusError(status);
+  }
+  if (status !== 'Optimal' && !hasUsableIncumbent(result, T)) {
+    throw new SolverStatusError(
+      status,
+      `Solver stopped early without a feasible incumbent: status is "${status}"`,
+    );
+  }
+}
+
 interface ParseSolutionOpts {
   startMs: number;
   stepMin: number;
@@ -19,6 +76,8 @@ interface ParseSolutionOpts {
 
 export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: ParseSolutionOpts): PlanRow[] {
   const T = cfg.load_W.length;
+
+  assertUsableSolution(result, T);
 
   const timestampsMs = synthesizeFromStart(opts.startMs, opts.stepMin, T);
 

@@ -15,8 +15,9 @@ import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refres
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
-import { computePlan, planAndMaybeWrite, getLastEvPreview, getPlanWriteChainHealth } from '../../../api/services/planner-service.ts';
+import { computePlan, planAndMaybeWrite, getLastPlan, getLastEvPreview, getPlanWriteChainHealth } from '../../../api/services/planner-service.ts';
 import { FeedIn } from '../../../lib/dess-mapper.ts';
+import { SolverStatusError } from '../../../lib/parse-solution.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const MID_SLOT_NOW_STRING = '2024-01-01T00:22:00Z';
@@ -71,7 +72,15 @@ describe('computePlan — rebalance bookkeeping', () => {
   });
 
   it('does NOT set startMs when soc < maxSoc_percent (not at target yet)', async () => {
-    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    // Fast charging + a generous import cap keep the rebalance MILP feasible
+    // (reach 100% and hold it within the 5-slot horizon); parseSolution now
+    // rejects infeasible solves outright, so this used to pass on garbage rows.
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      rebalanceEnabled: true,
+      maxChargePower_W: 5000,
+      maxGridImport_W: 10000,
+    });
     loadData.mockResolvedValue({ ...baseData, soc: { timestamp: NOW_STRING, value: 50 }, rebalanceState: { startMs: null } });
 
     await computePlan();
@@ -291,19 +300,24 @@ describe('planAndMaybeWrite — solver status guard', () => {
     vi.useRealTimers();
   });
 
-  it('refuses to write a non-optimal solve to Victron', async () => {
+  it('rejects an infeasible solve before the write and never writes to Victron', async () => {
     loadSettings.mockResolvedValue({ ...infeasibleSettings });
 
+    // parseSolution rejects the infeasible result before the write guard is reached.
     await expect(planAndMaybeWrite({ writeToVictron: true, forceWrite: true }))
-      .rejects.toThrow(/Refusing to write schedule to Victron/);
+      .rejects.toThrow(SolverStatusError);
     expect(setDynamicEssSchedule).not.toHaveBeenCalled();
   });
 
-  it('still computes and returns a non-optimal plan when not writing', async () => {
+  it('rejects an infeasible solve when not writing and keeps the previous plan', async () => {
+    const previous = await computePlan();
+    expect(previous.result.Status).toBe('Optimal');
+    savePlanSnapshot.mockClear();
     loadSettings.mockResolvedValue({ ...infeasibleSettings });
 
-    const result = await planAndMaybeWrite({ writeToVictron: false });
-    expect(result.result.Status).not.toBe('Optimal');
+    await expect(planAndMaybeWrite({ writeToVictron: false })).rejects.toThrow(/no usable solution.*"Infeasible"/);
+    expect(getLastPlan()).toBe(previous);
+    expect(savePlanSnapshot).not.toHaveBeenCalled();
     expect(setDynamicEssSchedule).not.toHaveBeenCalled();
   });
 

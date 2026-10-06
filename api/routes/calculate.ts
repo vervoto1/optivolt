@@ -2,6 +2,7 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError, toHttpError } from '../http-errors.ts';
+import { SolverStatusError } from '../../lib/parse-solution.ts';
 import { planAndMaybeWrite, getLastPlan, getLastEvPreview } from '../services/planner-service.ts';
 import type { ComputePlanResult } from '../services/planner-service.ts';
 /* v8 ignore end */
@@ -34,6 +35,12 @@ router.get('/last', (_req: Request, res: Response, next: NextFunction) => {
     next(new HttpError(404, 'No plan computed yet'));
     return;
   }
+  // computePlan only caches Optimal solves; this is a second check so a
+  // non-Optimal plan can never be served as the current plan.
+  if (plan.result.Status !== 'Optimal') {
+    next(new HttpError(404, 'No optimal plan cached'));
+    return;
+  }
   res.json(planResponseBody(plan));
 });
 
@@ -57,6 +64,12 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     res.json(planResponseBody(plan));
   } catch (error) {
     logCalculateError(error);
+    if (error instanceof SolverStatusError) {
+      // The solver returned no usable solution (infeasible, unbounded, error, or
+      // an early stop without an incumbent): name the status instead of a generic 500.
+      next(new HttpError(502, error.message, { cause: error, expose: true, details: { solverStatus: error.status } }));
+      return;
+    }
     next(toHttpError(error, 500, 'Failed to calculate plan'));
   }
 });
