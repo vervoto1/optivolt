@@ -156,11 +156,72 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
     expect(result.rows[1].dess).toMatchObject(HOLD);
   });
 
-  it('falls back to a movable window when the pinned hold is infeasible', async () => {
-    // Started an hour ago (1 slot left) but the battery sagged to 30 %: at
-    // 5 kW into 10 kWh it cannot be back at 100 % by the end of slot 0, so
-    // the pinned LP is infeasible. The re-solve lets the window start later
-    // instead of failing the plan.
+  it('first cycle at target: does not start the hold clock on a plan that exports first', async () => {
+    // SoC reaches 100 % in a lucrative export slot. Left free, the solver
+    // exports now and holds later; the countdown must not start on that plan
+    // (it would run while the written schedule drains the battery), and slot 0
+    // must not be pinned by a clock that this very plan stamped.
+    loadSettings.mockResolvedValue({ ...driftSettings });
+    loadData.mockResolvedValue({ ...driftData, rebalanceState: { startMs: null } });
+
+    const result = await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+
+    expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
+    expect(result.rows[0].b2g).toBeGreaterThan(0);
+    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    // (saveData does run: the full-SoC observation is recorded pre-solve.)
+    for (const [saved] of saveData.mock.calls) {
+      expect(saved.rebalanceState?.startMs ?? null).toBeNull();
+    }
+    expect(result.summary.rebalanceStatus).toBe('scheduled');
+    expect(setDynamicEssSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('first cycle at target: starts the hold clock when the plan holds from slot 0', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({ ...baseData, rebalanceState: { startMs: null } });
+
+    const result = await computePlan();
+
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 1 });
+    expect(result.data.rebalanceState).toEqual({ startMs: NOW_MS });
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ rebalanceState: { startMs: NOW_MS } }));
+    expect(result.summary.rebalanceStatus).toBe('active');
+  });
+
+  it('a sagged started hold is relaxed only as far as needed, not released (no export first)', async () => {
+    // 3 h hold started an hour ago (2 slots left), SoC sagged to 40 %. Slot 0
+    // cannot recover 6 kWh at 5 kW, so the pin is infeasible. Released, the
+    // solver would export at 100 c in slot 0 and hold at the end of the
+    // horizon; relaxed to the smallest feasible start cap (1) it has to charge
+    // from slot 0 and hold from slot 1.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadSettings.mockResolvedValue({ ...driftSettings, rebalanceHoldHours: 3 });
+    loadData.mockResolvedValue({
+      ...driftData,
+      soc: { timestamp: NOW_STRING, value: 40 },
+      rebalanceState: { startMs: NOW_MS - 3_600_000 },
+    });
+
+    const result = await computePlan();
+
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceRemainingSlots).toBe(2);
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(1);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBe(1);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 1, endIdx: 2 });
+    expect(result.rows[0].b2g).toBe(0);
+    expect(result.rows[0].g2b).toBeGreaterThan(0);
+    expect(result.rows[0].dess.strategy).not.toBe(Strategy.proGrid);
+    expect(result.rows[1].dess).toMatchObject(HOLD);
+    expect(result.rows[2].dess).toMatchObject(HOLD);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('allowed to start up to slot 1'));
+    expect(getLastPlan()).toBe(result);
+  });
+
+  it('relaxes a 1-slot remainder to the earliest slot the battery can reach target', async () => {
+    // 1 slot left, SoC 30 %: 7 kWh at 5 kW needs two slots, so start cap 1.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     loadSettings.mockResolvedValue({ ...driftSettings });
     loadData.mockResolvedValue({
@@ -171,12 +232,42 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
 
     const result = await computePlan();
 
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('allowed to start up to slot 1'));
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(1);
+    expect(result.cfg.rebalanceRemainingSlots).toBe(1);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 1, endIdx: 1 });
+    expect(result.rows[1].dess).toMatchObject(HOLD);
+    expect(getLastPlan()).toBe(result);
+  });
+
+  it('releases the pin when only the last possible start is feasible', async () => {
+    // 1 slot left, SoC 50 % at 1 kW: reaching 100 % takes all 5 slots, so the
+    // only feasible start is T - D = 4, which is the unpinned problem.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 50 },
+      rebalanceState: { startMs: NOW_MS - 3_600_000 },
+    });
+
+    const result = await computePlan();
+
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-solving with the hold window free to move'));
     expect(result.result.Status).toBe('Optimal');
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
-    expect(result.cfg.rebalanceRemainingSlots).toBe(1);
-    expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
-    expect(result.rows[result.rebalanceWindow.startIdx].dess).toMatchObject(HOLD);
-    expect(getLastPlan()).toBe(result);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBe(4);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 4, endIdx: 4 });
+  });
+
+  it('a hold that is feasible from slot 0 reports no relaxation', async () => {
+    loadSettings.mockResolvedValue({ ...driftSettings });
+    loadData.mockResolvedValue({ ...driftData, rebalanceState: { startMs: NOW_MS } });
+
+    const result = await computePlan();
+
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
   });
 });

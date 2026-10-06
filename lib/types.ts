@@ -127,7 +127,8 @@ export interface SolverConfig {
   /**
    * Latest slot index (inclusive) at which the rebalance hold window may start.
    * Set to 0 once the hold has started so the solver cannot re-place the rest
-   * of a running hold later in the horizon.
+   * of a running hold later in the horizon; the planner raises it to the
+   * smallest feasible cap when the battery has sagged too far for slot 0.
    */
   rebalanceMaxStartSlot?: number;
 
@@ -261,4 +262,10 @@ export interface PlanSummary {
   evChargeFromPv_kWh: number;
   evChargeFromBattery_kWh: number;
   horizonWarnings?: string[];
+  /**
+   * Present only when a started rebalance hold could not be held from slot 0
+   * this plan (the battery sagged below what slot 0 can recover): the latest
+   * slot index the hold window was allowed to start at instead.
+   */
+  rebalanceHoldMaxStartSlot?: number;
 }
