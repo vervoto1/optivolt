@@ -23,9 +23,9 @@ let chartCache = new Map();
 /** Bumped per Chart click; a response for an older click is dropped. */
 let chartRequestSeq = 0;
 
-export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights }) {
+export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights, assertCanSave }) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
-  const deps = { readFormValues, renderHistoricalConfig: renderFn, setComparisonStatus, getHighlights };
+  const deps = { readFormValues, renderHistoricalConfig: renderFn, setComparisonStatus, getHighlights, assertCanSave };
   const runBtn = document.getElementById('pred-run-validation');
   if (runBtn) {
     runBtn.addEventListener('click', () => onRunValidation(deps));
@@ -69,6 +69,7 @@ async function onRunValidation(deps) {
     setComparisonStatus('Saving config…');
 
     try {
+      deps.assertCanSave?.();
       const partial = readFormValues();
       await savePredictionConfig(partial);
     } catch (err) {
@@ -219,6 +220,7 @@ async function onUseConfig(row, deps) {
   };
 
   try {
+    deps.assertCanSave?.();
     renderHistoricalConfig(historicalPredictor);
     const activeTypeEl = document.getElementById('pred-active-type');
     if (activeTypeEl) activeTypeEl.value = 'historical';

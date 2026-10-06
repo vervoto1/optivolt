@@ -170,6 +170,66 @@ describe('predictions.js', () => {
     expect(console.error).toHaveBeenCalled();
   });
 
+  describe('opening the tab is read-only', () => {
+    const storedConfig = {
+      sensors: [{ name: 'Load' }],
+      activeType: 'historical',
+      pvConfig: { pvSensor: 'Load', latitude: 50.85, longitude: 4.35, historyDays: 90, pvMode: 'hybrid', pvModel: 'robustLinear' },
+    };
+
+    async function openTab() {
+      savePredictionConfig.mockResolvedValue({});
+      runCombinedForecast.mockResolvedValue({ load: null, pv: null });
+      fetchStoredSettings.mockResolvedValue({});
+      fetchPlanAccuracy.mockResolvedValue({ report: null });
+      fetchCalibration.mockResolvedValue({ calibration: null });
+      vi.resetModules();
+      const { initPredictionsTab } = await import('../../app/src/predictions.js');
+      const promise = initPredictionsTab();
+      await vi.runAllTimersAsync();
+      await promise;
+    }
+
+    it('does not POST the config and only previews the forecast without persisting it', async () => {
+      fetchPredictionConfig.mockResolvedValue(structuredClone(storedConfig));
+
+      await openTab();
+
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+      expect(runCombinedForecast).toHaveBeenCalledTimes(1);
+      expect(runCombinedForecast).toHaveBeenCalledWith({ persist: false });
+    });
+
+    it('never POSTs form defaults after a failed config GET (init, field edit or Run)', async () => {
+      fetchPredictionConfig.mockRejectedValue(new Error('502 Bad Gateway'));
+
+      await openTab();
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+
+      // A debounced field save and an explicit Run are refused too.
+      document.getElementById('pred-pv-lat').dispatchEvent(new Event('input'));
+      await vi.advanceTimersByTimeAsync(1000);
+      document.getElementById('pred-load-forecast').click();
+      await vi.runAllTimersAsync();
+
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+      expect(runCombinedForecast).not.toHaveBeenCalledWith({ persist: true });
+      expect(document.getElementById('load-summary-status').textContent).toMatch(/not loaded from the server/);
+    });
+
+    it('Run after a successful hydrate saves the form and persists the forecast', async () => {
+      fetchPredictionConfig.mockResolvedValue(structuredClone(storedConfig));
+
+      await openTab();
+      document.getElementById('pred-load-forecast').click();
+      await vi.runAllTimersAsync();
+
+      expect(savePredictionConfig).toHaveBeenCalledTimes(1);
+      expect(savePredictionConfig.mock.calls[0][0].pvConfig).toMatchObject({ latitude: 50.85, longitude: 4.35 });
+      expect(runCombinedForecast).toHaveBeenLastCalledWith({ persist: true });
+    });
+  });
+
   it('handles combined forecast error', async () => {
     fetchPredictionConfig.mockResolvedValue({});
     savePredictionConfig.mockResolvedValue({});

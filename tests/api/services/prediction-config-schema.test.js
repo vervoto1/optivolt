@@ -71,6 +71,8 @@ describe('normalizePredictionConfigPatch', () => {
     expect(() => normalizePredictionConfigPatch({ pvConfig: [] })).toThrow('pvConfig must be an object');
     expect(() => normalizePredictionConfigPatch({ pvConfig: { latitude: 'x' } })).toThrow('pvConfig.latitude must be a finite number');
     expect(() => normalizePredictionConfigPatch({ pvConfig: { longitude: NaN } })).toThrow('pvConfig.longitude must be a finite number');
+    // A cleared coordinate field arrives as null: rejected, so the stored location is kept.
+    expect(() => normalizePredictionConfigPatch({ pvConfig: { latitude: null, longitude: 5.2 } })).toThrow('pvConfig.latitude must be a finite number');
     expect(() => normalizePredictionConfigPatch({ pvConfig: { historyDays: 0 } })).toThrow('pvConfig.historyDays must be an integer between 1 and 365');
     expect(normalizePredictionConfigPatch({ pvConfig: { pvMode: 'hybrid' } })).toEqual({ pvConfig: { pvMode: 'hybrid' } });
   });

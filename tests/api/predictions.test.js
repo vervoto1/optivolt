@@ -321,6 +321,21 @@ describe('Prediction route contracts', () => {
     expect(runForecast).toHaveBeenCalledWith(expect.objectContaining({ includeRecent: false }));
   });
 
+  it('POST /predictions/forecast?persist=false previews without writing data.json', async () => {
+    loadSettings.mockResolvedValue({ ...structuredClone(mockSettings), dataSources: { load: 'api', pv: 'api' } });
+    loadData.mockResolvedValue({ predictionAdjustments: [] });
+
+    const preview = await post(predictionsRouter, '/forecast?persist=false', {});
+    expect(preview.status).toBe(200);
+    expect(preview.body.pv).toBeTruthy();
+    expect(updateData).not.toHaveBeenCalled();
+    expect(saveData).not.toHaveBeenCalled();
+
+    const persisted = await post(predictionsRouter, '/forecast', {});
+    expect(persisted.status).toBe(200);
+    expect(saveData).toHaveBeenCalled();
+  });
+
   it('returns 400 when activeType missing for load forecast', async () => {
     loadPredictionConfig.mockResolvedValue({ ...mockConfig, activeType: undefined });
     const res = await post(predictionsRouter, '/load/forecast', {});

@@ -6,6 +6,7 @@ import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
 import { runForecast } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
+import { hasPvCoordinates, MISSING_PV_COORDINATES_MESSAGE } from './pv-coordinates.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
 import { withRetry } from './retry.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
@@ -152,10 +153,16 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
 
     if (predConfig) {
       const runConfig = { ...predConfig, haUrl: settings.haUrl ?? '', haToken: settings.haToken ?? '' };
+      // Without a usable site location the PV forecast would be fitted to the
+      // wrong place; keep the stored series instead (no point retrying).
+      const pvLocated = hasPvCoordinates(predConfig.pvConfig);
+      if (shouldFetchApiPv && !pvLocated) {
+        console.error(`[vrm-refresh] PV forecast skipped — keeping stale data: ${MISSING_PV_COORDINATES_MESSAGE}`);
+      }
 
       const [loadRes, pvRes] = await Promise.allSettled([
         shouldFetchApiLoad ? withRetry(() => runForecast(runConfig), { label: 'load forecast' }) : Promise.resolve(null),
-        shouldFetchApiPv ? withRetry(() => runPvForecast(runConfig), { label: 'pv forecast' }) : Promise.resolve(null),
+        shouldFetchApiPv && pvLocated ? withRetry(() => runPvForecast(runConfig), { label: 'pv forecast' }) : Promise.resolve(null),
       ]);
 
       /* v8 ignore start — optional chaining null paths (loadRes.value?.forecast?.values) are untestable when resolved */

@@ -492,7 +492,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
 
-    loadPredictionConfig.mockResolvedValue({});
+    loadPredictionConfig.mockResolvedValue({ pvConfig: { latitude: 50.85, longitude: 4.35 } });
   });
 
   afterEach(() => {
@@ -564,6 +564,26 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     warnSpy.mockRestore();
     errorSpy.mockRestore();
   }, 15_000);
+
+  it.each([
+    ['missing', {}],
+    ['blank (null)', { pvConfig: { latitude: null, longitude: 4.35 } }],
+    ['the 0,0 sentinel', { pvConfig: { latitude: 0, longitude: 0 } }],
+  ])('skips the PV forecast and keeps data.pv when the coordinates are %s', async (_label, predConfig) => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'vrm', pv: 'api', prices: 'vrm', soc: 'mqtt' },
+    });
+    loadPredictionConfig.mockResolvedValue(predConfig);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runPvForecast).not.toHaveBeenCalled();
+    expect(saveData.mock.calls[0][0].pv).toEqual(baseData.pv);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('PV forecast skipped'));
+    errorSpy.mockRestore();
+  });
 
   it('retries and keeps existing data.pv when runPvForecast keeps failing', async () => {
     loadSettings.mockResolvedValue({

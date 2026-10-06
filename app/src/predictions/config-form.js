@@ -23,13 +23,31 @@ function markStrategyDirty() {
   strategyDirty = true;
 }
 
+/**
+ * True once the form holds the server's stored config. Until then its fields
+ * are the HTML defaults (PV location 0,0, clear-sky model, historical
+ * predictor), and saving them would overwrite the stored config, which the
+ * planner reads for every PV and load forecast.
+ */
+let formHydrated = false;
+
+/** Error message for a save attempted before the stored config was loaded. */
+export const NOT_HYDRATED_MESSAGE = 'Prediction settings were not loaded from the server; reload the page before saving';
+
+/** Load the stored config into the form. Resolves true on success, false on failure. */
 export async function hydratePredictionForm() {
   try {
     const config = await fetchPredictionConfig();
     applyPredictionConfigToForm(config);
+    return true;
   } catch (err) {
     console.error('Failed to load prediction config:', err);
+    return false;
   }
+}
+
+export function isPredictionFormHydrated() {
+  return formHydrated;
 }
 
 export function applyPredictionConfigToForm(config) {
@@ -57,6 +75,7 @@ export function applyPredictionConfigToForm(config) {
   updatePredictorFieldVisibility();
   // The form now mirrors the server, so nothing local is pending.
   strategyDirty = false;
+  formHydrated = true;
 }
 
 export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastResolutionChange }) {
@@ -78,6 +97,7 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
 
   const validationDeps = {
     readFormValues: readPredictionFormValues,
+    assertCanSave: assertPredictionFormHydrated,
     renderHistoricalConfig,
     setComparisonStatus,
     getHighlights: () => {
@@ -143,6 +163,7 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
  * Only the three strategy fields are read from the argument on purpose.
  */
 export async function applyStrategyToForm({ lookbackWeeks, dayFilter, aggregation }) {
+  assertPredictionFormHydrated();
   const strategy = { lookbackWeeks, dayFilter, aggregation };
   const current = readPredictionFormValues().historicalPredictor ?? {};
   renderHistoricalConfig({ ...current, ...strategy });
@@ -154,7 +175,13 @@ export async function applyStrategyToForm({ lookbackWeeks, dayFilter, aggregatio
   setComparisonStatus(`Active config updated: ${formatStrategy(strategy)}`);
 }
 
+/** Throws unless the form holds the stored config (see `formHydrated`). */
+function assertPredictionFormHydrated() {
+  if (!formHydrated) throw new Error(NOT_HYDRATED_MESSAGE);
+}
+
 export async function savePredictionFormToServer() {
+  assertPredictionFormHydrated();
   const partial = readPredictionFormValues();
   // Omitting the key leaves the server's stored value alone: POST
   // /predictions/config merges `{ ...prev, ...body }`.
@@ -200,8 +227,10 @@ export function readPredictionFormValues() {
 
   const pvConfig = {
     pvSensor: getVal('pred-pv-sensor') || 'Solar Generation',
-    latitude: parseFloat(getVal('pred-pv-lat')) || 0,
-    longitude: parseFloat(getVal('pred-pv-lon')) || 0,
+    // A blank field is null, never 0: (0, 0) is a real place, and the server
+    // rejects null so a cleared field can never overwrite the stored location.
+    latitude: coordOrNull(getVal('pred-pv-lat')),
+    longitude: coordOrNull(getVal('pred-pv-lon')),
     historyDays: parseInt(getVal('pred-pv-history'), 10) || 14,
     pvMode: getVal('pred-pv-mode') || 'hourly',
     pvModel: getVal('pred-pv-model') || 'clearSkyRatio',
@@ -215,6 +244,12 @@ export function readPredictionFormValues() {
     ...(fixedPredictor ? { fixedPredictor } : {}),
     pvConfig,
   };
+}
+
+function coordOrNull(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const value = parseFloat(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 function updatePredictorFieldVisibility() {

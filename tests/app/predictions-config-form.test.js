@@ -264,12 +264,29 @@ describe('prediction config form', () => {
     expect(values).not.toHaveProperty('fixedPredictor');
     expect(values.pvConfig).toEqual({
       pvSensor: 'Solar Generation',
-      latitude: 0,
-      longitude: 0,
+      latitude: null,
+      longitude: null,
       historyDays: 14,
       pvMode: 'hourly',
       pvModel: 'clearSkyRatio',
     });
+  });
+
+  it('reads blank or unparsable coordinates as null and keeps real values (including a lone 0)', () => {
+    const lat = document.getElementById('pred-pv-lat');
+    const lon = document.getElementById('pred-pv-lon');
+    for (const [rawLat, rawLon, expected] of [
+      ['', '', [null, null]],
+      ['   ', 'abc', [null, null]],
+      ['50.85', '', [50.85, null]],
+      ['0', '4.35', [0, 4.35]],
+      ['-33.9', '18.4', [-33.9, 18.4]],
+    ]) {
+      lat.value = rawLat;
+      lon.value = rawLon;
+      const { latitude, longitude } = readPredictionFormValues().pvConfig;
+      expect([latitude, longitude]).toEqual(expected);
+    }
   });
 
   it('reads a historical predictor with lookback/filter/agg defaults', () => {
@@ -582,5 +599,65 @@ describe('prediction config form', () => {
       expect(document.getElementById('pred-active-lookback').value).toBe('12');
       expect(savePredictionConfig).toHaveBeenCalledWith(expect.objectContaining({ activeType: 'historical' }));
     });
+  });
+});
+
+describe('prediction config form before the stored config has loaded', () => {
+  // Fresh module state per test: `hydrated` is module-level.
+  let api;
+  let form;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    setupDom();
+    vi.resetModules();
+    api = await import('../../app/src/api/api.js');
+    form = await import('../../app/src/predictions/config-form.js');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+  });
+
+  it('hydratePredictionForm reports success or failure', async () => {
+    api.fetchPredictionConfig.mockRejectedValueOnce(new Error('502'));
+    expect(await form.hydratePredictionForm()).toBe(false);
+    expect(form.isPredictionFormHydrated()).toBe(false);
+
+    api.fetchPredictionConfig.mockResolvedValueOnce({ pvConfig: { latitude: 52.1, longitude: 5.2 } });
+    expect(await form.hydratePredictionForm()).toBe(true);
+    expect(form.isPredictionFormHydrated()).toBe(true);
+  });
+
+  it('refuses every save path until hydrated, so form defaults never overwrite the stored config', async () => {
+    api.fetchPredictionConfig.mockRejectedValue(new Error('502'));
+    await form.hydratePredictionForm();
+
+    await expect(form.savePredictionFormToServer()).rejects.toThrow(form.NOT_HYDRATED_MESSAGE);
+    await expect(form.applyStrategyToForm({ lookbackWeeks: 8, dayFilter: 'same', aggregation: 'mean' }))
+      .rejects.toThrow(form.NOT_HYDRATED_MESSAGE);
+    // The refused strategy is not left half-applied in the form either.
+    expect(document.getElementById('pred-active-lookback').value).toBe('');
+
+    form.wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+    document.getElementById('pred-pv-lat').dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(700);
+
+    expect(api.savePredictionConfig).not.toHaveBeenCalled();
+    expect(document.getElementById('pred-status').textContent).toBe(`Save failed: ${form.NOT_HYDRATED_MESSAGE}`);
+  });
+
+  it('passes the hydration guard to the validation table', async () => {
+    const validation = await import('../../app/src/predictions-validation.js');
+    form.wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+    const deps = validation.initValidation.mock.calls[0][0];
+
+    expect(() => deps.assertCanSave()).toThrow(form.NOT_HYDRATED_MESSAGE);
+    api.fetchPredictionConfig.mockResolvedValue({});
+    await form.hydratePredictionForm();
+    expect(() => deps.assertCanSave()).not.toThrow();
   });
 });

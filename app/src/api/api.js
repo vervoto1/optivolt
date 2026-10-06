@@ -74,7 +74,9 @@ export const fetchAutoSelect = () => getJson('/predictions/auto-select');
 export const runAutoSelect = (apply = true) => postJson('/predictions/auto-select/run', { apply });
 export const runLoadForecast = () => postJson('/predictions/load/forecast', {});
 export const runPvForecast = () => postJson('/predictions/pv/forecast', {});
-export const runCombinedForecast = () => postJson('/predictions/forecast', {});
+// persist: false runs a read-only preview: nothing is written to data.json.
+export const runCombinedForecast = ({ persist = true } = {}) =>
+  postJson(persist ? '/predictions/forecast' : '/predictions/forecast?persist=false', {});
 export const fetchForecast = runCombinedForecast;
 export const fetchPredictionAdjustments = () => getJson('/predictions/adjustments');
 export const createPredictionAdjustment = (adjustment) => postJson('/predictions/adjustments', adjustment);

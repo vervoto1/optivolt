@@ -212,6 +212,44 @@ describe('predictions-validation', () => {
     });
   });
 
+  it('refuses to save (Run or Use) while the form guard says the config is not loaded', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    runValidation.mockResolvedValue({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 50, rmse: 60, mape: 10, n: 96, validationPredictions: [] },
+      ],
+    });
+    let loaded = false;
+    const assertCanSave = vi.fn(() => { if (!loaded) throw new Error('not loaded'); });
+    const renderLoadConfig = vi.fn();
+    const setComparisonStatus = vi.fn();
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig, setComparisonStatus, assertCanSave });
+
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(setComparisonStatus).toHaveBeenCalledWith('Save failed: not loaded', true);
+    });
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+    expect(runValidation).not.toHaveBeenCalled();
+
+    // Once loaded the run goes through; then a Use while "unloaded" is refused
+    // before the form is touched.
+    loaded = true;
+    document.getElementById('pred-run-validation').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.btn-use')).toBeTruthy();
+    });
+    loaded = false;
+    savePredictionConfig.mockClear();
+    document.querySelector('.btn-use').click();
+    await vi.waitFor(() => {
+      expect(setComparisonStatus).toHaveBeenCalledWith('Failed to save active config: not loaded', true);
+    });
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+    expect(renderLoadConfig).not.toHaveBeenCalled();
+  });
+
   const PREDICTIONS = [
     { date: '2024-01-15', hour: 8, actual: 1000, predicted: 1050 },
     { date: '2024-01-15', hour: 9, actual: 1200, predicted: 1100 },

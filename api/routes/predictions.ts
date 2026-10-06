@@ -209,7 +209,9 @@ router.post('/forecast', async (req: Request, res: Response, next: NextFunction)
   try {
     const config = await buildPredictionRunConfig();
     if (req.query.recent === 'false') config.includeRecent = false;
-    res.json(await runCombinedPredictionForecast(config, 'forecast'));
+    // persist=false: a read-only preview (the Predictions tab on open).
+    const persist = req.query.persist !== 'false';
+    res.json(await runCombinedPredictionForecast(config, 'forecast', { persist }));
   } catch (error) {
     // v8 ignore next — non-HttpError branch of ternary is covered by tests, v8 double-counts
     next(error instanceof HttpError ? error : toHttpError(error, 500, 'Forecast failed'));

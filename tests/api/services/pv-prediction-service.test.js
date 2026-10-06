@@ -95,6 +95,14 @@ describe('runPvForecast', () => {
     await expect(runPvForecast(config)).rejects.toThrow('Latitude and longitude must be configured');
   });
 
+  it('throws for the (0, 0) sentinel but accepts a real site on the equator or meridian', async () => {
+    const nullIsland = { ...baseConfig, pvConfig: { ...baseConfig.pvConfig, latitude: 0, longitude: 0 } };
+    await expect(runPvForecast(nullIsland)).rejects.toThrow('Latitude and longitude must be configured');
+
+    const meridian = { ...baseConfig, pvConfig: { ...baseConfig.pvConfig, latitude: 51.48, longitude: 0 } };
+    await expect(runPvForecast(meridian)).resolves.toBeTruthy();
+  });
+
   it('fetches HA stats with sensor entity ids', async () => {
     await runPvForecast(baseConfig);
 
