@@ -10,7 +10,8 @@ updates:
     schedule:
       interval: 'monthly'
 
-  # Workflow actions, including the SHA-pinned home-assistant/actions helpers.
+  # Workflow actions, including the SHA-pinned home-assistant/actions helpers
+  # (commented `# master` with no date, so a SHA bump cannot leave a stale date).
   # Grouped into one monthly PR. A change to the build workflows triggers a full
   # (non-pushing) add-on build on the PR, and skip-existing keeps a merge from
   # overwriting a published version tag.

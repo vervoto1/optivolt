@@ -62,6 +62,8 @@ jobs:
   docker-smoke:
     name: Add-on image smoke test
     runs-on: ubuntu-latest
+    # Cap a stalled base-image pull or npm ci; a cold build plus boot takes a few minutes.
+    timeout-minutes: 20
 
     steps:
     - uses: actions/checkout@v7
