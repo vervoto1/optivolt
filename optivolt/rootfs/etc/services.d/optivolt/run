@@ -26,5 +26,16 @@ if [ -z "${VRM_INSTALLATION_ID}" ] || [ -z "${VRM_TOKEN}" ]; then
   bashio::log.warning "VRM credentials not set. VRM endpoints will return 400 (Bad Request) until configured."
 fi
 
+# The server is TypeScript run by Node's built-in type stripping. A Node built
+# without it (Alpine's Node 22 was compiled --without-amaro) cannot even parse
+# api/index.ts; say so plainly instead of failing on a cryptic import error.
+# A version check is not enough: the feature flag is what matters.
+if ! node -e "process.exit(process.features.typescript ? 0 : 1)"; then
+  bashio::log.fatal "Node.js $(node --version) was built without TypeScript type stripping (process.features.typescript is off); OptiVolt cannot start on this base image."
+  exit 1
+fi
+
 cd "$APP_DIR"
-exec tsx "$APP_DIR/api/index.ts"
+# exec: node is the supervised process, so SIGTERM reaches the shutdown handler
+# directly (no launcher in between that could SIGKILL it mid-solve).
+exec node "$APP_DIR/api/index.ts"

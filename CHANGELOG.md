@@ -1,8 +1,52 @@
 # Changelog
 
-## Unreleased
+## 0.7.61 - 2026-10-06
 
-- **The `vendor/highs-js` git submodule is gone.** It was only a provenance pointer — nothing imported it and it was never in the add-on image — but Home Assistant Supervisor runs `git submodule update --init --recursive --depth 1` on every add-on store refresh, so each HA host cloned `lovasoa/highs-js` *and* its nested `ERGO-Code/HiGHS` repository (the Supervisor's copy of this repo grew from 7 MB to 37 MB) and every "Check for updates" depended on two more remotes answering. The source commits stay recorded in `vendor/highs-build/PROVENANCE.md`, pinned by the provenance test. No add-on change, so no version bump; Supervisor picks it up on its next refresh (an already-cloned `vendor/highs-js` directory may linger on the host until the repository is re-added — harmless).
+Hardware-safety release: the MQTT link to the GX recovers on its own, PV curtailment can no longer leave PV switched off after a restart, and the add-on shuts down cleanly. Nothing changes in how plans are computed, except that prediction sensors declared in `MWh` now count (see below).
+
+- **The MQTT client keeps reconnecting after the GX refuses a login.** Since mqtt 5.16.0 (0.7.57), a refused CONNACK ("Not authorized") turns off auto-reconnect unless `reconnectOnConnackError` is set. That refusal is expected while a rebooting Cerbo has not loaded its security profile yet, during the broker's login rate limit, or after a password change. OptiVolt kept the dead client cached for good. Publishes and subscribes sat in its offline queue and never settled, and the first timed MQTT read then crashed the process through an unhandled rejection (`Timeout after 5000ms waiting for N/…/Soc`). The same crash also happened on any plain outage, on every mqtt version. Now:
+  - the client sets `reconnectOnConnackError: true`;
+  - every publish and subscribe has a 10 s deadline, after which the stalled client is dropped together with its offline queue, so stale setpoints are never sent late, and the next call reconnects;
+  - reads settle at their own timeout even while the subscribe is stalled, with no orphaned rejection, and unsubscribes are fire-and-forget;
+  - long-lived subscriptions (the shore optimizer's readings) move to the replacement client.
+
+  Covered by a new socket-level suite (`tests/lib/victron-mqtt.broker.test.js`, real mqtt.js against a fake broker) that fails on 0.7.60. After deploying, check once: a Cerbo reboot should log `Connection refused…`, then a reconnect, then the next tick writing the schedule.
+- **`/health` returns 503 when work is genuinely stuck**: when an auto-calculate tick has been running for more than two intervals, or a plan/write run has been pending for more than 10 minutes. It never reports 503 just because Venus, VRM or HA is unreachable. The response only has an effect if the add-on's Watchdog is switched on.
+- **A PV disable survives a crash only long enough to be undone.** PV curtailment only knew in memory that it had written `acsystem/<n>/Pv/Disable=1`. A SIGKILL, crash, OOM or power loss while curtailing, or a stop while Venus was unreachable, left PV (and the Enphase switch) off until the next negative-price window happened to toggle it again. Now:
+  - before a live disable, the target (serial, acsystem instance, Enphase entity) is recorded in `DATA_DIR/pv-curtailment-state.json`. If that write fails, PV is not disabled;
+  - the record is deleted only after the restore is confirmed: `Pv/Disable` reads back 0 and the Enphase `turn_on` succeeded. Until then the restore is retried every tick, or every 30 s while the feature is off;
+  - at boot, a leftover record is restored with the recorded target, even if the feature is now off or in dry-run, unless the live loop still wants curtailment;
+  - without a record, a `Pv/Disable` that reads 1 at boot is not touched (single owner). It is logged as a warning and shown as `externalDisable` in the status.
+- **Graceful shutdown that actually reaches Venus.** On SIGTERM the handler stops all timers, restores PV (bounded at 2 s), then closes the MQTT client (bounded at 0.4 s, force-ended on timeout), and exits. Before, it exited straight after the restore publish. mqtt.js was still holding that QoS-0 write in a corked socket, so the `Pv/Disable=0` was dropped: in 4 of 4 idle stops in the 0.7.60 image when no Enphase call followed it. Repeated signals share one shutdown, and a hard stop at 2.5 s keeps everything inside s6's 3 s grace time. Stopping PV curtailment now also detaches its config, so a plan finishing during shutdown cannot disable PV again.
+- **The add-on runs `node api/index.ts` directly; tsx is gone.** tsx forwarded SIGTERM and then SIGKILLed node 30–60 ms later if the event loop was busy (a solve, a strategy-scoring loop). In that case none of the shutdown above ran. Changes:
+  - The run script now `exec`s node, after a preflight that refuses to start with a clear log line if Node lacks TypeScript type stripping. It checks `process.features.typescript`, because a version check misses distro builds compiled without it.
+  - The image build runs the same check, so a base-image change fails CI instead of the add-on.
+  - Dropping tsx also removes the build-host esbuild binary the `deps` stage could copy into the aarch64 image, and about 80 MB of RSS.
+  - The image now runs `apk upgrade`, so base packages such as OpenSSL and ca-certificates are current (OpenSSL 3.5.7 → 3.5.9 at the time of writing).
+- **s6 finish script fixed.** The old v2 `s6-svscanctl -t /var/run/s6/services` line failed under s6-overlay v3 (exit 111). The script now only logs how the service ended, and s6 restarts it in place as before. Restart-in-place is deliberate: `config.yaml` has no watchdog.
+- **Battery charge limiter: disabling it releases the limit.** When the controller goes from enabled (live) to disabled, it writes the top current rung once. Before, a reduced or 0 A limit stayed in place with nothing to step it back up. Dry-run never wrote anything, so turning off a dry-run controller writes nothing either.
+- **Prediction sensors declared in `MWh` are scaled.** `postprocess` only converted `kWh`, so the shipped and production Enphase lifetime sensor (`unit: "MWh"`) counted at 1e-6 of its real output. Since March, about 20 % of PV energy was missing from both the PV training data and the `Total Load` / `Load without EV` history. Units now map `Wh`/`kWh`/`MWh` to Wh. Any other unit logs a warning and is still treated as Wh. **Expect a step in the forecasts after upgrading:** daytime PV goes up by roughly the Enphase share, and daytime load by about the same amount, so net demand stays about the same on average. Watch the first auto-calculate plans and the adaptive-learning panel.
+- **Dependencies:**
+  - `npm audit --omit=dev` is clean: `ip-address` 10.7.3 (two advisories) and `proxy-addr` 2.0.8 (critical IPv4-mapped IPv6 trust bypass in Express).
+  - The `mqtt` floor is now `^5.16.0`.
+  - `mqtt-packet` is now an explicit dev dependency for the broker tests.
+  - `engines` is `^22.18.0 || >=24`, the first releases that strip types by default.
+  - The unused, drifted repo-root `Dockerfile` and `.dockerignore` are deleted; the add-on is built from `optivolt/Dockerfile` only.
+- **The `vendor/highs-js` git submodule is gone** (on `main` since 0.7.60, released here). It was only a provenance pointer. Nothing imported it and it was never in the add-on image. But Home Assistant Supervisor runs `git submodule update --init --recursive --depth 1` on every add-on store refresh, so each HA host cloned `lovasoa/highs-js` *and* its nested `ERGO-Code/HiGHS` repository. The Supervisor's copy of this repo grew from 7 MB to 37 MB, and every "Check for updates" depended on two more remotes answering. The source commits stay recorded in `vendor/highs-build/PROVENANCE.md`, pinned by the provenance test.
+
+Verified on a local amd64 build of `optivolt/Dockerfile`, staged like the Builder workflow:
+
+- **Boot:** it boots on Node 24.18.1 (`process.features.typescript = strip`) with no tsx or esbuild in the image. `/health` returns 200, and `POST /calculate` solves Optimal (93 rows).
+- **arm64:** the `deps` stage built for `linux/arm64` holds no ELF files.
+
+PV restore scenarios, run under s6 with mosquitto plus a fake Venus responder:
+
+| Scenario | Result |
+|---|---|
+| `docker stop` while curtailing | `Pv/Disable=0` arrives, the read-back confirms it, and the record is cleared |
+| `docker kill` while curtailing | The record survives the kill; the next boot restores before any plan arrives |
+| Stop while the broker is down | Shutdown gives up after 2 s and exits cleanly; the next boot restores |
+| `Pv/Disable=1` with no record | Warning only, no write |
 
 ## 0.7.60 - 2026-09-19
 

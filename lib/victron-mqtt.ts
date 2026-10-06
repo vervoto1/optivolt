@@ -10,7 +10,16 @@ export interface VictronMqttConfig {
   rejectUnauthorized?: boolean;
   reconnectPeriod?: number;
   serial?: string;
+  /** Deadline for one publish/subscribe round-trip before the connection is dropped (default OP_TIMEOUT_MS). */
+  opTimeoutMs?: number;
 }
+
+/**
+ * Upper bound for one transport operation (a QoS-0 publish reaching the socket, a SUBACK).
+ * mqtt.js parks these in its offline queue while disconnected and only settles them on the
+ * next CONNACK, so an unbounded await hangs for as long as the broker stays unreachable.
+ */
+export const OP_TIMEOUT_MS = 10_000;
 
 interface WaitForMessageOptions {
   timeoutMs?: number;
@@ -55,6 +64,26 @@ function normalizeSocPayload(payload: { value?: unknown } | null): number | null
   return Math.max(0, Math.min(100, n));
 }
 
+type MessageListener = (topic: string, payload: Buffer) => void;
+
+/** A live subscribeJson() subscription and the client it is currently attached to. */
+interface JsonSubscription {
+  topic: string;
+  requestTopic?: string;
+  listener: MessageListener;
+  client: MqttClient;
+}
+
+function offMessage(client: MqttClient, listener: MessageListener): void {
+  if (typeof client.off === 'function') {
+    client.off('message', listener);
+  /* v8 ignore start */
+  } else {
+    client.removeListener('message', listener);
+  }
+  /* v8 ignore stop */
+}
+
 function portalIdFromSerialTopic(topic: string): string | undefined {
   const match = /^N\/([^/]+)\/system\/0\/Serial$/.exec(topic);
   return match?.[1];
@@ -70,9 +99,12 @@ export class VictronMqttClient {
   tls: boolean;
   rejectUnauthorized: boolean;
   reconnectPeriod: number;
+  opTimeoutMs: number;
   serial: string | null;
   private _serialPromise: Promise<string> | null;
   private _clientPromise: Promise<MqttClient> | null;
+  private _client: MqttClient | null;
+  private _subscriptions: Set<JsonSubscription>;
 
   constructor({
     host = 'venus.local',
@@ -84,6 +116,7 @@ export class VictronMqttClient {
     rejectUnauthorized = true,
     reconnectPeriod = 0,  // 0 = no auto reconnect by default
     serial,               // optional: if you already know the portal id
+    opTimeoutMs = OP_TIMEOUT_MS,
   }: VictronMqttConfig = {}) {
     this.tls = tls;
     this.rejectUnauthorized = rejectUnauthorized;
@@ -93,10 +126,13 @@ export class VictronMqttClient {
     this.password = password || undefined;
     this.protocol = protocol ?? (tls ? 'mqtts' : 'mqtt');
     this.reconnectPeriod = reconnectPeriod;
+    this.opTimeoutMs = opTimeoutMs;
 
     this.serial = serial ?? null;  // cached portal id once known
     this._serialPromise = null;   // in-flight detection, if any
     this._clientPromise = null;
+    this._client = null;
+    this._subscriptions = new Set();
   }
 
   private async _getClient(): Promise<MqttClient> {
@@ -110,6 +146,10 @@ export class VictronMqttClient {
       reconnectPeriod: this.reconnectPeriod,
       rejectUnauthorized: this.rejectUnauthorized,
       family: 4, // prefer IPv4 — mDNS hostnames (e.g. venus.local) often resolve to unreachable IPv6
+      // mqtt >= 5.16 stops auto-reconnecting after a refused CONNACK (rc > 0, e.g. "Not
+      // authorized" while a rebooting GX has not loaded its security profile yet) unless this
+      // is set, which would leave the cached client dead for good.
+      reconnectOnConnackError: true,
     } as mqtt.IClientOptions & { family?: number });
     this._clientPromise = clientPromise;
 
@@ -125,26 +165,103 @@ export class VictronMqttClient {
       throw err;
     }
 
+    this._client = client;
     client.on('error', (err) => {
       console.error('[victron-mqtt] client error:', err.message);
     });
     // With reconnectPeriod 0 the client never reconnects on its own, so a dropped
     // connection would leave a dead client cached and time out every later call.
     // Discard it on close; when auto-reconnect is enabled mqtt.js revives this same
-    // client, so keep the cache and let it recover.
+    // client, so keep the cache and let it recover (reconnectOnConnackError covers a
+    // refused reconnect; _op() evicts a client that still stops answering).
     if (this.reconnectPeriod === 0) {
       client.on('close', () => {
-        if (this._clientPromise === clientPromise) this._clientPromise = null;
+        if (this._clientPromise === clientPromise) {
+          this._clientPromise = null;
+          this._client = null;
+        }
       });
     }
 
+    this._reattachSubscriptions(client);
     return client;
+  }
+
+  /**
+   * Move live subscribeJson() subscriptions that sat on a client since evicted or dropped
+   * onto this one (mqtt.js only resubscribes within the same client). Without it a
+   * long-lived reader (the shore optimizer) would go silent after an eviction.
+   */
+  private _reattachSubscriptions(client: MqttClient): void {
+    // Every live subscription sits on an older client: subscribeJson() only registers
+    // one after its own _getClient() call has returned.
+    for (const sub of this._subscriptions) {
+      offMessage(sub.client, sub.listener);
+      sub.client = client;
+      client.on('message', sub.listener);
+      void (async () => {
+        await this._op(client, client.subscribeAsync(sub.topic), `subscribe ${sub.topic}`);
+        if (sub.requestTopic) {
+          await this._op(client, client.publishAsync(sub.requestTopic, ''), `publish ${sub.requestTopic}`);
+        }
+      })().catch((err: unknown) => {
+        console.error(`[victron-mqtt] re-subscribing ${sub.topic} failed:`, (err as Error).message);
+      });
+    }
+  }
+
+  /**
+   * Drop a client that stopped answering so the next call connects afresh. `end(true)`
+   * also discards its offline queue, so stale setpoints are never sent late.
+   */
+  private _evict(client: MqttClient): void {
+    if (this._client === client) {
+      this._client = null;
+      this._clientPromise = null;
+    }
+    client.end(true);
+  }
+
+  /** Await one transport op with a deadline; on expiry evict the client and reject. */
+  private async _op<T>(client: MqttClient, op: Promise<T>, label: string): Promise<T> {
+    const timeoutMs = this.opTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        console.error(`[victron-mqtt] ${label} not acknowledged within ${timeoutMs}ms; dropping connection`);
+        this._evict(client);
+        reject(new Error(`Timeout after ${timeoutMs}ms waiting for ${label}`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([op, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * End the connection immediately, without flushing or waiting for DISCONNECT. For
+   * shutdown paths where the graceful close() may hang (broker unreachable). Never throws.
+   */
+  forceClose(): void {
+    const pending = this._clientPromise;
+    const client = this._client;
+    this._clientPromise = null;
+    this._client = null;
+    if (client) {
+      client.end(true);
+    } else if (pending) {
+      // Still connecting: end it once (if) the connect settles.
+      pending.then((c) => { c.end(true); }, () => {});
+    }
   }
 
   async close(): Promise<void> {
     if (!this._clientPromise) return;
     const client = await this._clientPromise;
     this._clientPromise = null;
+    this._client = null;
     await client.endAsync();
   }
 
@@ -233,17 +350,18 @@ export class VictronMqttClient {
       (topic) => portalIdFromSerialTopic(topic),
       { timeoutMs, label: wildcard },
     );
+    // Observed below; a stalled subscribe must never leave this rejection orphaned
+    // (an unhandled rejection terminates the process).
+    wait.catch(() => {});
 
     try {
-      await client.subscribeAsync(wildcard);
+      // Settles at timeoutMs even while the subscribe itself is stalled.
+      await Promise.race([this._op(client, client.subscribeAsync(wildcard), `subscribe ${wildcard}`), wait]);
       const serial = await wait;
       return serial;
     } finally {
-      try {
-        await client.unsubscribeAsync(wildcard);
-      } catch {
-        // ignore
-      }
+      // Fire-and-forget: an offline client would park this until the next CONNACK.
+      client.unsubscribeAsync(wildcard).catch(() => {});
     }
   }
 
@@ -254,12 +372,12 @@ export class VictronMqttClient {
   async publishJson(topic: string, payload: unknown, { qos = 0, retain = false }: { qos?: 0 | 1 | 2; retain?: boolean } = {}): Promise<void> {
     const client = await this._getClient();
     const json = JSON.stringify(payload);
-    await client.publishAsync(topic, json, { qos, retain });
+    await this._op(client, client.publishAsync(topic, json, { qos, retain }), `publish ${topic}`);
   }
 
   async publishRaw(topic: string, payload: string | Buffer = '', { qos = 0, retain = false }: { qos?: 0 | 1 | 2; retain?: boolean } = {}): Promise<void> {
     const client = await this._getClient();
-    await client.publishAsync(topic, payload, { qos, retain });
+    await this._op(client, client.publishAsync(topic, payload, { qos, retain }), `publish ${topic}`);
   }
 
   async subscribeJson(
@@ -286,9 +404,9 @@ export class VictronMqttClient {
     client.on('message', wrapped);
 
     try {
-      await client.subscribeAsync(topic);
+      await this._op(client, client.subscribeAsync(topic), `subscribe ${topic}`);
       if (requestTopic) {
-        await client.publishAsync(requestTopic, '');
+        await this._op(client, client.publishAsync(requestTopic, ''), `publish ${requestTopic}`);
       }
     } catch (err) {
       if (typeof client.off === 'function') {
@@ -301,19 +419,14 @@ export class VictronMqttClient {
       throw err;
     }
 
+    const sub: JsonSubscription = { topic, requestTopic, listener: wrapped, client };
+    this._subscriptions.add(sub);
+
     return async () => {
-      if (typeof client.off === 'function') {
-        client.off('message', wrapped);
-      /* v8 ignore start */
-      } else {
-        client.removeListener('message', wrapped);
-      }
-      /* v8 ignore stop */
-      try {
-        await client.unsubscribeAsync(topic);
-      } catch {
-        // ignore cleanup failures
-      }
+      this._subscriptions.delete(sub);
+      offMessage(sub.client, sub.listener);
+      // Fire-and-forget: an offline client would park this until the next CONNACK.
+      sub.client.unsubscribeAsync(topic).catch(() => {});
     };
   }
 
@@ -332,19 +445,24 @@ export class VictronMqttClient {
       },
       { timeoutMs, label: topic },
     );
+    // Observed below; a stalled subscribe must never leave this rejection orphaned
+    // (an unhandled rejection terminates the process).
+    wait.catch(() => {});
+
+    const request = (async () => {
+      await this._op(client, client.subscribeAsync(topic), `subscribe ${topic}`);
+      if (requestTopic) {
+        await this._op(client, client.publishAsync(requestTopic, ''), `publish ${requestTopic}`);
+      }
+    })();
 
     try {
-      await client.subscribeAsync(topic);
-      if (requestTopic) {
-        await client.publishAsync(requestTopic, '');
-      }
+      // Settles at timeoutMs even while the subscribe itself is stalled.
+      await Promise.race([request, wait]);
       return await wait;
     } finally {
-      try {
-        await client.unsubscribeAsync(topic);
-      } catch {
-        // ignore
-      }
+      // Fire-and-forget: an offline client would park this until the next CONNACK.
+      client.unsubscribeAsync(topic).catch(() => {});
     }
   }
 

@@ -469,6 +469,11 @@ export async function writePlanToVictron(rows: PlanRowWithDess[], { force = fals
 // corrupt the fingerprint (skipping a needed rewrite), or issue concurrent
 // schedule writes.
 let planWriteChain: Promise<unknown> = Promise.resolve();
+// Enqueue time of every run on planWriteChain that has not settled yet, for /health:
+// a run whose await never settles blocks every later POST /calculate, price refresh
+// and EV reconcile behind it.
+let pendingPlanRunSeq = 0;
+const pendingPlanRunsSinceMs = new Map<number, number>();
 
 export async function planAndMaybeWrite({
   updateData = false,
@@ -492,7 +497,21 @@ export async function planAndMaybeWrite({
   };
   // Chain after whatever is in flight (run regardless of its outcome), and keep
   // the chain alive past rejections so one failed solve doesn't wedge the queue.
+  const seq = ++pendingPlanRunSeq;
+  pendingPlanRunsSinceMs.set(seq, Date.now());
   const next = planWriteChain.then(run, run);
-  planWriteChain = next.catch(() => {});
+  planWriteChain = next.catch(() => {}).finally(() => { pendingPlanRunsSinceMs.delete(seq); });
   return next;
+}
+
+/** Runs queued or in flight on the plan/write chain, and how long the oldest has been waiting. */
+export function getPlanWriteChainHealth(nowMs: number = Date.now()): { pending: number; oldestPendingMs: number | null } {
+  let oldestSinceMs: number | null = null;
+  for (const sinceMs of pendingPlanRunsSinceMs.values()) {
+    if (oldestSinceMs === null || sinceMs < oldestSinceMs) oldestSinceMs = sinceMs;
+  }
+  return {
+    pending: pendingPlanRunsSinceMs.size,
+    oldestPendingMs: oldestSinceMs === null ? null : nowMs - oldestSinceMs,
+  };
 }

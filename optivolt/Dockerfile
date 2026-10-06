@@ -10,13 +10,14 @@ ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 # `npm ci` runs natively instead of under QEMU emulation. The runtime deps
 # (express, highs/WASM, mqtt) are arch-independent and dev-only native binaries
 # are stripped by `npm prune --omit=dev`, so the pruned node_modules copied into
-# the target-arch stage 2 below is portable across architectures.
+# the target-arch stage 2 below is portable across architectures. Nothing
+# arch-specific may be installed here (a global tsx used to bring a build-host
+# esbuild binary into the aarch64 image).
 FROM --platform=$BUILDPLATFORM node:24-alpine AS deps
 WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
-  && npm prune --omit=dev \
-  && npm_config_ignore_scripts=true npm install -g tsx@4.23.13
+  && npm prune --omit=dev
 
 # Stage 2: final image on the target HA base.
 FROM $BUILD_FROM
@@ -26,16 +27,21 @@ ENV \
   S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
   NODE_ENV=production
 
-# Alpine 3.24 ships Node.js 24 (the s6 service still launches through tsx).
-RUN apk add --no-cache nodejs npm curl
+# Alpine 3.24 ships Node.js 24, built with TypeScript type stripping: the s6
+# service runs `node api/index.ts` directly. `apk upgrade` pulls the base
+# image's own packages (OpenSSL, curl, ca-certificates) up to the current
+# security fixes. The last step fails the build, rather than the add-on at
+# runtime, if a future base ships a Node without type stripping.
+RUN apk add --no-cache nodejs npm curl \
+  && apk upgrade --no-cache
+RUN node -e "process.exit(process.features.typescript ? 0 : 1)" \
+  || { echo "Node.js $(node --version) lacks TypeScript type stripping" >&2; exit 1; }
 
 # Workdir for the app
 WORKDIR /opt/optivolt
 
-# Copy pre-built node_modules and global tsx from native stage
+# Copy the pre-built (pure-JS) node_modules from the native stage
 COPY --from=deps /opt/optivolt/node_modules ./node_modules
-COPY --from=deps /usr/local/lib/node_modules/tsx /usr/local/lib/node_modules/tsx
-RUN ln -s ../lib/node_modules/tsx/dist/cli.mjs /usr/local/bin/tsx
 COPY package.json ./
 
 # Copy app source

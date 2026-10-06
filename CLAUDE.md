@@ -23,7 +23,7 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 
 ## Architecture
 
-The system has three layers. Server/core code is TypeScript ESM executed directly by Node 22; the browser UI is static ESM with no build step for JavaScript. The only generated asset is `app/vendor/tailwind.css`, precompiled via `npm run build:css` and committed.
+The system has three layers. Server/core code is TypeScript ESM executed directly by Node (built-in type stripping, Node >= 22.18); the browser UI is static ESM with no build step for JavaScript. The only generated asset is `app/vendor/tailwind.css`, precompiled via `npm run build:css` and committed.
 
 ### `lib/` — Core logic (pure, no I/O unless noted)
 - **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, EV flows, etc.) and tracks `soc` evolution with charge/discharge efficiency. Supports CV phase modeling via MILP binaries.
@@ -48,7 +48,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 
 ### `optivolt/` — Home Assistant add-on
 - **`config.yaml`** — Add-on manifest (options, schema, image reference for GHCR).
-- **`Dockerfile`** — Multi-stage build; also carries the base image (`ARG BUILD_FROM`, the multi-arch `ghcr.io/home-assistant/base`) and the static OCI labels that used to live in `build.yaml`. Stage 1 runs `npm ci` and `tsx` install on native `node:24-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation. Stage 2 copies `node_modules` and tsx into the HA base image (Alpine 3.24, Node.js 24).
+- **`Dockerfile`** — Multi-stage build; also carries the base image (`ARG BUILD_FROM`, the multi-arch `ghcr.io/home-assistant/base`) and the static OCI labels that used to live in `build.yaml`. Stage 1 runs `npm ci` on native `node:24-alpine` to avoid QEMU "Illegal instruction" crashes during aarch64 cross-compilation (nothing arch-specific may be installed there). Stage 2 copies the pure-JS `node_modules` into the HA base image (Alpine 3.24, Node.js 24), runs `apk upgrade`, and fails the build if that Node lacks type stripping; the s6 `run` script launches `exec node api/index.ts` (no tsx) behind the same preflight.
 - **`rootfs/`** — s6-overlay service scripts (run, finish, init).
 - **`translations/en.yaml`** — HA configuration UI labels.
 - **`repository.yaml`** (at repo root) — HA add-on repository metadata.
@@ -69,7 +69,7 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 
 - ESM modules throughout (`"type": "module"` in package.json).
 - TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules. Styling uses precompiled Tailwind (`app/vendor/tailwind.css`, rebuilt with `npm run build:css`) — there is no runtime Tailwind compiler. The inline `<style>` block in `app/index.html` sits in `@layer components`, so a utility class on the same element wins over it without the `!` prefix; keep the `<link>` to `tailwind.css` before that block.
-- Node.js >= 22 required.
+- Node.js `^22.18.0 || >=24` required, from a build with TypeScript type stripping (`process.features.typescript`). Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) must run the server via `npx tsx api/index.ts`.
 - Express 5.
 - Unused variables prefixed with `_` (eslint rule).
 - ESLint also checks `.md` and `.css` files.

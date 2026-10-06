@@ -52,6 +52,27 @@ export interface HaReading {
 export const MAX_PLAUSIBLE_SLOT_ENERGY_WH = 25_000;
 
 /**
+ * Wh per declared sensor unit. HA's recorder returns statistics `change` in the
+ * entity's display unit (we request no `units` conversion), so the configured
+ * unit must match that display unit; an Enphase Envoy lifetime counter, for
+ * one, reports in MWh.
+ */
+export const WH_PER_UNIT: Readonly<Record<string, number>> = Object.freeze({
+  Wh: 1,
+  kWh: 1000,
+  MWh: 1_000_000,
+});
+
+/**
+ * Multiplier from a declared unit to Wh, or null when the unit is not an energy
+ * unit we know (callers then fall back to treating the value as Wh, with a warning).
+ */
+export function whPerUnit(unit: string | undefined): number | null {
+  if (typeof unit !== 'string') return null;
+  return Object.hasOwn(WH_PER_UNIT, unit.trim()) ? WH_PER_UNIT[unit.trim()] : null;
+}
+
+/**
  * Get all unique sensor names present in processed data.
  */
 export function getSensorNames(data: StatRecord[]): string[] {
@@ -105,7 +126,14 @@ export function postprocess(
 
   const flat = Object.entries(rawData).flatMap(([id, readings]) => {
     const name = nameOf[id] ?? id;
-    const multiplier = unitOf[id] === 'kWh' ? 1000 : 1;
+    let multiplier = whPerUnit(unitOf[id]);
+    if (multiplier === null) {
+      console.warn(
+        `[ha-postprocess] ${name} (${id}) has unit ${JSON.stringify(unitOf[id] ?? null)}, not one of `
+        + `${Object.keys(WH_PER_UNIT).join('/')}; treating its values as Wh`,
+      );
+      multiplier = 1;
+    }
     return readings.flatMap(d => {
       const value = (d.change ?? 0) * multiplier;
       // Drop implausible spikes (counter resets/jumps) before they reach the

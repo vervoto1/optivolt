@@ -28,9 +28,12 @@ export async function getVictronSerial(): Promise<string> {
   return client.getSerial();
 }
 
-export async function readVictronSetting(relativePath: string, { timeoutMs }: { timeoutMs?: number } = {}): Promise<unknown> {
+export async function readVictronSetting(relativePath: string, { timeoutMs, serial }: { timeoutMs?: number; serial?: string } = {}): Promise<unknown> {
   const client = getVictronClient();
-  return client.readSetting(relativePath, { timeoutMs });
+  const options: { timeoutMs?: number; serial?: string } = {};
+  if (timeoutMs !== undefined) options.timeoutMs = timeoutMs;
+  if (serial !== undefined) options.serial = serial;
+  return client.readSetting(relativePath, options);
 }
 
 export async function writeVictronSetting(relativePath: string, value: unknown, { serial }: { serial?: string } = {}): Promise<void> {
@@ -167,8 +170,32 @@ export async function setDynamicEssSchedule(rows: PlanRowWithDess[], slotCount: 
   return { serial, slotsWritten: nSlots };
 }
 
-export async function shutdownVictronClient(): Promise<void> {
-  if (!victronClient) return;
-  await victronClient.close();
+/**
+ * Close the shared client for process shutdown. The graceful close flushes the
+ * QoS-0 writes still corked in the socket (a `process.exit` right after an
+ * awaited publish would otherwise drop them) and sends DISCONNECT. It can hang
+ * while Venus is unreachable, so after `timeoutMs` the client is force-ended
+ * instead. Never throws.
+ */
+export async function shutdownVictronClient({ timeoutMs = 500 }: { timeoutMs?: number } = {}): Promise<void> {
+  const client = victronClient;
+  if (!client) return;
   victronClient = null;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([client.close().then(() => 'closed' as const), timedOut]);
+    if (outcome === 'timeout') {
+      console.warn(`[mqtt] graceful close did not finish within ${timeoutMs}ms; forcing it`);
+      client.forceClose();
+    }
+  } catch (err) {
+    console.warn('[mqtt] close failed, forcing it:', (err as Error).message);
+    client.forceClose();
+  } finally {
+    clearTimeout(timer);
+  }
 }

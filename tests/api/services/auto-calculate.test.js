@@ -15,7 +15,7 @@ vi.mock('../../../api/services/efficiency-calibrator.ts', () => ({
   calibrateEv: vi.fn().mockResolvedValue(null),
 }));
 
-const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning } = await import(
+const { startAutoCalculate, stopAutoCalculate, isAutoCalculateRunning, getAutoCalculateHealth } = await import(
   '../../../api/services/auto-calculate.ts'
 );
 const { planAndMaybeWrite } = await import('../../../api/services/planner-service.ts');
@@ -426,4 +426,56 @@ describe('auto-calculate', () => {
     expect(planAndMaybeWrite).toHaveBeenCalledTimes(3); // 12:45
   });
 
+});
+
+describe('auto-calculate — health', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(BASE_TIME));
+    vi.clearAllMocks();
+    stopAutoCalculate();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    stopAutoCalculate();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('is not stuck when idle or stopped', () => {
+    expect(getAutoCalculateHealth()).toEqual({ stuck: false, calculatingForMs: null, intervalMs: null });
+    startAutoCalculate(makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false }));
+    expect(getAutoCalculateHealth()).toEqual({ stuck: false, calculatingForMs: null, intervalMs: 300_000 });
+  });
+
+  it('flags a tick only once it has run for more than two intervals', async () => {
+    let release;
+    planAndMaybeWrite.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    startAutoCalculate(makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: false }));
+    await vi.advanceTimersByTimeAsync(2 * 60_000); // first tick at 12:05
+
+    const tickStartMs = Date.now();
+    expect(getAutoCalculateHealth(tickStartMs + 10 * 60_000)).toMatchObject({ stuck: false, calculatingForMs: 600_000 });
+    expect(getAutoCalculateHealth(tickStartMs + 10 * 60_000 + 1)).toMatchObject({ stuck: true });
+
+    release({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getAutoCalculateHealth(tickStartMs + 20 * 60_000)).toMatchObject({ stuck: false, calculatingForMs: null });
+  });
+
+  it('clears the in-progress flag when the MQTT-backed steps reject, so the next tick runs', async () => {
+    const { sampleAndStoreSoc } = await import('../../../api/services/soc-tracker.ts');
+    sampleAndStoreSoc.mockRejectedValueOnce(new Error('Timeout after 5000ms waiting for N/x/system/0/Dc/Battery/Soc'));
+    planAndMaybeWrite.mockRejectedValueOnce(new Error('Timeout after 10000ms waiting for publish W/x'));
+    startAutoCalculate(makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: true }));
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(getAutoCalculateHealth()).toMatchObject({ stuck: false, calculatingForMs: null });
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
+  });
 });

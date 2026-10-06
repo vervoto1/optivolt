@@ -1,6 +1,6 @@
 {
   "name": "optivolt",
-  "version": "0.7.60",
+  "version": "0.7.61",
   "description": "Optivolt is a linear and mixed-integer optimizer for home energy systems.",
   "homepage": "https://github.com/bmesuere/optivolt#readme",
   "bugs": {
@@ -25,11 +25,11 @@
     "build:css": "tailwindcss -i tailwind.source.css -o app/vendor/tailwind.css --minify"
   },
   "engines": {
-    "node": "^22.13.0 || >=24"
+    "node": "^22.18.0 || >=24"
   },
   "dependencies": {
     "express": "^5.2.1",
-    "mqtt": "^5.15.1"
+    "mqtt": "^5.16.0"
   },
   "devDependencies": {
     "@eslint/css": "^2.0.0",
@@ -42,6 +42,7 @@
     "eslint": "^10.6.0",
     "globals": "^17.7.0",
     "jsdom": "^30.0.1",
+    "mqtt-packet": "^9.0.2",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
     "tailwindcss": "^4.3.3",

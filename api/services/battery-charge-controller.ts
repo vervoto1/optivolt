@@ -64,6 +64,8 @@ const MAX_PLAUSIBLE_CELL_V = 4.5;
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
+// The tick in progress, so a disable can wait for its write before releasing the limit.
+let inFlightTick: Promise<void> | null = null;
 // Tracks the last enabled state across stop/start so a settings save while already
 // enabled does NOT wipe seed/dwell/contention state (only a real disabled→enabled
 // edge resets). `intervalHandle` can't carry this: the settings route stops first.
@@ -263,24 +265,66 @@ export async function runBatteryChargeTick(nowMs: number = Date.now(), settingsO
   });
 }
 
+/**
+ * Enabled → disabled edge: put the register back on the top rung once, so a reduced
+ * (or 0 A) limit the controller commanded is not left in place with nobody stepping it
+ * back up. Only for a controller that was writing live (dry-run never touched the
+ * register) and whose last command is not already the top rung. Never throws.
+ */
+async function releaseChargeLimit(previousSettings: Settings | null): Promise<void> {
+  const prevCfg = previousSettings?.batteryChargeControl;
+  if (!previousSettings || !prevCfg?.enabled || prevCfg.dryRun) return;
+  const levels = (prevCfg.currentLevels ?? []).filter(l => Number.isFinite(l));
+  const entity = chargeCurrentEntity(previousSettings, prevCfg);
+  if (levels.length === 0 || !entity) return;
+  const topLevel = Math.max(...levels);
+  // A tick still running on the old settings could otherwise write a reduced rung after us.
+  if (inFlightTick) await inFlightTick;
+  if (lastCommandLevel === topLevel) return;
+
+  const fromLevel = lastCommandLevel;
+  try {
+    await callHaService({
+      haUrl: previousSettings.haUrl, haToken: previousSettings.haToken,
+      domain: 'number', service: 'set_value',
+      target: { entity_id: entity }, data: { value: topLevel },
+    });
+  } catch (err) {
+    console.warn(`[battery-charge-controller] disabled, but restoring the top rung (${topLevel}A) failed: ${msg(err)}`);
+    return;
+  }
+  const nowMs = Date.now();
+  lastCommandLevel = topLevel;
+  lastWriteAtMs = nowMs;
+  console.info(`[battery-charge-controller] disabled: charge current restored ${fromLevel ?? '?'}A → ${topLevel}A (top rung)`);
+}
+
 async function tickGuarded(): Promise<void> {
   if (ticking) return;
   ticking = true;
-  try {
-    await runBatteryChargeTick();
-  } catch (err) {
-    console.error('[battery-charge-controller] tick error:', msg(err));
-  } finally {
-    ticking = false;
-  }
+  const run = (async () => {
+    try {
+      await runBatteryChargeTick();
+    } catch (err) {
+      console.error('[battery-charge-controller] tick error:', msg(err));
+    } finally {
+      ticking = false;
+    }
+  })();
+  inFlightTick = run;
+  await run;
+  // Ticks never overlap (the `ticking` guard), so this is still our run.
+  inFlightTick = null;
 }
 
 /** Start the control loop. Stops any previous loop first. */
 export function startBatteryChargeController(settings: Settings): void {
   stopBatteryChargeController();
+  const previousSettings = activeSettings;
   activeSettings = settings;
   const cfg = settings.batteryChargeControl;
   if (!cfg?.enabled) {
+    if (wasEnabled) void releaseChargeLimit(previousSettings);
     wasEnabled = false;
     return;
   }
