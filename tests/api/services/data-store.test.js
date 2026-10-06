@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../../api/services/json-store.ts', () => {
+vi.mock('../../../api/services/json-store.ts', async (importOriginal) => {
+  const actual = await importOriginal();
   let store = {};
   return {
     resolveDataDir: () => '/tmp/test-data',
+    // The real per-path lock: the updateData tests below depend on it.
+    withJsonLock: actual.withJsonLock,
     readJson: vi.fn(async (filePath) => {
       if (store[filePath] === undefined) {
         const err = new Error('ENOENT');
@@ -20,7 +23,7 @@ vi.mock('../../../api/services/json-store.ts', () => {
   };
 });
 
-import { loadData, saveData, loadDefaultData, validateData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData, loadDefaultData, validateData } from '../../../api/services/data-store.ts';
 import { readJson, writeJson, _reset, _set } from '../../../api/services/json-store.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00.000Z';
@@ -220,6 +223,83 @@ describe('saveData', () => {
     const bad = makeValidData({ soc: { timestamp: NOW_STRING, value: NaN } });
     await expect(saveData(bad)).rejects.toThrow(/soc/);
     expect(writeJson).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateData', () => {
+  const DATA_PATH = '/tmp/test-data/data.json';
+
+  beforeEach(() => {
+    _reset();
+    writeJson.mockClear();
+  });
+
+  it('patches the freshly loaded file and returns the persisted value', async () => {
+    _set(DATA_PATH, makeValidData({ lastFullSocAt: '2023-12-31T00:00:00.000Z' }));
+    const result = await updateData(current => ({ ...current, soc: { timestamp: NOW_STRING, value: 77 } }));
+
+    expect(result.soc.value).toBe(77);
+    expect(result.lastFullSocAt).toBe('2023-12-31T00:00:00.000Z'); // untouched field kept
+    expect(writeJson).toHaveBeenCalledTimes(1);
+    expect((await loadData()).soc.value).toBe(77);
+  });
+
+  it('writes nothing when mutate returns null, and returns the current data', async () => {
+    _set(DATA_PATH, makeValidData());
+    const result = await updateData(() => null);
+
+    expect(result.soc.value).toBe(50);
+    expect(writeJson).not.toHaveBeenCalled();
+  });
+
+  it('rejects without writing when mutate throws or the result is invalid', async () => {
+    _set(DATA_PATH, makeValidData());
+    await expect(updateData(() => { throw new Error('boom'); })).rejects.toThrow('boom');
+    await expect(updateData(current => ({ ...current, soc: { timestamp: NOW_STRING, value: NaN } }))).rejects.toThrow(/soc/);
+    expect(writeJson).not.toHaveBeenCalled();
+    expect((await loadData()).soc.value).toBe(50);
+  });
+
+  it('serialises concurrent writers so neither patch is lost', async () => {
+    _set(DATA_PATH, makeValidData());
+    // Hold the first writer inside its locked section until the second has queued.
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    readJson.mockImplementationOnce(async () => {
+      await gate;
+      return JSON.parse(JSON.stringify(makeValidData()));
+    });
+
+    const first = updateData(current => ({ ...current, soc: { timestamp: NOW_STRING, value: 61 } }));
+    const second = updateData(current => ({ ...current, lastFullSocAt: NOW_STRING }));
+    await Promise.resolve();
+    release();
+    await Promise.all([first, second]);
+
+    const stored = await loadData();
+    expect(stored.soc.value).toBe(61);
+    expect(stored.lastFullSocAt).toBe(NOW_STRING);
+  });
+
+  it('a plain saveData queues behind an in-flight updateData', async () => {
+    _set(DATA_PATH, makeValidData());
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    readJson.mockImplementationOnce(async () => {
+      await gate;
+      return JSON.parse(JSON.stringify(makeValidData()));
+    });
+
+    const order = [];
+    const patch = updateData(current => { order.push('update'); return { ...current, soc: { timestamp: NOW_STRING, value: 61 } }; })
+      .then(() => order.push('update-done'));
+    const save = saveData(makeValidData({ soc: { timestamp: NOW_STRING, value: 42 } })).then(() => order.push('save-done'));
+    await Promise.resolve();
+    release();
+    await Promise.all([patch, save]);
+
+    expect(order).toEqual(['update', 'update-done', 'save-done']);
+    expect((await loadData()).soc.value).toBe(42);
   });
 });
 

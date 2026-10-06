@@ -1,5 +1,5 @@
 import { assertCondition, toHttpError } from '../http-errors.ts';
-import type { PredictionAdjustmentSeries, PredictionRunConfig, TimeSeries } from '../types.ts';
+import type { Data, PredictionAdjustmentSeries, PredictionRunConfig, TimeSeries } from '../types.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
 import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from './load-prediction-service.ts';
 import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
@@ -7,7 +7,7 @@ import { formatStrategy } from '../../lib/strategy-selector.ts';
 import type { ForecastRunResult } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import type { PvForecastRunResult } from './pv-prediction-service.ts';
-import { loadData, saveData } from './data-store.ts';
+import { updateData } from './data-store.ts';
 import { loadSettings } from './settings-store.ts';
 import { applyPredictionAdjustmentsToSeries, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { loadActiveAdjustmentsAndPrune } from './prediction-adjustment-store.ts';
@@ -113,23 +113,33 @@ export async function executePvForecast(config: PredictionRunConfig, logLabel: s
 
 export async function persistForecastData(updates: { load?: TimeSeries; pv?: TimeSeries }) {
   if (!updates.load?.values && !updates.pv?.values) return;
-  const [settings, data] = await Promise.all([loadSettings(), loadData()]);
+  const settings = await loadSettings();
   const setLoad = !!updates.load?.values && settings.dataSources.load === 'api';
   const setPv   = !!updates.pv?.values   && settings.dataSources.pv   === 'api';
   if (!setLoad && !setPv) return;
-  if (setLoad) data.load = updates.load!;
-  if (setPv)   data.pv   = updates.pv!;
-  await saveData(data);
+  // Patched onto the current file under the store's lock (see updateData).
+  await updateData(current => ({
+    ...current,
+    ...(setLoad ? { load: updates.load! } : {}),
+    ...(setPv ? { pv: updates.pv! } : {}),
+  }));
 }
 
 async function persistForecastAndPrune(updates: { load?: TimeSeries; pv?: TimeSeries }) {
-  const [settings, data] = await Promise.all([loadSettings(), loadData()]);
+  const settings = await loadSettings();
   const setLoad = !!updates.load?.values && settings.dataSources.load === 'api';
   const setPv   = !!updates.pv?.values   && settings.dataSources.pv   === 'api';
-  if (setLoad) data.load = updates.load!;
-  if (setPv)   data.pv   = updates.pv!;
-  const { data: pruned, adjustments, changed } = pruneExpiredPredictionAdjustments(data);
-  if (setLoad || setPv || changed) await saveData(pruned);
+  let adjustments: ReturnType<typeof pruneExpiredPredictionAdjustments>['adjustments'] = [];
+  await updateData(current => {
+    const withForecast: Data = {
+      ...current,
+      ...(setLoad ? { load: updates.load! } : {}),
+      ...(setPv ? { pv: updates.pv! } : {}),
+    };
+    const pruned = pruneExpiredPredictionAdjustments(withForecast);
+    adjustments = pruned.adjustments;
+    return setLoad || setPv || pruned.changed ? pruned.data : null;
+  });
   return adjustments;
 }
 

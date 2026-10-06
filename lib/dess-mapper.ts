@@ -6,6 +6,9 @@ import { DEFAULT_INVERTER_EFFICIENCY_PERCENT } from './build-lp.ts';
 
 const FLOW_EPSILON_W = 1; // treat flows below this as zero
 const SOC_EPSILON_PERCENT = 0.5; // treat SoC within this of min/max as at boundary
+// Start-of-slot SoC within this of a CV threshold counts as at/above it (LP
+// feasibility tolerance; build-lp's cv binary may be on exactly at the threshold).
+const SOC_THRESHOLD_EPSILON_PERCENT = 1e-4;
 
 export const Strategy = {
   targetSoc: 0,       // excess PV and load to/from grid
@@ -207,7 +210,7 @@ export function mapRowsToDess(rows: PlanRow[], cfg: SolverConfig, options: DessM
 function aggregateSegmentPrice(
   rows: PlanRow[],
   segment: Segment | null,
-  condition: (row: PlanRow) => boolean,
+  condition: (row: PlanRow, t: number) => boolean,
   getPrice: (row: PlanRow) => number,
   aggregator: 'max' | 'min'
 ): number {
@@ -216,7 +219,7 @@ function aggregateSegmentPrice(
 
   for (let t = segment.start; t <= segment.end; t++) {
     const row = rows[t];
-    if (condition(row)) {
+    if (condition(row, t)) {
       const price = getPrice(row);
       bestPrice = aggregator === 'max' ? Math.max(bestPrice, price) : Math.min(bestPrice, price);
     }
@@ -276,10 +279,13 @@ function findLowestPvExportPrice(rows: PlanRow[], segment: Segment | null, cfg: 
   return aggregateSegmentPrice(
     rows,
     segment,
-    r => {
+    (r, t) => {
       if (r.pv2g <= FLOW_EPSILON_W || r.ec < 0) return false;
       const chargePower_DC = r.pv2b + eta_inv * r.g2b;
-      const isChargeConstrained = chargePower_DC >= cfg.maxChargePower_W - FLOW_EPSILON_W;
+      // Against the cap in force at the slot's start SoC (CV/charge taper), so
+      // PV the tapered battery could not absorb is not read as a voluntary export.
+      const startSoc_percent = t === 0 ? cfg.initialSoc_percent : rows[t - 1].soc_percent;
+      const isChargeConstrained = chargePower_DC >= effectiveChargeCap_W(cfg, startSoc_percent) - FLOW_EPSILON_W;
       const isSocConstrained = r.soc_percent >= cfg.maxSoc_percent - SOC_EPSILON_PERCENT;
       return !isChargeConstrained && !isSocConstrained;
     },
@@ -360,6 +366,25 @@ function computeDessDiagnostics(rows: PlanRow[], segments: Segment[], cfg: Solve
 }
 
 /**
+ * DC battery charge cap the LP enforces in a slot that starts at
+ * `startSoc_percent`, mirroring `c_charge_cap_t` in build-lp: the flat
+ * `maxChargePower_W` minus the decremental step of every CV threshold whose
+ * binary is on (start-of-slot SoC at or above the threshold). Without
+ * thresholds this is `maxChargePower_W`.
+ */
+export function effectiveChargeCap_W(cfg: SolverConfig, startSoc_percent: number): number {
+  const thresholds = cfg.cvPhaseThresholds ?? [];
+  let cap_W = cfg.maxChargePower_W;
+  for (let k = 0; k < thresholds.length; k++) {
+    const prevPower_W = k === 0 ? cfg.maxChargePower_W : thresholds[k - 1].maxChargePower_W;
+    if (startSoc_percent >= thresholds[k].soc_percent - SOC_THRESHOLD_EPSILON_PERCENT) {
+      cap_W -= prevPower_W - thresholds[k].maxChargePower_W;
+    }
+  }
+  return cap_W;
+}
+
+/**
  * V2 DESS mapper: simplified tipping-point-based strategy selection.
  *
  * Instead of analysing individual energy flows per slot, we compare
@@ -418,7 +443,14 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
       // Electricity is cheap enough to charge the battery from grid
       strategy = Strategy.proBattery;
       restrictions = Restrictions.batteryToGrid; // allow grid→battery
-      if (gridImport >= cfg.maxGridImport_W - FLOW_EPSILON_W || chargePower_DC >= cfg.maxChargePower_W - FLOW_EPSILON_W) {
+      // Saturated = the plan charges as hard as the LP allowed in this slot:
+      // at the grid import cap, or at the battery charge cap in force at the
+      // slot's START SoC (the CV/charge taper lowers it as SoC rises). Testing
+      // only the flat maxChargePower_W missed every taper-capped slot, so DESS
+      // got no boost there, under-delivered, and the calibrator learned an even
+      // lower curve from it.
+      const chargeCap_W = effectiveChargeCap_W(cfg, t === 0 ? cfg.initialSoc_percent : rows[t - 1].soc_percent);
+      if (gridImport >= cfg.maxGridImport_W - FLOW_EPSILON_W || chargePower_DC >= chargeCap_W - FLOW_EPSILON_W) {
         // Cap the +5% boost at the first CV phase threshold to prevent target
         // oscillation: without the cap, the target overshoots into the CV region
         // (e.g. 93%→98%), then next slot CV throttles charge power, the saturation

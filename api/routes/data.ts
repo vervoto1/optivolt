@@ -1,7 +1,7 @@
 /* v8 ignore start — import lines are v8 branch-counting artifacts */
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { loadData, saveData, validateData } from '../services/data-store.ts';
+import { loadData, updateData, validateData } from '../services/data-store.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import { recordFullSocObservation } from '../services/rebalance-nudge.ts';
 import { assertCondition, toHttpError } from '../http-errors.ts';
@@ -29,7 +29,6 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       'Payload must be a JSON object',
     );
 
-    const currentData = await loadData();
     const settings = await loadSettings();
     const dataSources = settings.dataSources;
 
@@ -51,8 +50,6 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       'No valid data keys provided or settings are not set to API',
     );
 
-    let nextData: Data = { ...currentData };
-
     for (const key of keysToUpdate) {
       const value = payload[key];
       assertCondition(
@@ -60,30 +57,41 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         400,
         `'${key}' must be a JSON object`,
       );
-      if (key === 'soc') {
-        nextData.soc = value as SocData;
-        nextData = recordFullSocObservation(nextData);
-      } else if (key === 'evLoad') {
-        nextData.evLoad = value as TimeSeries;
-      } else if (key === 'load' || key === 'pv' || key === 'importPrice' || key === 'exportPrice') {
-        nextData[key] = value as TimeSeries;
+    }
+
+    // Patch only the posted keys onto data.json as it is at write time, under
+    // the store's lock: a planner run or forecast refresh in flight can no
+    // longer write its older snapshot over this update (or the reverse).
+    const applyPayload = (current: Data): Data => {
+      let nextData: Data = { ...current };
+      for (const key of keysToUpdate) {
+        const value = payload[key];
+        if (key === 'soc') {
+          nextData.soc = value as SocData;
+          nextData = recordFullSocObservation(nextData);
+        } else if (key === 'evLoad') {
+          nextData.evLoad = value as TimeSeries;
+        } else if (key === 'load' || key === 'pv' || key === 'importPrice' || key === 'exportPrice') {
+          nextData[key] = value as TimeSeries;
+        }
       }
-    }
+      try {
+        validateData(nextData);
+      } catch (validationError) {
+        const msg = validationError instanceof Error ? validationError.message : String(validationError);
+        throw toHttpError(validationError, 400, msg);
+      }
+      return nextData;
+    };
 
     try {
-      validateData(nextData);
-    } catch (validationError) {
-      const msg = validationError instanceof Error ? validationError.message : String(validationError);
-      return next(toHttpError(validationError, 400, msg));
-    }
-
-    try {
-      await saveData(nextData);
-      logDataUpdateCall(keysToUpdate);
-      res.json({ message: 'Data updated successfully', keysUpdated: keysToUpdate });
+      await updateData(applyPayload);
     } catch (saveError) {
-      next(toHttpError(saveError, 500, 'Failed to persist data'));
+      // A 400 from applyPayload passes through unchanged (already an HttpError).
+      return next(toHttpError(saveError, 500, 'Failed to persist data'));
     }
+    logDataUpdateCall(keysToUpdate);
+    res.json({ message: 'Data updated successfully', keysUpdated: keysToUpdate });
 
   } catch (error) {
     next(toHttpError(error, 500));

@@ -7,6 +7,7 @@ vi.mock('../../../api/services/settings-store.ts', () => ({
 vi.mock('../../../api/services/data-store.ts', () => ({
   loadData: vi.fn(),
   saveData: vi.fn(),
+  updateData: vi.fn(),
 }));
 
 vi.mock('../../../api/services/efficiency-calibrator.ts', async (importOriginal) => {
@@ -23,9 +24,10 @@ vi.mock('../../../api/services/ha-client.ts', () => ({
   fetchHaEntityState: vi.fn(),
 }));
 
-import { buildSolverConfigFromSettings, applyCalibration, applyEvCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
+import { buildSolverConfigFromSettings, buildPlannerConfig, applyCalibration, applyEvCalibration, getSolverInputs } from '../../../api/services/config-builder.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { loadCalibration, loadEvCalibration } from '../../../api/services/efficiency-calibrator.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 
@@ -62,6 +64,11 @@ const makeData = (rebalanceState = undefined) => ({
   exportPrice: { start: NOW_STRING, step: 15, values: Array(96).fill(5) },
   soc: { timestamp: NOW_STRING, value: 50 },
   rebalanceState,
+});
+
+// updateData keeps the real load → mutate → save contract (clearAllMocks keeps it).
+beforeEach(() => {
+  wireUpdateData({ loadData, saveData, updateData });
 });
 
 describe('buildSolverConfigFromSettings — rebalancing', () => {
@@ -976,6 +983,119 @@ describe('getSolverInputs — adaptive learning calibration', () => {
     expect(new Date(result.timing.startMs).toISOString()).toBe('2024-01-01T14:15:00.000Z');
     expect(result.cfg.load_W.slice(0, 3)).toEqual([20, 30, 40]);
     expect(result.cfg.importPrice.slice(0, 3)).toEqual([2, 3, 4]);
+  });
+});
+
+describe('getSolverInputs — live SoC (readLiveSoc)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.clearAllMocks();
+    loadCalibration.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads the live SoC for soc=mqtt, patches only soc, and builds cfg from it', async () => {
+    const settings = { ...mockSettings };
+    loadSettings.mockResolvedValue(settings);
+    loadData.mockResolvedValue(makeData());
+    const readLiveSoc = vi.fn().mockResolvedValue(33);
+
+    const { cfg, data } = await getSolverInputs({ readLiveSoc });
+
+    expect(readLiveSoc).toHaveBeenCalledWith(settings);
+    expect(cfg.initialSoc_percent).toBe(33);
+    expect(data.soc).toEqual({ timestamp: new Date(NOW_STRING).toISOString(), value: 33 });
+    expect(saveData).toHaveBeenCalledTimes(1);
+    expect(saveData).toHaveBeenCalledWith({ ...makeData(), soc: { timestamp: new Date(NOW_STRING).toISOString(), value: 33 } });
+  });
+
+  it('records a full-SoC observation from the live reading', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings });
+    loadData.mockResolvedValue(makeData());
+
+    const { data } = await getSolverInputs({ readLiveSoc: async () => 100 });
+
+    expect(data.lastFullSocAt).toBe(new Date(NOW_STRING).toISOString());
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ lastFullSocAt: data.lastFullSocAt }));
+  });
+
+  it('does not read the live SoC when the soc source is not mqtt', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings, dataSources: { ...mockSettings.dataSources, soc: 'api' } });
+    loadData.mockResolvedValue(makeData());
+    const readLiveSoc = vi.fn().mockResolvedValue(33);
+
+    const { cfg } = await getSolverInputs({ readLiveSoc });
+
+    expect(readLiveSoc).not.toHaveBeenCalled();
+    expect(cfg.initialSoc_percent).toBe(50);
+    expect(saveData).not.toHaveBeenCalled();
+  });
+
+  it('propagates a failed read without touching data.json', async () => {
+    loadSettings.mockResolvedValue({ ...mockSettings });
+    loadData.mockResolvedValue(makeData());
+
+    await expect(getSolverInputs({ readLiveSoc: async () => { throw new Error('no soc'); } })).rejects.toThrow('no soc');
+    expect(updateData).not.toHaveBeenCalled();
+    expect(saveData).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildPlannerConfig', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const calibration = {
+    chargeCurve: new Array(100).fill(0.7),
+    dischargeCurve: new Array(100).fill(0.9),
+    chargeSamples: new Array(100).fill(10),
+    dischargeSamples: new Array(100).fill(10),
+    effectiveChargeRate: 0.7,
+    effectiveDischargeRate: 0.9,
+    sampleCount: 100,
+    confidence: 0.8,
+    lastCalibratedMs: NOW_MS,
+  };
+
+  it('applies prediction adjustments and the auto-mode calibration in one place', async () => {
+    loadCalibration.mockResolvedValue(calibration);
+    const settings = { ...mockSettings, adaptiveLearning: { enabled: true, mode: 'auto' } };
+    const data = {
+      ...makeData(),
+      predictionAdjustments: [{
+        id: 'a', series: 'load', mode: 'set', value_W: 900,
+        start: NOW_STRING, end: '2024-01-01T12:30:00.000Z',
+        createdAt: NOW_STRING, updatedAt: NOW_STRING,
+      }],
+    };
+
+    const cfg = await buildPlannerConfig(settings, data, NOW_MS);
+
+    expect(cfg.load_W.slice(0, 3)).toEqual([900, 900, 100]);
+    expect(cfg.cvPhaseThresholds).toEqual(
+      applyCalibration(buildSolverConfigFromSettings(settings, makeData(), NOW_MS), calibration).cvPhaseThresholds,
+    );
+  });
+
+  it('is the plain build (with adjustments) when adaptive learning is not in auto mode', async () => {
+    loadCalibration.mockResolvedValue(calibration);
+    const settings = { ...mockSettings, adaptiveLearning: { enabled: true, mode: 'suggest' } };
+
+    const cfg = await buildPlannerConfig(settings, makeData(), NOW_MS);
+
+    expect(cfg).toEqual(buildSolverConfigFromSettings(settings, makeData(), NOW_MS));
+    expect(loadCalibration).not.toHaveBeenCalled();
   });
 });
 

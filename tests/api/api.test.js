@@ -19,6 +19,8 @@ vi.mock('../../api/services/prediction-auto-select.ts');
 
 import { loadSettings, saveSettings, updateSettings } from '../../api/services/settings-store.ts';
 import { wireUpdateSettings } from './helpers/settings-store-mock.js';
+import { loadData as loadDataMock, saveData as saveDataMock, updateData as updateDataMock } from '../../api/services/data-store.ts';
+import { wireUpdateData } from './helpers/data-store-mock.js';
 import { refreshSettingsFromVrmAndPersist } from '../../api/services/vrm-refresh.ts';
 import { loadPlanHistory, clearPlanHistory } from '../../api/services/plan-history-store.ts';
 import { getRecentSamples, clearSocSamples } from '../../api/services/soc-tracker.ts';
@@ -115,6 +117,7 @@ describe('Route contracts', () => {
     loadSettings.mockResolvedValue(structuredClone(mockSettings));
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData: loadDataMock, saveData: saveDataMock, updateData: updateDataMock });
     refreshSettingsFromVrmAndPersist.mockResolvedValue({ batteryCapacity_Wh: 10000 });
     planAndMaybeWrite.mockResolvedValue({
       cfg: { initialSoc_percent: 20 },
@@ -651,7 +654,7 @@ describe('Route contracts', () => {
     const handler = layer.route.stack[0].handle;
     const mockNext = vi.fn();
     await handler({ body: { load: { start: '2024-01-01', values: [1], step: 15 } } }, { json: vi.fn() }, mockNext);
-    expect(mockNext).toHaveBeenCalled();
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 500 }));
     spy.mockRestore();
   });
 

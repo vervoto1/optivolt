@@ -13,7 +13,8 @@ import { loadPredictionConfig, savePredictionConfig, updatePredictionConfig } fr
 import { runValidation, runForecast, scoreStrategyPredictions } from '../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../api/services/pv-prediction-service.ts';
 import { loadSettings } from '../../api/services/settings-store.ts';
-import { loadData, saveData } from '../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../api/services/data-store.ts';
+import { wireUpdateData } from './helpers/data-store-mock.js';
 import { runAutoSelect } from '../../api/services/prediction-auto-select.ts';
 import { getLatestAutoSelectRun, loadAutoSelectHistory } from '../../api/services/prediction-auto-select-store.ts';
 
@@ -43,6 +44,7 @@ describe('Prediction route contracts', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    wireUpdateData({ loadData, saveData, updateData });
     loadPredictionConfig.mockResolvedValue(structuredClone(mockConfig));
     savePredictionConfig.mockResolvedValue();
     // Same contract as the real store lock: load → mutate → save unless null.

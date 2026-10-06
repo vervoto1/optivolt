@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../api/services/data-store.ts');
 
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import {
   createStoredPredictionAdjustment,
   deleteStoredPredictionAdjustment,
@@ -41,6 +42,7 @@ const validInput = {
 describe('prediction-adjustment-store', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    wireUpdateData({ loadData, saveData, updateData });
     saveData.mockResolvedValue();
   });
 
