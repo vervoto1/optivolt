@@ -128,4 +128,22 @@ describe('VictronMqttClient against a broker that refuses CONNACK', () => {
     // Give any stray timers a chance to fire an orphaned rejection.
     await sleep(700);
   });
+
+  it('forceClose cuts short a graceful close the broker never completes', async () => {
+    broker.state.acceptAll = true;
+    const vc = makeClient();
+    await vc.writeSetting('settings/0/Settings/DynamicEss/Mode', 4, { serial: SERIAL });
+
+    broker.state.ignoreDisconnect = true;
+    let closed = false;
+    const closing = vc.close().then(() => { closed = true; });
+    await sleep(200);
+    expect(closed).toBe(false);
+
+    vc.forceClose();
+    await closing;
+    expect(closed).toBe(true);
+    // The QoS-0 write before the close still went out.
+    expect(broker.state.publishesReceived.some(p => p.topic === `W/${SERIAL}/settings/0/Settings/DynamicEss/Mode`)).toBe(true);
+  });
 });

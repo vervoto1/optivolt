@@ -1049,6 +1049,59 @@ describe('VictronMqttClient — stalled transport (refused CONNACK / offline que
     await new Promise(r => setTimeout(r, 0));
   });
 
+  it('forceClose cuts short a graceful close() that hangs, destroying the disconnecting socket', async () => {
+    let finishEnd;
+    const hanging = {
+      ...makeSecondClient(),
+      disconnecting: false,
+      stream: { destroy: vi.fn(() => finishEnd()) },
+    };
+    // Like mqtt.js: endAsync() marks the client disconnecting, after which end(true) is a no-op.
+    hanging.endAsync = vi.fn(() => {
+      hanging.disconnecting = true;
+      return new Promise((resolve) => { finishEnd = resolve; });
+    });
+    mqtt.connectAsync.mockResolvedValueOnce(hanging);
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+
+    const closing = client.close();
+    await new Promise(r => setTimeout(r, 0));
+    expect(hanging.endAsync).toHaveBeenCalledTimes(1);
+    client.forceClose();
+    expect(hanging.stream.destroy).toHaveBeenCalledTimes(1);
+    expect(hanging.end).not.toHaveBeenCalled();
+    await expect(closing).resolves.toBeUndefined();
+    // Nothing is left to end a second time.
+    client.forceClose();
+    expect(hanging.stream.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('forceClose ends a closing client with end(true) when it is not disconnecting yet', async () => {
+    const pending = { ...makeSecondClient(), disconnecting: false, stream: { destroy: vi.fn() } };
+    pending.endAsync = vi.fn(() => new Promise(() => {}));
+    mqtt.connectAsync.mockResolvedValueOnce(pending);
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    void client.close();
+    await new Promise(r => setTimeout(r, 0));
+    client.forceClose();
+    expect(pending.end).toHaveBeenCalledWith(true);
+    expect(pending.stream.destroy).not.toHaveBeenCalled();
+  });
+
+  it('forceClose logs instead of throwing when ending the client fails', async () => {
+    const broken = { ...makeSecondClient(), disconnecting: false };
+    broken.end = vi.fn(() => { throw new Error('socket gone'); });
+    mqtt.connectAsync.mockResolvedValueOnce(broken);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    expect(() => client.forceClose()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('[victron-mqtt] force-ending the client failed:', 'socket gone');
+    warn.mockRestore();
+  });
+
   it('forceClose is a no-op before any connection', () => {
     const client = new VictronMqttClient();
     expect(() => client.forceClose()).not.toThrow();

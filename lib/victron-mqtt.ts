@@ -84,6 +84,24 @@ function offMessage(client: MqttClient, listener: MessageListener): void {
   /* v8 ignore stop */
 }
 
+/**
+ * End a client now, without flushing. mqtt.js ignores end(true) on a client that is
+ * already disconnecting (a graceful end() waiting on its socket), so destroy that
+ * client's socket instead; that also lets the pending graceful end() complete.
+ * Never throws.
+ */
+function hardEnd(client: MqttClient): void {
+  try {
+    if (client.disconnecting) {
+      client.stream?.destroy();
+    } else {
+      client.end(true);
+    }
+  } catch (err) {
+    console.warn('[victron-mqtt] force-ending the client failed:', (err as Error).message);
+  }
+}
+
 function portalIdFromSerialTopic(topic: string): string | undefined {
   const match = /^N\/([^/]+)\/system\/0\/Serial$/.exec(topic);
   return match?.[1];
@@ -107,6 +125,8 @@ export class VictronMqttClient {
   private _subscriptions: Set<JsonSubscription>;
   // Clients already dropped by _evict(), so one stall is logged and ended only once.
   private _evicted: WeakSet<MqttClient>;
+  // Clients whose graceful close() is still running, so forceClose() can still end them.
+  private _closing: Set<MqttClient>;
 
   constructor({
     host = 'venus.local',
@@ -136,6 +156,7 @@ export class VictronMqttClient {
     this._client = null;
     this._subscriptions = new Set();
     this._evicted = new WeakSet();
+    this._closing = new Set();
   }
 
   private async _getClient(): Promise<MqttClient> {
@@ -259,11 +280,14 @@ export class VictronMqttClient {
     const client = this._client;
     this._clientPromise = null;
     this._client = null;
+    // A graceful close() already under way (it cleared the cache) is cut short too.
+    for (const closing of this._closing) hardEnd(closing);
+    this._closing.clear();
     if (client) {
-      client.end(true);
+      hardEnd(client);
     } else if (pending) {
       // Still connecting: end it once (if) the connect settles.
-      pending.then((c) => { c.end(true); }, () => {});
+      pending.then(hardEnd, () => {});
     }
   }
 
@@ -272,7 +296,12 @@ export class VictronMqttClient {
     const client = await this._clientPromise;
     this._clientPromise = null;
     this._client = null;
-    await client.endAsync();
+    this._closing.add(client);
+    try {
+      await client.endAsync();
+    } finally {
+      this._closing.delete(client);
+    }
   }
 
   // ---------------------------------------------------------------------------

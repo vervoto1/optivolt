@@ -63,16 +63,55 @@ describe('pv-curtailment-state-store', () => {
     await expect(loadPvCurtailmentState()).resolves.toEqual({ ...state, sinceMs: 0 });
   });
 
-  it('ignores a malformed or unparsable record with a warning', async () => {
+  it('reports a malformed or unparsable record as unreadable, with a warning', async () => {
     const file = path.join(dir, 'pv-curtailment-state.json');
     await fs.writeFile(file, JSON.stringify({ ...state, acsystemInstance: -1 }));
-    await expect(loadPvCurtailmentState()).resolves.toBeNull();
+    await expect(loadPvCurtailmentState()).resolves.toBe('unreadable');
     await fs.writeFile(file, JSON.stringify({ ...state, enphaseSwitchEntity: 42 }));
-    await expect(loadPvCurtailmentState()).resolves.toBeNull();
+    await expect(loadPvCurtailmentState()).resolves.toBe('unreadable');
     await fs.writeFile(file, 'null');
-    await expect(loadPvCurtailmentState()).resolves.toBeNull();
+    await expect(loadPvCurtailmentState()).resolves.toBe('unreadable');
     await fs.writeFile(file, '{not json');
-    await expect(loadPvCurtailmentState()).resolves.toBeNull();
-    expect(console.warn).toHaveBeenCalledTimes(4);
+    await expect(loadPvCurtailmentState()).resolves.toBe('unreadable');
+    // A zero-length file, as a power loss can leave behind.
+    await fs.writeFile(file, '');
+    await expect(loadPvCurtailmentState()).resolves.toBe('unreadable');
+    expect(console.warn).toHaveBeenCalledTimes(5);
+  });
+
+  it('fsyncs the record and its directory and leaves no temp file behind', async () => {
+    const opened = [];
+    const realOpen = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (p, flags) => {
+      const handle = await realOpen(p, flags);
+      const realSync = handle.sync.bind(handle);
+      handle.sync = async () => { opened.push([path.basename(p), flags]); return realSync(); };
+      return handle;
+    });
+    await savePvCurtailmentState(state);
+    expect(opened).toEqual([
+      [expect.stringMatching(/^pv-curtailment-state\.json\.\d+\.\d+\.tmp$/), 'w'],
+      [path.basename(dir), 'r'],
+    ]);
+    expect(await fs.readdir(dir)).toEqual(['pv-curtailment-state.json']);
+    await expect(loadPvCurtailmentState()).resolves.toEqual(state);
+  });
+
+  it('removes the temp file and rejects when the rename fails', async () => {
+    vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('EXDEV'));
+    await expect(savePvCurtailmentState(state)).rejects.toThrow('EXDEV');
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it('still saves when the directory cannot be fsynced', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const realOpen = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (p, flags) => {
+      if (flags === 'r') throw new Error('EISDIR');
+      return realOpen(p, flags);
+    });
+    await savePvCurtailmentState(state);
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('could not fsync'), 'EISDIR');
+    await expect(loadPvCurtailmentState()).resolves.toEqual(state);
   });
 });

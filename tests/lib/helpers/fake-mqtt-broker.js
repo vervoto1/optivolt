@@ -6,6 +6,8 @@
 //   `state.acceptAll` is set; otherwise it is refused with CONNACK rc=`refuseRc`
 //   (default 5, "Not authorized") and the socket is closed, the way Venus'
 //   flashmq refuses a password login it cannot (yet) verify.
+// - DISCONNECT ends the socket unless `state.ignoreDisconnect` is set, which keeps
+//   it half-open the way an unreachable peer would (a graceful client end hangs).
 // - SUBSCRIBE is acknowledged; subscribing to N/+/system/0/Serial delivers the
 //   portal id; a publish to R/<serial>/<path> answers on N/<serial>/<path> when
 //   that topic is subscribed.
@@ -21,13 +23,18 @@ export function startFakeBroker({ refuseRc = 5, socPercent = 57, acceptNext = 1 
     refused: 0,
     acceptNext,
     acceptAll: false,
+    ignoreDisconnect: false,
     sockets: new Set(),
     publishesReceived: [],
   };
 
-  const server = net.createServer((sock) => {
+  // allowHalfOpen: the broker decides itself when to answer a client FIN (see ignoreDisconnect).
+  const server = net.createServer({ allowHalfOpen: true }, (sock) => {
     state.sockets.add(sock);
     sock.on('close', () => state.sockets.delete(sock));
+    sock.on('end', () => {
+      if (!state.ignoreDisconnect) sock.end();
+    });
     const parser = mqttPacket.parser({ protocolVersion: 4 });
     const send = (pkt) => {
       if (!sock.destroyed) sock.write(mqttPacket.generate(pkt));
@@ -67,7 +74,7 @@ export function startFakeBroker({ refuseRc = 5, socPercent = 57, acceptNext = 1 
       } else if (p.cmd === 'pingreq') {
         send({ cmd: 'pingresp' });
       } else if (p.cmd === 'disconnect') {
-        sock.end();
+        if (!state.ignoreDisconnect) sock.end();
       }
     });
     sock.on('data', (d) => parser.parse(d));
