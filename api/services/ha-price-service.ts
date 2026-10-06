@@ -41,6 +41,12 @@ interface InstantCandidate {
   offsetMs: number;
 }
 
+interface ParsedTimestamp {
+  candidates: InstantCandidate[];
+  /** True when the timestamp carries its own offset (or Z). */
+  explicit: boolean;
+}
+
 const EXPLICIT_OFFSET = /(?:Z|([+-])(\d{2}):?(\d{2}))$/i;
 
 function localOffsetMs(ms: number): number {
@@ -51,21 +57,22 @@ function localOffsetMs(ms: number): number {
  * Every instant a feed timestamp can denote. A timestamp with an explicit
  * offset (or Z) is unambiguous. A bare wall-clock timestamp is read in the
  * server time zone; inside the repeated autumn DST hour it has two candidates
- * (ascending). Empty when unparseable.
+ * (ascending). No candidates when unparseable.
  */
-function timestampCandidates(raw: unknown): InstantCandidate[] {
-  if (typeof raw !== 'string') return [];
+function parseTimestamp(raw: unknown): ParsedTimestamp {
+  const none: ParsedTimestamp = { candidates: [], explicit: false };
+  if (typeof raw !== 'string') return none;
   const text = raw.trim();
-  if (text === '') return [];
+  if (text === '') return none;
   const ms = new Date(text).getTime();
-  if (!Number.isFinite(ms)) return [];
+  if (!Number.isFinite(ms)) return none;
 
   const explicit = EXPLICIT_OFFSET.exec(text);
   if (explicit) {
     const offsetMs = explicit[1]
       ? (explicit[1] === '-' ? -1 : 1) * (Number(explicit[2]) * 60 + Number(explicit[3])) * 60_000
       : 0;
-    return [{ ms, offsetMs }];
+    return { candidates: [{ ms, offsetMs }], explicit: true };
   }
 
   const candidates: InstantCandidate[] = [{ ms, offsetMs: localOffsetMs(ms) }];
@@ -75,12 +82,15 @@ function timestampCandidates(raw: unknown): InstantCandidate[] {
   if (laterMs + localOffsetMs(laterMs) === ms + localOffsetMs(ms)) {
     candidates.push({ ms: laterMs, offsetMs: localOffsetMs(laterMs) });
   }
-  return candidates;
+  return { candidates, explicit: false };
 }
 
 interface Run {
   startMs: number;
+  /** Slot prices; NaN placeholders mark a hole awaiting a forward fill. */
   values: number[];
+  /** Holes [index, index + count) to fill from the `count` slots right after them. */
+  forwardFills: Array<{ index: number; count: number }>;
 }
 
 function runEndMs(run: Run): number {
@@ -88,44 +98,77 @@ function runEndMs(run: Run): number {
 }
 
 /**
+ * Resolve forward fills once the walk is done. A hole whose source slots never
+ * arrived (the run ended first) cuts the run at the hole, and any slot that is
+ * still not a finite price cuts it there too, so no placeholder escapes.
+ */
+function finalizeRun(run: Run): void {
+  for (const { index, count } of run.forwardFills) {
+    if (index + 2 * count > run.values.length) {
+      run.values.length = index;
+      break;
+    }
+    for (let i = 0; i < count; i++) run.values[index + i] = run.values[index + count + i];
+  }
+  const firstInvalid = run.values.findIndex(v => !Number.isFinite(v));
+  if (firstInvalid !== -1) run.values.length = firstInvalid;
+}
+
+/**
  * Convert HA price points into a contiguous 15-min series, placing each point
  * by its timestamp instead of by its position in the list.
  *
- * - Only finite numeric prices are accepted (see parseStrictPrice).
- * - The autumn DST change is resolved: a bare repeated wall-clock time maps to
- *   the occurrence that continues the sequence, and a feed that merged the two
- *   occurrences into one entry (GE-Spot's hourly average does this: 24 entries
- *   for the 25-hour day) has the missing hour filled with that merged entry's
- *   price, since it is the price of that wall-clock hour on both occurrences.
- * - Any other gap, or an invalid price or timestamp, splits the feed into
- *   contiguous runs; an out-of-order, duplicate or overlapping timestamp ends
- *   the feed.
- *   Prices are never shifted onto the wrong slots.
+ * - Only finite numeric prices are accepted (see parseStrictPrice). A point
+ *   with an invalid price or timestamp is dropped, which leaves a hole at its
+ *   time just like an omitted point.
+ * - When every timestamp carries an explicit offset the points are sorted by
+ *   time first (lossless). For bare wall-clock timestamps feed order is
+ *   authoritative: it is what resolves the repeated autumn DST hour, where a
+ *   bare time maps to the occurrence that continues the sequence.
+ * - A feed that merged the two occurrences of the repeated hour into one entry
+ *   (GE-Spot's hourly average does this: 24 entries for the 25-hour day) has
+ *   the missing occurrence filled with that merged entry's price, since it is
+ *   the price of that wall-clock hour on both occurrences.
+ * - Any other hole of at most one feed interval (one dropped hour, the
+ *   documented GE-Spot behaviour on incomplete source data) is bridged by
+ *   carrying the previous price forward, with a warning, so a single missing
+ *   hour costs neither the horizon nor an hour without a plan.
+ * - A larger hole splits the feed into contiguous runs; a duplicate or
+ *   overlapping timestamp (or an out-of-order one in a bare wall-clock feed)
+ *   ends the feed. Prices are never shifted onto the wrong slots.
  *
- * A clean feed returns its single run unchanged. A defective feed returns the
- * run that covers `nowMs` (truncated at the next defect), or null when no run
- * covers now, so the caller keeps the previously stored prices.
+ * A clean feed returns its single run unchanged, unless that run starts after
+ * the current slot: then null, so the caller keeps the previously stored
+ * prices instead of replacing them with a series the planner refuses. A
+ * defective feed returns the run that covers the current slot, or null when no
+ * run covers it.
  */
 export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOptions): TimeSeries | null {
   const slotsPerPoint = opts.interval === 60 ? 4 : 1;
   const pointMs = slotsPerPoint * SLOT_MS;
 
+  let defects = 0;
+  const parsed: Array<{ price: number; candidates: InstantCandidate[]; explicit: boolean }> = [];
+  for (const point of points) {
+    const rawPrice = parseStrictPrice(point?.[opts.valueKey]);
+    const { candidates, explicit } = parseTimestamp(point?.[opts.timeKey]);
+    if (rawPrice === null || candidates.length === 0) {
+      defects++;
+      continue;
+    }
+    parsed.push({ price: rawPrice * opts.multiplier, candidates, explicit });
+  }
+  if (parsed.length > 0 && parsed.every(p => p.explicit)) {
+    // Stable sort: equal timestamps keep feed order and are caught as duplicates.
+    parsed.sort((a, b) => a.candidates[0].ms - b.candidates[0].ms);
+  }
+
   const runs: Run[] = [];
   let run: Run | null = null;
   let lastMs: number | null = null;
   let lastOffsetMs = 0;
-  let defects = 0;
 
-  for (const point of points) {
-    const rawPrice = parseStrictPrice(point?.[opts.valueKey]);
-    const candidates = timestampCandidates(point?.[opts.timeKey]);
-    if (rawPrice === null || candidates.length === 0) {
-      defects++;
-      run = null;
-      continue;
-    }
-    const price = rawPrice * opts.multiplier;
-
+  for (const { price, candidates } of parsed) {
     const expectedMs: number = run ? runEndMs(run) : NaN;
     const chosen: InstantCandidate = candidates.find(c => c.ms === expectedMs)
       ?? candidates.find(c => lastMs === null || c.ms >= lastMs + pointMs)
@@ -142,20 +185,37 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
       const holeMs = chosen.ms - expectedMs;
       const holeSlots = holeMs / SLOT_MS;
       // lastMs is non-null whenever a run is open.
-      const wallStepMs = (chosen.ms + chosen.offsetMs) - (lastMs! + lastOffsetMs);
-      const isMergedFallBackHour = wallStepMs === pointMs
+      const prevMs = lastMs!;
+      const wallStepMs = (chosen.ms + chosen.offsetMs) - (prevMs + lastOffsetMs);
+      const fillable = Number.isInteger(holeSlots) && holeSlots <= run.values.length;
+      const isMergedFallBackHour = fillable
+        && wallStepMs === pointMs
         && holeMs === lastOffsetMs - chosen.offsetMs
-        && holeMs <= HOUR_MS
-        && Number.isInteger(holeSlots)
-        && holeSlots <= run.values.length;
+        && holeMs <= HOUR_MS;
+      const hole = { from: new Date(expectedMs).toISOString(), to: new Date(chosen.ms).toISOString() };
       if (isMergedFallBackHour) {
-        // The hole is the second occurrence of the wall-clock time just
-        // covered: repeat those slots' prices.
-        run.values.push(...run.values.slice(-holeSlots));
-        console.log('[ha-price] Filled the repeated DST hour merged by the price feed', {
-          from: new Date(expectedMs).toISOString(),
-          to: new Date(chosen.ms).toISOString(),
-        });
+        // The hole is one occurrence of the merged wall-clock hour. Usually
+        // (Python fold=0, as GE-Spot stamps it) the merged entry carries the
+        // first occurrence's offset and the hole is the second: repeat the
+        // slots just covered. A feed stamped with the second occurrence's
+        // offset leaves the first one open instead: fill it from the merged
+        // entry's slots, which follow the hole. The offsets alone cannot tell
+        // the two apart; the server time zone can when it agrees with the
+        // feed's offsets (otherwise the fold=0 reading is kept).
+        const tzAgrees = localOffsetMs(prevMs) === lastOffsetMs && localOffsetMs(chosen.ms) === chosen.offsetMs;
+        const holeIsFirstOccurrence = tzAgrees
+          && expectedMs + localOffsetMs(expectedMs) === chosen.ms + chosen.offsetMs;
+        if (holeIsFirstOccurrence) {
+          run.forwardFills.push({ index: run.values.length, count: holeSlots });
+          for (let i = 0; i < holeSlots; i++) run.values.push(NaN);
+        } else {
+          run.values.push(...run.values.slice(-holeSlots));
+        }
+        console.log('[ha-price] Filled the repeated DST hour merged by the price feed', hole);
+      } else if (fillable && holeMs <= pointMs) {
+        const previous = run.values[run.values.length - 1];
+        for (let i = 0; i < holeSlots; i++) run.values.push(previous);
+        console.warn('[ha-price] Price feed is missing one interval; carrying the previous price forward', hole);
       } else {
         defects++;
         run = null;
@@ -163,7 +223,7 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
     }
 
     if (!run) {
-      run = { startMs: chosen.ms, values: [] };
+      run = { startMs: chosen.ms, values: [], forwardFills: [] };
       runs.push(run);
     }
     for (let i = 0; i < slotsPerPoint; i++) run.values.push(price);
@@ -171,23 +231,42 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
     lastOffsetMs = chosen.offsetMs;
   }
 
+  for (const r of runs) finalizeRun(r);
+  const usable = runs.filter(r => r.values.length > 0);
+
   const toSeries = (r: Run): TimeSeries => ({
     start: new Date(r.startMs).toISOString(),
     step: SLOT_MINUTES,
     values: r.values,
   });
-  const describeRuns = () => runs.map(r => ({
+  const describeRuns = () => usable.map(r => ({
     start: new Date(r.startMs).toISOString(),
     end: new Date(runEndMs(r)).toISOString(),
   }));
 
-  if (runs.length === 0) {
+  if (usable.length === 0) {
     console.warn('[ha-price] No valid price points in the sensor attributes');
     return null;
   }
-  if (defects === 0) return toSeries(runs[0]);
 
-  const current = runs.find(r => r.startMs <= opts.nowMs && opts.nowMs < runEndMs(r));
+  // The planner's window starts at the current slot (config-builder).
+  const windowStartMs = Math.floor(opts.nowMs / SLOT_MS) * SLOT_MS;
+
+  if (defects === 0 && usable.length === 1) {
+    const only = usable[0];
+    if (only.startMs > windowStartMs) {
+      // The planner refuses a price series that starts after its window; keep
+      // the stored prices (which may still cover now) instead.
+      console.warn('[ha-price] Price feed starts after the current slot; keeping previous prices', {
+        now: new Date(windowStartMs).toISOString(),
+        start: new Date(only.startMs).toISOString(),
+      });
+      return null;
+    }
+    return toSeries(only);
+  }
+
+  const current = usable.find(r => r.startMs <= windowStartMs && windowStartMs < runEndMs(r));
   if (!current) {
     console.warn('[ha-price] Price feed has gaps or invalid entries and no contiguous run covers now; keeping previous prices', {
       runs: describeRuns(),
@@ -241,9 +320,9 @@ export async function fetchPricesFromHA(settings: Settings): Promise<{ importPri
       return null;
     }
 
-    // Combine today + tomorrow (tomorrow may be empty before ~14:00). Feed
-    // order is authoritative: it is what resolves a bare wall-clock timestamp
-    // in the repeated autumn DST hour.
+    // Combine today + tomorrow (tomorrow may be empty before ~14:00).
+    // pricePointsToSeries sorts explicit-offset timestamps itself; for bare
+    // wall-clock ones feed order is what resolves the repeated DST hour.
     const allPrices = [...todayPrices];
     if (Array.isArray(tomorrowPrices) && tomorrowPrices.length > 0) {
       allPrices.push(...tomorrowPrices);
