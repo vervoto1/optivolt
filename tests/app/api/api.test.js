@@ -17,6 +17,7 @@ import {
   fetchPredictionConfig,
   savePredictionConfig,
   runValidation,
+  checkPredictionSensors,
   runLoadForecast,
   runPvForecast,
   runCombinedForecast,
@@ -145,6 +146,14 @@ describe('api.js wrappers', () => {
     postJson.mockResolvedValue({ results: [] });
     await runValidation();
     expect(postJson).toHaveBeenCalledWith('/predictions/validate', {});
+  });
+
+  it('checkPredictionSensors posts the editors\' lists (or nothing) to the sensor check', async () => {
+    postJson.mockResolvedValue({ reachable: true, sensors: [], derived: [] });
+    await checkPredictionSensors({ sensors: [] });
+    expect(postJson).toHaveBeenCalledWith('/predictions/sensors/check', { sensors: [] });
+    await checkPredictionSensors();
+    expect(postJson).toHaveBeenLastCalledWith('/predictions/sensors/check', {});
   });
 
   it('runLoadForecast calls postJson', async () => {

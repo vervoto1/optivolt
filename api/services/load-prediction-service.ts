@@ -15,10 +15,26 @@ import {
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
 import type { DayFilter, Aggregation, PredictConfig, PredictIndex, PredictTarget } from '../../lib/load-predictor-historical.ts';
+import {
+  buildTemperatureAnchors,
+  computeDayMeanTemps,
+  computeEffectiveDayTemps,
+  generateTemperatureConfigs,
+  predictTemperatureLoad,
+  predictTemperatureLoadRolling,
+  summarizeTemperatureDays,
+  temperaturePastDays,
+  TEMPERATURE_GRID_LOOKBACK_WEEKS,
+} from '../../lib/load-predictor-temperature.ts';
+import type { TemperaturePredictConfig, TemperatureDaySummary } from '../../lib/load-predictor-temperature.ts';
+import { fetchTemperatureSeries } from './open-meteo-client.ts';
+import { hasPvCoordinates } from './pv-coordinates.ts';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { PredictionRunConfig } from '../types.ts';
 import { getForecastTimeRange, buildForecastSeries, computeErrorMetrics, type ForecastSeries, type PredictionResult } from '../../lib/time-series-utils.ts';
 
 export interface ValidationEntry {
+  type: 'historical';
   sensor: string;
   lookbackWeeks: number;
   dayFilter: DayFilter;
@@ -33,11 +49,32 @@ export interface ValidationEntry {
   validationPredictions: PredictionResult[];
 }
 
+/**
+ * A temperature-predictor row of the comparison table. Scored on the hours
+ * the sensor's historical rows share (see `scoreTemperatureOnData`), so its
+ * metrics compare head-to-head with theirs.
+ */
+export interface TemperatureValidationEntry {
+  type: 'temperature';
+  sensor: string;
+  lookbackWeeks: number;
+  dayFilter: DayFilter;
+  bins: number;
+  mae: number;
+  rmse: number;
+  mape: number;
+  n: number;
+  nSkipped: number;
+  validationPredictions: PredictionResult[];
+}
+
 /* v8 ignore start — type-only interface property assignments */
 interface ValidationRunResult {
   sensorNames: string[];
   // v8 ignore next — type-only interface property
-  results: ValidationEntry[];
+  results: Array<ValidationEntry | TemperatureValidationEntry>;
+  /** Why part of the grid was not scored (e.g. temperature rows without coordinates). */
+  warnings: string[];
 }
 /* v8 ignore end */
 
@@ -45,6 +82,8 @@ export interface ForecastRunResult {
   forecast: ForecastSeries;
   recent: PredictionResult[];
   metrics: { mae: number; rmse: number; mape: number; n: number };
+  /** Set when the forecast was (partly) produced by a fallback, e.g. the temperature predictor's historical fallback. */
+  warnings?: string[];
 }
 
 export interface ValidationWindow {
@@ -52,7 +91,8 @@ export interface ValidationWindow {
   end: string;
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
 
 /**
  * WebSocket timeout for the bulk backtest fetches. The 30 s client default was
@@ -131,12 +171,18 @@ interface ValidationHistory {
   weeks: number;
   data: StatRecord[];
   validationWindow: ValidationWindow;
+  /** Effective day temperatures behind the temperature rows; null when that part of the grid was skipped. */
+  temperature: { coordsKey: string; effTemps: Map<string, number> } | null;
 }
 
 let lastValidationHistory: ValidationHistory | null = null;
 
 function historyKey(config: PredictionRunConfig): string {
   return JSON.stringify({ sensors: config.sensors, derived: config.derived });
+}
+
+function coordsKey(config: PredictionRunConfig): string {
+  return JSON.stringify([config.pvConfig?.latitude ?? null, config.pvConfig?.longitude ?? null]);
 }
 
 /** Test hook: forget the history cached by the last `runValidation`. */
@@ -184,8 +230,17 @@ function scoreOnData(
   data: StatRecord[],
   strategies: PredictConfig[],
   validationWindow: ValidationWindow,
-  { includePredictions = false, minCoverage = 0 }: ScoreOptions = {},
+  options: ScoreOptions = {},
 ): ValidationEntry[] {
+  return scoreHistoricalOnData(data, strategies, validationWindow, options).entries;
+}
+
+function scoreHistoricalOnData(
+  data: StatRecord[],
+  strategies: PredictConfig[],
+  validationWindow: ValidationWindow,
+  { includePredictions = false, minCoverage = 0 }: ScoreOptions = {},
+): { entries: ValidationEntry[]; commonHoursBySensor: Map<string, Set<number>> } {
   const windowStart = new Date(validationWindow.start).getTime();
   const windowEnd = new Date(validationWindow.end).getTime();
   const maxLookback = strategies.reduce((max, s) => Math.max(max, s.lookbackWeeks), 0);
@@ -211,11 +266,12 @@ function scoreOnData(
     commonHoursBySensor.set(cfg.sensor, common ? new Set([...common].filter(t => own.has(t))) : own);
   }
 
-  return predicted.map(({ cfg, predictions, own, covered }) => {
+  const entries = predicted.map(({ cfg, predictions, own, covered }): ValidationEntry => {
     const hours = covered ? commonHoursBySensor.get(cfg.sensor)! : own;
     const metrics = validate(predictions.filter(p => hours.has(p.time)), validationWindow);
 
     return {
+      type: 'historical',
       sensor: cfg.sensor,
       lookbackWeeks: cfg.lookbackWeeks,
       dayFilter: cfg.dayFilter,
@@ -228,6 +284,85 @@ function scoreOnData(
       validationPredictions: includePredictions ? predictions : [],
     };
   });
+  return { entries, commonHoursBySensor };
+}
+
+/**
+ * Score temperature strategies against already-fetched history, rolling the
+ * anchors per scored day (`predictTemperatureLoadRolling`) so a day never
+ * feeds its own anchors.
+ *
+ * Hour basis: when `historicalHoursBySensor` is given (the comparison run), a
+ * row is scored on the hours its sensor's historical rows share, intersected
+ * with the hours it could predict itself. The historical rows — and so every
+ * number the table showed before temperature rows existed — are left exactly
+ * as they were, and a temperature row that covers the whole basis has the
+ * same `n` as the historical rows it is ranked against. A row that could not
+ * predict some of those hours (a day without a temperature, too few days for
+ * an anchor) shows a smaller `n` instead of shrinking anyone else's.
+ */
+function scoreTemperatureOnData(
+  data: StatRecord[],
+  strategies: TemperaturePredictConfig[],
+  effTemps: Map<string, number>,
+  validationWindow: ValidationWindow,
+  historicalHoursBySensor: Map<string, Set<number>> | null,
+  { includePredictions = false }: { includePredictions?: boolean } = {},
+): TemperatureValidationEntry[] {
+  const windowStart = new Date(validationWindow.start).getTime();
+  const windowEnd = new Date(validationWindow.end).getTime();
+  const bySensor = new Map<string, { targets: PredictTarget[]; summaries: Map<string, TemperatureDaySummary> }>();
+
+  return strategies.map((cfg): TemperatureValidationEntry => {
+    let entry = bySensor.get(cfg.sensor);
+    if (!entry) {
+      entry = {
+        targets: data.filter(d => d.sensor === cfg.sensor && d.time >= windowStart && d.time < windowEnd),
+        summaries: summarizeTemperatureDays(data, cfg.sensor, effTemps),
+      };
+      bySensor.set(cfg.sensor, entry);
+    }
+    const predictions = predictTemperatureLoadRolling(entry.summaries, cfg, entry.targets, effTemps);
+    const basis = historicalHoursBySensor?.get(cfg.sensor);
+    const scored = predictions.filter(p => p.predicted !== null && (!basis || basis.has(p.time)));
+    const metrics = validate(scored, validationWindow);
+    return {
+      type: 'temperature',
+      sensor: cfg.sensor,
+      lookbackWeeks: cfg.lookbackWeeks,
+      dayFilter: cfg.dayFilter,
+      bins: cfg.bins,
+      mae: metrics.mae,
+      rmse: metrics.rmse,
+      mape: metrics.mape,
+      n: metrics.n,
+      nSkipped: predictions.filter(p => p.predicted === null).length,
+      validationPredictions: includePredictions ? predictions : [],
+    };
+  });
+}
+
+/** Message used whenever the temperature predictor is asked to run without a site location. */
+export const TEMPERATURE_MISSING_COORDINATES_MESSAGE =
+  'the temperature predictor needs the site latitude/longitude (PV forecast settings)';
+
+/**
+ * Effective day temperatures covering `lookbackWeeks` of anchors before every
+ * day from `fromMs` on, through `forecastDays` UTC days from today. Throws
+ * when the site has no coordinates or Open-Meteo fails.
+ */
+async function fetchEffectiveDayTemps(
+  config: PredictionRunConfig,
+  lookbackWeeks: number,
+  fromMs: number,
+  forecastDays: number,
+  nowMs: number = Date.now(),
+): Promise<Map<string, number>> {
+  if (!hasPvCoordinates(config.pvConfig)) throw new Error(TEMPERATURE_MISSING_COORDINATES_MESSAGE);
+  const { latitude, longitude } = config.pvConfig!;
+  const extraDays = Math.max(0, Math.ceil((nowMs - fromMs) / DAY_MS));
+  const temps = await fetchTemperatureSeries(latitude, longitude, temperaturePastDays(lookbackWeeks, extraDays), forecastDays);
+  return computeEffectiveDayTemps(computeDayMeanTemps(temps));
 }
 
 /**
@@ -261,10 +396,38 @@ export async function runValidation(config: PredictionRunConfig): Promise<Valida
   const validationWindow = config.validationWindow!;
   const weeks = fetchHorizonWeeks(DEFAULT_LOOKBACK_WEEKS, validationWindow);
   const data = await fetchHistory(config, weeks);
-  lastValidationHistory = { key: historyKey(config), weeks, data, validationWindow };
   const sensorNames = getSensorNames(data);
-  const results = scoreOnData(data, generateAllConfigs(sensorNames), validationWindow);
-  return { sensorNames, results };
+  const { entries, commonHoursBySensor } = scoreHistoricalOnData(data, generateAllConfigs(sensorNames), validationWindow);
+
+  // Temperature rows are evaluation only: they never reach the live forecast
+  // or the auto-selector. Without coordinates, or when Open-Meteo fails, the
+  // table keeps its historical rows and says why the rest is missing.
+  const warnings: string[] = [];
+  let temperatureRows: TemperatureValidationEntry[] = [];
+  let temperature: ValidationHistory['temperature'] = null;
+  if (sensorNames.length > 0) {
+    try {
+      const maxLookback = Math.max(...TEMPERATURE_GRID_LOOKBACK_WEEKS);
+      const effTemps = await fetchEffectiveDayTemps(config, maxLookback, new Date(validationWindow.start).getTime(), 2);
+      temperature = { coordsKey: coordsKey(config), effTemps };
+      // One sensor at a time, yielding in between: the 64-config rolling grid
+      // is synchronous work on the process that also drives MQTT, and per
+      // sensor it stays a short block instead of one long one.
+      for (const sensor of sensorNames) {
+        temperatureRows.push(...scoreTemperatureOnData(
+          data, generateTemperatureConfigs([sensor]), effTemps, validationWindow, commonHoursBySensor,
+        ));
+        await yieldToEventLoop();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[predict] temperature strategies skipped:', message);
+      warnings.push(`Temperature strategies skipped: ${message}`);
+    }
+  }
+
+  lastValidationHistory = { key: historyKey(config), weeks, data, validationWindow, temperature };
+  return { sensorNames, results: [...entries, ...temperatureRows], warnings };
 }
 
 /**
@@ -298,6 +461,151 @@ export async function scoreStrategyPredictions(
   const validationWindow = config.validationWindow!;
   const [entry] = await scoreStrategies(config, [strategy], validationWindow, { includePredictions: true });
   return { strategy, validationPredictions: entry.validationPredictions };
+}
+
+/**
+ * Per-hour actual vs predicted for one temperature strategy over the
+ * comparison window — the temperature counterpart of
+ * `scoreStrategyPredictions`, served from the last comparison run's history
+ * and temperatures when they match, refetched otherwise.
+ */
+export async function scoreTemperatureStrategyPredictions(
+  config: PredictionRunConfig,
+  strategy: TemperaturePredictConfig,
+): Promise<{ strategy: TemperaturePredictConfig; validationPredictions: PredictionResult[] }> {
+  const cached = lastValidationHistory;
+  if (
+    cached?.temperature &&
+    cached.key === historyKey(config) &&
+    cached.temperature.coordsKey === coordsKey(config) &&
+    strategy.lookbackWeeks <= Math.max(...TEMPERATURE_GRID_LOOKBACK_WEEKS) &&
+    fetchHorizonWeeks([strategy.lookbackWeeks], cached.validationWindow) <= cached.weeks
+  ) {
+    const [entry] = scoreTemperatureOnData(
+      cached.data, [strategy], cached.temperature.effTemps, cached.validationWindow, null, { includePredictions: true },
+    );
+    return { strategy, validationPredictions: entry.validationPredictions };
+  }
+  const validationWindow = config.validationWindow!;
+  const weeks = fetchHorizonWeeks([strategy.lookbackWeeks], validationWindow);
+  const entityIds = entityIdsForSensors(config.sensors, config.derived, [strategy.sensor]);
+  const [data, effTemps] = await Promise.all([
+    fetchHistory(config, weeks, entityIds),
+    fetchEffectiveDayTemps(config, strategy.lookbackWeeks, new Date(validationWindow.start).getTime(), 2),
+  ]);
+  const [entry] = scoreTemperatureOnData(data, [strategy], effTemps, validationWindow, null, { includePredictions: true });
+  return { strategy, validationPredictions: entry.validationPredictions };
+}
+
+/** Hourly targets from the current hour up to `endMs` (the forecast horizon). */
+function buildFutureTargets(nowMs: number, endMs: number): PredictTarget[] {
+  const targets: PredictTarget[] = [];
+  for (let t = Math.floor(nowMs / 3600000) * 3600000; t < endMs; t += 3600000) {
+    const d = new Date(t);
+    targets.push({ date: d.toISOString(), time: t, hour: d.getUTCHours(), dayOfWeek: d.getUTCDay(), value: null });
+  }
+  return targets;
+}
+
+/**
+ * Live load forecast from the temperature predictor (opt-in: only when the
+ * user set `activeType: 'temperature'`).
+ *
+ * The forecast feeds the LP every auto-calculate tick, so this never hands
+ * back a worse series than the historical predictor would:
+ *   - no site coordinates, Open-Meteo down, or no anchor for any forecast
+ *     hour → the whole forecast comes from `historicalPredictor`;
+ *   - some forecast hours without a temperature prediction → those hours
+ *     come from `historicalPredictor` (never a silent 0 W);
+ * each with a `warnings` entry and a log line. Without a historical
+ * predictor to fall back on it throws instead, and the caller keeps the
+ * previous series — the same outcome as any other failed forecast.
+ * An HA failure throws exactly like the historical path.
+ *
+ * Recent accuracy is out of sample: anchors are rebuilt per scored day with
+ * the cutoff at that day's start.
+ */
+async function runTemperatureForecast(config: PredictionRunConfig): Promise<ForecastRunResult> {
+  const { temperaturePredictor: tp, historicalPredictor: hp, haUrl, haToken, sensors, derived } = config;
+  if (!tp) throw new Error('temperaturePredictor is required for the temperature activeType');
+
+  const fallback = async (reason: string): Promise<ForecastRunResult> => {
+    if (!hp?.sensor) {
+      throw new Error(`Temperature load forecast unavailable (${reason}) and no historical predictor is configured to fall back on`);
+    }
+    console.warn(`[predict] temperature load forecast fell back to the historical predictor: ${reason}`);
+    const result = await runHistoricalForecast(config);
+    return { ...result, warnings: [`Temperature forecast unavailable (${reason}); the historical predictor was used instead`] };
+  };
+
+  const includeRecent = config.includeRecent !== false;
+  const extraWeeks = includeRecent ? 1 : 0;
+  const nowMs = Date.now();
+  const { startIso, endIso } = getForecastTimeRange(nowMs);
+  const futureEnd = new Date(endIso).getTime();
+  const futureTargets = buildFutureTargets(nowMs, futureEnd);
+  const todayStartUtc = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  // +1: the last local day of the horizon ends after the UTC day it starts in.
+  const forecastDays = Math.max(2, Math.ceil((futureEnd - todayStartUtc) / DAY_MS) + 1);
+
+  const entityIds = entityIdsForSensors(sensors, derived, [tp.sensor]);
+  const startTime = new Date(nowMs - (tp.lookbackWeeks + extraWeeks) * WEEK_MS).toISOString();
+  const [rawRes, tempRes] = await Promise.allSettled([
+    fetchHaStats({ haUrl, haToken, entityIds, startTime }),
+    fetchEffectiveDayTemps(config, tp.lookbackWeeks, nowMs - extraWeeks * WEEK_MS, forecastDays, nowMs),
+  ]);
+  if (rawRes.status === 'rejected') throw rawRes.reason;
+  if (tempRes.status === 'rejected') {
+    return fallback(tempRes.reason instanceof Error ? tempRes.reason.message : String(tempRes.reason));
+  }
+
+  const data = postprocess(rawRes.value, sensors, derived);
+  const effTemps = tempRes.value;
+  const model = buildTemperatureAnchors(data, effTemps, tp, nowMs);
+  const future = predictTemperatureLoad(model, tp.dayFilter, futureTargets, effTemps);
+  const missing = future.filter(p => p.predicted === null).length;
+  if (future.length > 0 && missing === future.length) {
+    return fallback('no temperature anchors or forecast temperatures for the forecast window');
+  }
+
+  const warnings: string[] = [];
+  let values = future.map(p => p.predicted);
+  if (missing > 0) {
+    if (!hp?.sensor) {
+      throw new Error(`Temperature load forecast could not predict ${missing} of ${future.length} hours and no historical predictor is configured to fill them`);
+    }
+    // The fetched window already reaches back far enough for the historical
+    // predictor when it predicts the same sensor with no longer a lookback.
+    const histData = hp.sensor === tp.sensor && hp.lookbackWeeks <= tp.lookbackWeeks + extraWeeks
+      ? data
+      : postprocess(await fetchHaStats({
+        haUrl,
+        haToken,
+        entityIds: entityIdsForSensors(sensors, derived, [hp.sensor]),
+        startTime: new Date(nowMs - hp.lookbackWeeks * WEEK_MS).toISOString(),
+      }), sensors, derived);
+    const hist = predict(histData, hp, futureTargets);
+    values = values.map((v, i) => v ?? hist[i].predicted);
+    const message = `${missing} of ${future.length} forecast hours had no temperature prediction; the historical predictor filled them`;
+    console.warn(`[predict] ${message}`);
+    warnings.push(message);
+  }
+
+  const forecast = buildForecastSeries(
+    futureTargets.map((t, i) => ({ time: t.time, value: values[i] ?? 0 })),
+    startIso,
+    endIso,
+  );
+
+  let recent: PredictionResult[] = [];
+  if (includeRecent) {
+    const recentStart = nowMs - WEEK_MS;
+    const recentTargets = data.filter(d => d.sensor === tp.sensor && d.time >= recentStart && d.time <= nowMs);
+    recent = predictTemperatureLoadRolling(summarizeTemperatureDays(data, tp.sensor, effTemps), tp, recentTargets, effTemps);
+  }
+  const metrics = computeErrorMetrics(recent, r => r.actual, r => r.predicted);
+
+  return { forecast, recent, metrics, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 /**
@@ -345,6 +653,14 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
     const metrics = computeErrorMetrics(recent, r => r.actual, r => r.predicted);
     return { forecast, recent, metrics };
   }
+
+  if (activeType === 'temperature') return runTemperatureForecast(config);
+  return runHistoricalForecast(config);
+}
+
+/** Live load forecast from `historicalPredictor` (also the temperature predictor's fallback). */
+async function runHistoricalForecast(config: PredictionRunConfig): Promise<ForecastRunResult> {
+  const { historicalPredictor, haUrl, haToken, sensors, derived } = config;
 
   // Every cycle refetches lookbackWeeks + 1 weeks; only the entities behind
   // the predicted sensor are needed (merge- and derived-aware).

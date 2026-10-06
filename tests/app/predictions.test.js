@@ -248,6 +248,32 @@ describe('predictions.js', () => {
     expect(loadStatus.textContent).toContain('Error');
   });
 
+  it('shows a forecast that fell back (temperature → historical) in amber with the reason', async () => {
+    fetchPredictionConfig.mockResolvedValue({});
+    runCombinedForecast.mockResolvedValue({
+      load: {
+        forecast: { start: '2024-01-15T00:00:00Z', step: 15, values: Array(96).fill(500) },
+        recent: [],
+        metrics: { mae: NaN },
+        warnings: ['Temperature forecast unavailable (Open-Meteo down); the historical predictor was used instead'],
+      },
+      pv: null,
+    });
+    fetchStoredSettings.mockResolvedValue({});
+    fetchPlanAccuracy.mockResolvedValue({ report: null });
+    fetchCalibration.mockResolvedValue({ calibration: null });
+
+    vi.resetModules();
+    const { initPredictionsTab } = await import('../../app/src/predictions.js');
+    const promise = initPredictionsTab();
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const loadStatus = document.getElementById('load-summary-status');
+    expect(loadStatus.textContent).toBe('Load forecast updated: Temperature forecast unavailable (Open-Meteo down); the historical predictor was used instead');
+    expect(loadStatus.className).toContain('text-amber-600');
+  });
+
   it('handles null forecast results', async () => {
     fetchPredictionConfig.mockResolvedValue({});
     savePredictionConfig.mockResolvedValue({});

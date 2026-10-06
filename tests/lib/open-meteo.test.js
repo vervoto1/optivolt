@@ -6,6 +6,8 @@ import {
   parseMinutely15Response,
   parseForecastResponse,
   expandHourlyTo15Min,
+  buildTemperatureUrl,
+  parseTemperatureResponse,
 } from '../../lib/open-meteo.ts';
 
 // ---------------------------------------------------------------------------
@@ -321,5 +323,53 @@ describe('expandHourlyTo15Min', () => {
 
   it('handles empty input', () => {
     expect(expandHourlyTo15Min([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Temperature (temperature-anchored load predictor)
+// ---------------------------------------------------------------------------
+
+describe('buildTemperatureUrl', () => {
+  it('requests hourly temperature_2m in GMT with the given day counts', () => {
+    const url = buildTemperatureUrl({ latitude: 50.85, longitude: 4.35, pastDays: 65, forecastDays: 3 });
+    expect(url).toBe(
+      'https://api.open-meteo.com/v1/forecast?latitude=50.85&longitude=4.35'
+      + '&hourly=temperature_2m&timezone=GMT&past_days=65&forecast_days=3',
+    );
+    expect(url).not.toContain('models=');
+  });
+
+  it('clamps day counts to the API limits (92 past, 16 forecast)', () => {
+    const url = buildTemperatureUrl({ latitude: 1, longitude: 2, pastDays: 120, forecastDays: 40 });
+    expect(url).toContain('past_days=92');
+    expect(url).toContain('forecast_days=16');
+    const low = buildTemperatureUrl({ latitude: 1, longitude: 2, pastDays: -3, forecastDays: 0 });
+    expect(low).toContain('past_days=0');
+    expect(low).toContain('forecast_days=1');
+  });
+});
+
+describe('parseTemperatureResponse', () => {
+  it('parses GMT-labelled instantaneous temperatures without shifting them', () => {
+    const records = parseTemperatureResponse({
+      hourly: { time: ['2026-01-10T00:00', '2026-01-10T01:00'], temperature_2m: [3.5, -1.25] },
+    });
+    expect(records).toEqual([
+      { time: Date.UTC(2026, 0, 10, 0), temp_C: 3.5 },
+      { time: Date.UTC(2026, 0, 10, 1), temp_C: -1.25 },
+    ]);
+  });
+
+  it('skips null and missing values', () => {
+    const records = parseTemperatureResponse({
+      hourly: { time: ['2026-01-10T00:00', '2026-01-10T01:00', '2026-01-10T02:00'], temperature_2m: [null, 2] },
+    });
+    expect(records).toEqual([{ time: Date.UTC(2026, 0, 10, 1), temp_C: 2 }]);
+  });
+
+  it('throws on a response without hourly temperature data', () => {
+    expect(() => parseTemperatureResponse({})).toThrow('no hourly temperature_2m');
+    expect(() => parseTemperatureResponse({ hourly: { time: [] } })).toThrow('no hourly temperature_2m');
   });
 });

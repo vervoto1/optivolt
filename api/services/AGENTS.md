@@ -20,8 +20,9 @@ Business logic and external integration layer. Orchestrates the full pipeline: d
 | `mqtt-service.ts` | Victron MQTT: read SoC/settings, write Dynamic ESS schedule. Uses env vars `MQTT_HOST`/`PORT`/`USERNAME`/`PASSWORD` |
 | `vrm-refresh.ts` | VRM API integration: refresh settings and timeseries, selective fetch/preserve based on `dataSources` |
 | `ha-client.ts` | Home Assistant WebSocket client for long-term statistics |
-| `open-meteo-client.ts` | Open-Meteo HTTP client for irradiance data |
-| `load-prediction-service.ts` | Load forecasting pipeline: HA data, postprocessing, prediction, validation |
+| `open-meteo-client.ts` | Open-Meteo HTTP client for irradiance and hourly outside temperature |
+| `load-prediction-service.ts` | Load forecasting pipeline: HA data, postprocessing, prediction, validation (historical grid + temperature grid); opt-in temperature forecast with historical fallback |
+| `prediction-sensor-check.ts` | Advisory check of prediction sensor entities against HA (exists, numeric, energy unit, state_class) and of derived formula terms |
 | `pv-prediction-service.ts` | PV forecasting pipeline: HA history + Open-Meteo, capacity estimation, forecast |
 
 ## For AI Agents

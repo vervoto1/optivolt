@@ -105,6 +105,22 @@ describe('runAutoSelect', () => {
     log.mockRestore();
   });
 
+  it('never touches an opted-in temperature predictor: skips without scoring or writing', async () => {
+    // The temperature predictor is opt-in only; auto mode must neither switch
+    // to it nor rewrite the historical fallback behind the user's back.
+    loadSettings.mockResolvedValue(makeSettings({ mode: 'auto', enabled: true }));
+    loadPredictionConfig.mockResolvedValue(makePredConfig({
+      activeType: 'temperature',
+      temperaturePredictor: { sensor: 'Load without EV', lookbackWeeks: 4, dayFilter: 'all', bins: 3 },
+    }));
+    const record = await runAutoSelect({ trigger: 'scheduled' });
+    expect(record.action).toBe('skipped');
+    expect(record.skipReason).toBe('active predictor is "temperature", not historical');
+    expect(scoreStrategies).not.toHaveBeenCalled();
+    expect(updatePredictionConfig).not.toHaveBeenCalled();
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+  });
+
   it('records a skip when the active predictor is not historical, without fetching', async () => {
     loadPredictionConfig.mockResolvedValue(makePredConfig({ activeType: 'fixed' }));
     const record = await runAutoSelect();
@@ -276,6 +292,11 @@ describe('runAutoSelect', () => {
 
     // Same for a sensor change or a switch to the fixed predictor.
     loadPredictionConfig.mockResolvedValueOnce(makePredConfig()).mockResolvedValueOnce(makePredConfig({ activeType: 'fixed' }));
+    expect((await runAutoSelect()).action).toBe('suggested');
+    expect(savePredictionConfig).not.toHaveBeenCalled();
+
+    // …or the user opting into the temperature predictor mid-run.
+    loadPredictionConfig.mockResolvedValueOnce(makePredConfig()).mockResolvedValueOnce(makePredConfig({ activeType: 'temperature' }));
     expect((await runAutoSelect()).action).toBe('suggested');
     expect(savePredictionConfig).not.toHaveBeenCalled();
   });

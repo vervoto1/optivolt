@@ -2,7 +2,9 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError, assertCondition, toHttpError } from '../http-errors.ts';
 import { loadPredictionConfig, updatePredictionConfig } from '../services/prediction-config-store.ts';
-import { normalizePredictionConfigPatch } from '../services/prediction-config-schema.ts';
+import { normalizePredictionConfigPatch, normalizeTemperaturePredictor } from '../services/prediction-config-schema.ts';
+import { runPredictionSensorCheck } from '../services/prediction-sensor-check.ts';
+import type { HaDerivedSensor, HaSensor } from '../../lib/ha-postprocess.ts';
 import { loadSettings } from '../services/settings-store.ts';
 import { runAutoSelect } from '../services/prediction-auto-select.ts';
 import { getLatestAutoSelectRun, loadAutoSelectHistory } from '../services/prediction-auto-select-store.ts';
@@ -19,6 +21,7 @@ import {
   executeLoadForecast,
   executePredictionValidation,
   executeStrategyPredictions,
+  executeTemperatureStrategyPredictions,
   executePvForecast,
   persistForecastData,
   runCombinedPredictionForecast,
@@ -112,15 +115,50 @@ router.post('/validate', async (_req: Request, res: Response, next: NextFunction
   }
 });
 
-/** Per-hour predictions for one strategy (the comparison table's Chart button). */
+/**
+ * Per-hour predictions for one strategy (the comparison table's Chart button).
+ * A body with `type: 'temperature'` is a temperature strategy (sensor,
+ * lookbackWeeks, dayFilter, bins); anything else is a historical one.
+ */
 router.post('/validate/strategy', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Reuse the config validator: a strategy is exactly a historicalPredictor.
-    const { historicalPredictor } = normalizePredictionConfigPatch({ historicalPredictor: req.body ?? {} });
+    // v8 ignore next — null path of ?? is untestable when req.body always exists
+    const body: unknown = req.body ?? {};
+    if (typeof body === 'object' && body !== null && (body as { type?: unknown }).type === 'temperature') {
+      const strategy = normalizeTemperaturePredictor(body, 'strategy');
+      const config = await buildPredictionRunConfig();
+      res.json(await executeTemperatureStrategyPredictions(config, strategy));
+      return;
+    }
+    // Reuse the config validator: a historical strategy is exactly a historicalPredictor.
+    const { historicalPredictor } = normalizePredictionConfigPatch({ historicalPredictor: body });
     const config = await buildPredictionRunConfig();
     res.json(await executeStrategyPredictions(config, historicalPredictor as PredictConfig));
   } catch (error) {
     next(error instanceof HttpError ? error : toHttpError(error, 500, 'Validation failed'));
+  }
+});
+
+// ----------------------------- Sensor check -------------------------------
+
+/**
+ * Check sensor entities against Home Assistant and derived formulas against
+ * the sensor names. Read-only and advisory: it never saves anything, and an
+ * unreachable HA comes back as `reachable: false` with a 200 (the UI warns,
+ * it does not block). The body may carry the editor's unsaved `sensors` /
+ * `derived`; whatever it omits comes from the stored config.
+ */
+router.post('/sensors/check', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // v8 ignore next — null path of ?? is untestable when req.body always exists
+    const body: unknown = req.body ?? {};
+    const patch = normalizePredictionConfigPatch(body);
+    const config = await buildPredictionRunConfig();
+    const sensors = (patch.sensors ?? config.sensors ?? []) as HaSensor[];
+    const derived = (patch.derived ?? config.derived ?? []) as HaDerivedSensor[];
+    res.json(await runPredictionSensorCheck({ haUrl: config.haUrl ?? '', haToken: config.haToken ?? '' }, sensors, derived));
+  } catch (error) {
+    next(error instanceof HttpError ? error : toHttpError(error, 500, 'Sensor check failed'));
   }
 });
 

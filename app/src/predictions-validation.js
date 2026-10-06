@@ -23,9 +23,9 @@ let chartCache = new Map();
 /** Bumped per Chart click; a response for an older click is dropped. */
 let chartRequestSeq = 0;
 
-export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, setComparisonStatus, getHighlights, assertCanSave }) {
+export function initValidation({ readFormValues, renderHistoricalConfig, renderLoadConfig, applyTemperatureRow, setComparisonStatus, getHighlights, assertCanSave }) {
   const renderFn = renderHistoricalConfig ?? renderLoadConfig;
-  const deps = { readFormValues, renderHistoricalConfig: renderFn, setComparisonStatus, getHighlights, assertCanSave };
+  const deps = { readFormValues, renderHistoricalConfig: renderFn, applyTemperatureRow, setComparisonStatus, getHighlights, assertCanSave };
   const runBtn = document.getElementById('pred-run-validation');
   if (runBtn) {
     runBtn.addEventListener('click', () => onRunValidation(deps));
@@ -45,9 +45,31 @@ export function rerenderTable(deps) {
 
 // The comparison table renders one tab per sensor, so a strategy only matches a
 // row when the sensor matches too — otherwise the same 8w/all/median row gets
-// badged "active"/"best" on every sensor's tab.
+// badged "active"/"best" on every sensor's tab. Rows (and strategies) without a
+// type are historical; a temperature row matches on its bin count instead of
+// an aggregation.
 function sameStrategy(row, strategy) {
-  return isSameStrategy(row, strategy) && row.sensor === strategy.sensor;
+  if (!row || !strategy || row.sensor !== strategy.sensor) return false;
+  const rowType = row.type ?? 'historical';
+  if (rowType !== (strategy.type ?? 'historical')) return false;
+  if (rowType === 'temperature') {
+    return row.lookbackWeeks === strategy.lookbackWeeks && row.dayFilter === strategy.dayFilter && row.bins === strategy.bins;
+  }
+  return isSameStrategy(row, strategy);
+}
+
+function isTemperatureRow(row) {
+  return row.type === 'temperature';
+}
+
+/** The type-specific parameter column: the aggregation, or a temperature row's bin count. */
+function rowParams(row) {
+  return isTemperatureRow(row) ? `${row.bins} bins` : row.aggregation;
+}
+
+/** "Load / temperature / 4w / all / 3 bins" — for status lines and the chart title. */
+function describeRow(row) {
+  return `${row.sensor} / ${row.type ?? 'historical'} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${rowParams(row)}`;
 }
 
 function badge(label, tone) {
@@ -87,7 +109,13 @@ async function onRunValidation(deps) {
       validationResults = result;
       chartCache = new Map();
       renderResults(result, deps);
-      setComparisonStatus(`Validation complete — ${result.results.length} combinations evaluated`);
+      const warnings = result.warnings ?? [];
+      const done = `Validation complete — ${result.results.length} combinations evaluated`;
+      if (warnings.length > 0) {
+        setComparisonStatus(`${done} (${warnings.join('; ')})`, true);
+      } else {
+        setComparisonStatus(done);
+      }
     } catch (err) {
       setComparisonStatus(`Error: ${err.message}`, true);
     }
@@ -178,9 +206,10 @@ function renderMetricsTable(results, sensorName, deps) {
     tr.className = 'border-t border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-slate-800/50';
     tr.hidden = !showAllRows && index >= TOP_ROWS && !isActive && !isBest;
     tr.innerHTML = `
+      <td class="px-3 py-2 text-xs">${isTemperatureRow(row) ? 'temperature' : 'historical'}</td>
       <td class="px-3 py-2 font-mono text-xs whitespace-nowrap">${row.lookbackWeeks}w${isActive ? badge('active', ACTIVE_BADGE) : ''}${isBest ? badge('best', BEST_BADGE) : ''}</td>
       <td class="px-3 py-2 text-xs">${row.dayFilter}</td>
-      <td class="px-3 py-2 text-xs">${row.aggregation}</td>
+      <td class="px-3 py-2 text-xs">${rowParams(row)}</td>
       <td class="px-3 py-2 font-mono text-xs text-right">${isNaN(row.mae) ? '—' : row.mae.toFixed(1)}</td>
       <td class="px-3 py-2 font-mono text-xs text-right">${isNaN(row.rmse) ? '—' : row.rmse.toFixed(1)}</td>
       <td class="px-3 py-2 font-mono text-xs text-right">${isNaN(row.mape) ? '—' : row.mape.toFixed(1)}</td>
@@ -211,6 +240,7 @@ function renderMetricsTable(results, sensorName, deps) {
 }
 
 async function onUseConfig(row, deps) {
+  if (isTemperatureRow(row)) return onUseTemperatureRow(row, deps);
   const { readFormValues, renderHistoricalConfig, setComparisonStatus } = deps;
   const historicalPredictor = {
     sensor: row.sensor,
@@ -233,8 +263,38 @@ async function onUseConfig(row, deps) {
   }
 }
 
+/**
+ * Use on a temperature row switches the live load forecast to the temperature
+ * predictor. That is the only way besides the Predictor Type select: the
+ * auto-selector never picks it.
+ */
+async function onUseTemperatureRow(row, deps) {
+  const { readFormValues, applyTemperatureRow, setComparisonStatus } = deps;
+  try {
+    deps.assertCanSave?.();
+    if (!applyTemperatureRow) throw new Error('temperature predictor is not available in this form');
+    applyTemperatureRow({ sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, bins: row.bins });
+    await savePredictionConfig(readFormValues());
+    setComparisonStatus(
+      `Active config updated: ${describeRow(row)}. The historical strategy stays as its fallback; select Historical to switch back.`,
+    );
+    rerenderTable(deps);
+  } catch (err) {
+    setComparisonStatus(`Failed to save active config: ${err.message}`, true);
+  }
+}
+
 function chartKey(row) {
-  return `${row.sensor}|${row.lookbackWeeks}|${row.dayFilter}|${row.aggregation}`;
+  return isTemperatureRow(row)
+    ? `temperature|${row.sensor}|${row.lookbackWeeks}|${row.dayFilter}|${row.bins}`
+    : `${row.sensor}|${row.lookbackWeeks}|${row.dayFilter}|${row.aggregation}`;
+}
+
+/** Request body for the Chart button: the row's strategy, in the shape the route validates. */
+function chartRequest(row) {
+  return isTemperatureRow(row)
+    ? { type: 'temperature', sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, bins: row.bins }
+    : { sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, aggregation: row.aggregation };
 }
 
 /**
@@ -258,12 +318,7 @@ async function onShowChart(row, deps) {
     setRunButtonsDisabled(true);
     try {
       deps.setComparisonStatus?.('Loading chart…');
-      ({ validationPredictions: preds = [] } = await fetchStrategyPredictions({
-        sensor: row.sensor,
-        lookbackWeeks: row.lookbackWeeks,
-        dayFilter: row.dayFilter,
-        aggregation: row.aggregation,
-      }));
+      ({ validationPredictions: preds = [] } = await fetchStrategyPredictions(chartRequest(row)));
       if (seq !== chartRequestSeq) return;
       chartCache.set(key, preds);
       deps.setComparisonStatus?.('');
@@ -404,6 +459,8 @@ function renderAccuracyCharts(row, preds) {
 
   const title = document.getElementById('pred-chart-title');
   if (title) {
-    title.textContent = `Accuracy: ${row.sensor} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.aggregation}`;
+    title.textContent = isTemperatureRow(row)
+      ? `Accuracy: ${describeRow(row)}`
+      : `Accuracy: ${row.sensor} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.aggregation}`;
   }
 }

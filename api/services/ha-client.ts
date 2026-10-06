@@ -81,14 +81,19 @@ interface FetchHaCredentials {
  * sensors on a poll loop. The caller indexes the result by entity id; ids that
  * are absent simply have no entry (per-entity tolerance for entity-id drift).
  */
-export async function fetchHaEntityStates({ haUrl, haToken }: FetchHaCredentials): Promise<HaEntityState[]> {
+export async function fetchHaEntityStates(
+  { haUrl, haToken, timeoutMs }: FetchHaCredentials & { timeoutMs?: number },
+): Promise<HaEntityState[]> {
   const cfg = resolveHaHttpConfig(haUrl, haToken);
   if (!cfg) {
     throw new Error('Home Assistant connection is not configured');
   }
 
+  // No deadline unless the caller asks for one (the existing poll loops rely
+  // on the old behaviour); an on-demand UI check must not hang on a dead HA.
   const res = await fetch(`${cfg.baseUrl}/api/states`, {
     headers: { Authorization: `Bearer ${cfg.token}` },
+    ...(timeoutMs !== undefined ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
 
   if (!res.ok) {
