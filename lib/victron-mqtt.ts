@@ -105,6 +105,8 @@ export class VictronMqttClient {
   private _clientPromise: Promise<MqttClient> | null;
   private _client: MqttClient | null;
   private _subscriptions: Set<JsonSubscription>;
+  // Clients already dropped by _evict(), so one stall is logged and ended only once.
+  private _evicted: WeakSet<MqttClient>;
 
   constructor({
     host = 'venus.local',
@@ -133,6 +135,7 @@ export class VictronMqttClient {
     this._clientPromise = null;
     this._client = null;
     this._subscriptions = new Set();
+    this._evicted = new WeakSet();
   }
 
   private async _getClient(): Promise<MqttClient> {
@@ -166,6 +169,7 @@ export class VictronMqttClient {
     }
 
     this._client = client;
+    this._evicted.delete(client);
     client.on('error', (err) => {
       console.error('[victron-mqtt] client error:', err.message);
     });
@@ -219,6 +223,8 @@ export class VictronMqttClient {
       this._client = null;
       this._clientPromise = null;
     }
+    if (this._evicted.has(client)) return;
+    this._evicted.add(client);
     client.end(true);
   }
 
@@ -228,7 +234,11 @@ export class VictronMqttClient {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        console.error(`[victron-mqtt] ${label} not acknowledged within ${timeoutMs}ms; dropping connection`);
+        // One stall fails every op queued on the client (a DESS schedule write alone is
+        // hundreds of publishes): log the eviction once per client, reject each op.
+        if (!this._evicted.has(client)) {
+          console.error(`[victron-mqtt] ${label} not acknowledged within ${timeoutMs}ms; dropping connection`);
+        }
         this._evict(client);
         reject(new Error(`Timeout after ${timeoutMs}ms waiting for ${label}`));
       }, timeoutMs);

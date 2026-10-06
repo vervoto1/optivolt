@@ -32,7 +32,10 @@ export interface PvCurtailmentStatus {
   ownsDisable: boolean;
   /** A live disable is recorded on disk and its restore has not been confirmed yet. */
   restorePending: boolean;
-  /** At boot Pv/Disable read 1 although OptiVolt holds no record of disabling it. */
+  /**
+   * Pv/Disable read 1 although OptiVolt holds no record of disabling it (checked at boot,
+   * then re-checked each tick until it reads 0). Only detected while the feature is enabled.
+   */
   externalDisable: boolean;
   lastTickAt: string | null;
   lastWriteAt: string | null;
@@ -52,6 +55,14 @@ export const RESTORE_RETRY_MS = 30_000;
  * unconfirmed restore stays on disk and is retried at the next start.
  */
 export const STOP_RESTORE_TIMEOUT_MS = 2000;
+/**
+ * Give-up bound for the two restore halves that can fail forever without PV being off:
+ * an Enphase switch call that keeps failing (entity renamed, HA down), and a read-back
+ * that never answers after a successful Pv/Disable=0 publish (stale serial or instance
+ * in the record). ~10 min at the 30 s cadence. A read-back that answers 1 is never
+ * given up on: PV really is still off.
+ */
+export const MAX_RESTORE_ATTEMPTS = 20;
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let restoreRetryHandle: ReturnType<typeof setInterval> | null = null;
@@ -69,6 +80,12 @@ let restorePending = false;
 let restoreInFlight: Promise<boolean> | null = null;
 // The owned target whose Pv/Disable=0 has been read back (only the switch may still be pending).
 let victronRestoredFor: PvDisableTarget | null = null;
+// The owned target whose Enphase switch is back on (or was given up on): not retried.
+let switchRestoredFor: PvDisableTarget | null = null;
+// Per-target failure counts toward MAX_RESTORE_ATTEMPTS.
+let attemptsTarget: PvDisableTarget | null = null;
+let switchFailures = 0;
+let unansweredReadbacks = 0;
 let externalDisable = false;
 let lastTickAtMs: number | null = null;
 let lastWriteAtMs: number | null = null;
@@ -140,23 +157,44 @@ export async function reconcilePvCurtailmentAtBoot(): Promise<void> {
     return;
   }
 
+  // Detection needs the feature enabled: with it off the probe would open a Venus MQTT
+  // connection at boot on installs that never use curtailment (the default config ships a
+  // portalId), and time out on systems without an acsystem service.
   const cfg = activeConfig;
   if (!cfg?.enabled || restorePending || ownsDisable) return;
   try {
-    const serial = cfg.portalId || await getVictronSerial();
-    const payload = await readVictronSetting(pvDisablePath(cfg.acsystemInstance), {
-      serial,
-      timeoutMs: RESTORE_READBACK_TIMEOUT_MS,
-    }) as { value?: unknown } | null;
-    if (Number(payload?.value) === 1 && !ownsDisable && !restorePending) {
-      externalDisable = true;
+    await probeUnownedDisable(cfg);
+  } catch (err) {
+    console.warn('[pv-curtailment] could not read Pv/Disable at boot:', (err as Error).message);
+  }
+}
+
+/**
+ * Read Pv/Disable while we hold no record of disabling it. Sets externalDisable when it
+ * reads 1 (warning once per episode) and clears it when it reads 0 again, e.g. after the
+ * user re-enabled PV on the GX. Read-only. Rejects when the read fails.
+ */
+async function probeUnownedDisable(cfg: PvCurtailmentConfig): Promise<void> {
+  const serial = cfg.portalId || await getVictronSerial();
+  const payload = await readVictronSetting(pvDisablePath(cfg.acsystemInstance), {
+    serial,
+    timeoutMs: RESTORE_READBACK_TIMEOUT_MS,
+  }) as { value?: unknown } | null;
+  // Our own disable/restore took over meanwhile: its state wins.
+  if (ownsDisable || restorePending) return;
+  const value = payload?.value;
+  if (value === null || value === undefined) return;
+  if (Number(value) === 1) {
+    if (!externalDisable) {
       console.warn(
         `[pv-curtailment] acsystem/${cfg.acsystemInstance}/Pv/Disable is 1 but OptiVolt holds no record of `
         + 'disabling it; leaving it alone. Re-enable PV on the GX if this is unintended.',
       );
     }
-  } catch (err) {
-    console.warn('[pv-curtailment] could not read Pv/Disable at boot:', (err as Error).message);
+    externalDisable = true;
+  } else if (externalDisable) {
+    externalDisable = false;
+    console.info(`[pv-curtailment] acsystem/${cfg.acsystemInstance}/Pv/Disable reads ${JSON.stringify(value)} again; external disable cleared`);
   }
 }
 
@@ -213,6 +251,10 @@ export function resetPvCurtailmentState(): void {
   restorePending = false;
   restoreInFlight = null;
   victronRestoredFor = null;
+  switchRestoredFor = null;
+  attemptsTarget = null;
+  switchFailures = 0;
+  unansweredReadbacks = 0;
   externalDisable = false;
   tickInFlight = false;
 }
@@ -265,6 +307,11 @@ async function tick(): Promise<void> {
     logGateBlock(decision);
     if (ownsDisable || restorePending) {
       await applyPvDisabled(false, decision, generation);
+    } else if (externalDisable) {
+      // Keep the flag truthful: it clears once PV reads enabled again.
+      await probeUnownedDisable(cfg).catch((err: unknown) => {
+        console.debug('[pv-curtailment] external-disable re-check failed:', (err as Error).message);
+      });
     }
   } finally {
     tickInFlight = false;
@@ -294,10 +341,6 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
   /* v8 ignore next — caller paths only run while activeConfig is set */
   if (!cfg) return;
 
-  if (disabled && ownsDisable) return;
-  /* v8 ignore next — every caller already guards on ownsDisable/restorePending before invoking with disabled=false */
-  if (!disabled && !ownsDisable && !restorePending) return;
-
   const record: PvCurtailmentWriteRecord = {
     ts: new Date().toISOString(),
     disabled,
@@ -309,12 +352,17 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
     remainingGridHeadroom_Wh: decision.remainingGridHeadroom_Wh,
   };
 
-  // A real disable left by a live run is always restored for real, even in dry-run
-  // (which must never keep PV curtailed on the hardware).
-  if (restorePending && !ownsDisable && (!disabled || cfg.dryRun)) {
-    await restoreOwnedPv({ ...record, disabled: false, dryRun: false });
-    if (!disabled) return;
+  // Dry-run must never keep PV curtailed on the hardware: a real disable left by a live
+  // run (restorePending) is restored for real first, before any simulated ownership is
+  // taken — and until that restore is confirmed nothing is simulated, so every tick
+  // retries it (a simulated ownsDisable would otherwise park the loop at the guard below).
+  if (cfg.dryRun && restorePending) {
+    const restored = await restoreOwnedPv({ ...record, disabled: false, dryRun: false });
+    if (!restored) return;
   }
+
+  if (disabled && ownsDisable) return;
+  if (!disabled && !ownsDisable && !restorePending) return;
 
   if (cfg.dryRun) {
     ownsDisable = disabled;
@@ -350,6 +398,15 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
   if (generation !== serviceGeneration) return;
 
   await writeVictronSetting(pvDisablePath(target.acsystemInstance), 1, { serial });
+  // Stopped (or a restore started) while the disable was being published: that restore
+  // now owns the outcome. Leave the record pending and skip the Enphase turn_off, which
+  // would otherwise race the restore's turn_on.
+  if (generation !== serviceGeneration || restoreInFlight) {
+    lastWriteAtMs = Date.now();
+    pushWriteRecord(record);
+    console.warn('[pv-curtailment] stopped while disabling PV; the stop restore takes over', record);
+    return;
+  }
   ownsDisable = true;
   restorePending = false;
   externalDisable = false;
@@ -397,6 +454,11 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
     return true;
   }
   restorePending = true;
+  if (attemptsTarget !== target) {
+    attemptsTarget = target;
+    switchFailures = 0;
+    unansweredReadbacks = 0;
+  }
 
   // A retry that only waits on the Enphase switch does not rewrite Pv/Disable.
   const victronDone = victronRestoredFor === target;
@@ -414,21 +476,45 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
     console.info('[pv-curtailment] Pv/Disable write', record);
   }
 
-  let switchRestored = true;
-  if (target.enphaseSwitchEntity) {
+  // A switch already back on is not turned on again by a retry that only waits on the
+  // read-back (it would override someone switching the inverter off by hand meanwhile).
+  if (target.enphaseSwitchEntity && switchRestoredFor !== target) {
     try {
       await callHaSwitch(target.enphaseSwitchEntity, true);
+      switchRestoredFor = target;
       console.info('[pv-curtailment] Enphase switch toggle', {
         entity: target.enphaseSwitchEntity,
         turnOn: true,
       });
     } catch (err) {
-      switchRestored = false;
-      console.warn('[pv-curtailment] Enphase switch toggle failed:', (err as Error).message);
+      switchFailures += 1;
+      if (switchFailures >= MAX_RESTORE_ATTEMPTS) {
+        switchRestoredFor = target;
+        console.error(
+          `[pv-curtailment] giving up turning ${target.enphaseSwitchEntity} back on after ${switchFailures} failed attempts `
+          + `(${(err as Error).message}); turn it on manually`,
+        );
+      } else {
+        console.warn('[pv-curtailment] Enphase switch toggle failed:', (err as Error).message);
+      }
     }
   }
+  const switchRestored = !target.enphaseSwitchEntity || switchRestoredFor === target;
 
-  if (!victronDone && await confirmPvEnabled(target)) victronRestoredFor = target;
+  if (!victronDone) {
+    const readback = await confirmPvEnabled(target);
+    if (readback === 'enabled') {
+      victronRestoredFor = target;
+    } else if (readback === 'unanswered' && ++unansweredReadbacks >= MAX_RESTORE_ATTEMPTS) {
+      // Every Pv/Disable=0 publish went out, but the read-back never answered (stale
+      // serial/instance in the record, or no N/ reply on this GX): stop retrying.
+      victronRestoredFor = target;
+      console.error(
+        `[pv-curtailment] ${pvDisablePath(target.acsystemInstance)} restore was published ${unansweredReadbacks} times `
+        + 'but never read back; dropping the record. Check PV is enabled on the GX.',
+      );
+    }
+  }
   if (victronRestoredFor !== target || !switchRestored) return false;
 
   try {
@@ -443,19 +529,27 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
   return true;
 }
 
-async function confirmPvEnabled(target: PvDisableTarget): Promise<boolean> {
+/** 'enabled' = read back 0; 'disabled' = answered with anything else; 'unanswered' = no reply. */
+async function confirmPvEnabled(target: PvDisableTarget): Promise<'enabled' | 'disabled' | 'unanswered'> {
   const path = pvDisablePath(target.acsystemInstance);
+  let payload: { value?: unknown } | null;
   try {
-    const payload = await readVictronSetting(path, {
+    payload = await readVictronSetting(path, {
       serial: target.serial,
       timeoutMs: RESTORE_READBACK_TIMEOUT_MS,
     }) as { value?: unknown } | null;
-    if (Number(payload?.value) === 0) return true;
-    console.warn(`[pv-curtailment] ${path} still reads ${JSON.stringify(payload?.value)} after the restore; will retry`);
   } catch (err) {
     console.warn(`[pv-curtailment] could not confirm the PV restore (${path}):`, (err as Error).message);
+    return 'unanswered';
   }
-  return false;
+  const value = payload?.value;
+  if (value === null || value === undefined) {
+    console.warn(`[pv-curtailment] ${path} read back without a value after the restore; will retry`);
+    return 'unanswered';
+  }
+  if (Number(value) === 0) return 'enabled';
+  console.warn(`[pv-curtailment] ${path} still reads ${JSON.stringify(payload?.value)} after the restore; will retry`);
+  return 'disabled';
 }
 
 /** Run the standalone restore retry only while it is needed and the live loop isn't covering it. */

@@ -995,9 +995,26 @@ describe('VictronMqttClient — stalled transport (refused CONNACK / offline que
       client.writeSetting('b', 2, { serial: 'ser1' }),
     ]);
     expect(results.map(r => r.status)).toEqual(['rejected', 'rejected']);
-    expect(mockMqttClient.end).toHaveBeenCalledTimes(2);
+    // One stall: the client is ended and the eviction logged once, not once per op.
+    expect(mockMqttClient.end).toHaveBeenCalledTimes(1);
+    const evictionLogs = console.error.mock.calls.filter(c => String(c[0]).includes('not acknowledged'));
+    expect(evictionLogs).toHaveLength(1);
     await client.writeSetting('c', 3, { serial: 'ser1' });
     expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts (and logs) again when a later connection stalls too', async () => {
+    mockMqttClient.publishAsync
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+    await expect(client.writeSetting('a', 1, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    // The mock hands back the same object on reconnect; it counts as a fresh client.
+    await expect(client.writeSetting('b', 2, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+    expect(mockMqttClient.end).toHaveBeenCalledTimes(2);
+    const evictionLogs = console.error.mock.calls.filter(c => String(c[0]).includes('not acknowledged'));
+    expect(evictionLogs).toHaveLength(2);
   });
 
   it('forceClose while still connecting ends the client once the connect resolves', async () => {

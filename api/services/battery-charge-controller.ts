@@ -266,12 +266,15 @@ export async function runBatteryChargeTick(nowMs: number = Date.now(), settingsO
 }
 
 /**
- * Enabled → disabled edge: put the register back on the top rung once, so a reduced
- * (or 0 A) limit the controller commanded is not left in place with nobody stepping it
+ * Live → not-live edge (disabled, or switched to dry-run): put the register back on the
+ * top rung once, so a reduced (or 0 A) limit is not left in place with nobody stepping it
  * back up. Only for a controller that was writing live (dry-run never touched the
- * register) and whose last command is not already the top rung. Never throws.
+ * register) and that knows the register's rung — commanded, or seeded from the register
+ * while it owned it (a seed may be a limit an earlier OptiVolt process wrote before a
+ * restart) — when that rung is below the top. A controller that never got a reading
+ * (lastCommandLevel null) writes nothing blind. Never throws.
  */
-async function releaseChargeLimit(previousSettings: Settings | null): Promise<void> {
+async function releaseChargeLimit(previousSettings: Settings | null, edge: 'disabled' | 'dry-run'): Promise<void> {
   const prevCfg = previousSettings?.batteryChargeControl;
   if (!previousSettings || !prevCfg?.enabled || prevCfg.dryRun) return;
   const levels = (prevCfg.currentLevels ?? []).filter(l => Number.isFinite(l));
@@ -280,7 +283,7 @@ async function releaseChargeLimit(previousSettings: Settings | null): Promise<vo
   const topLevel = Math.max(...levels);
   // A tick still running on the old settings could otherwise write a reduced rung after us.
   if (inFlightTick) await inFlightTick;
-  if (lastCommandLevel === topLevel) return;
+  if (lastCommandLevel === null || lastCommandLevel >= topLevel) return;
 
   const fromLevel = lastCommandLevel;
   try {
@@ -290,13 +293,13 @@ async function releaseChargeLimit(previousSettings: Settings | null): Promise<vo
       target: { entity_id: entity }, data: { value: topLevel },
     });
   } catch (err) {
-    console.warn(`[battery-charge-controller] disabled, but restoring the top rung (${topLevel}A) failed: ${msg(err)}`);
+    console.warn(`[battery-charge-controller] ${edge}, but restoring the top rung (${topLevel}A) failed: ${msg(err)}`);
     return;
   }
   const nowMs = Date.now();
   lastCommandLevel = topLevel;
   lastWriteAtMs = nowMs;
-  console.info(`[battery-charge-controller] disabled: charge current restored ${fromLevel ?? '?'}A → ${topLevel}A (top rung)`);
+  console.info(`[battery-charge-controller] ${edge}: charge current restored ${fromLevel}A → ${topLevel}A (top rung)`);
 }
 
 async function tickGuarded(): Promise<void> {
@@ -323,8 +326,12 @@ export function startBatteryChargeController(settings: Settings): void {
   const previousSettings = activeSettings;
   activeSettings = settings;
   const cfg = settings.batteryChargeControl;
+  // Leaving live actuation — disabled, or still enabled but now dry-run — must not leave
+  // a reduced limit behind: from here on nothing writes the register to step it back up.
+  if (wasEnabled && (!cfg?.enabled || cfg.dryRun)) {
+    void releaseChargeLimit(previousSettings, cfg?.enabled ? 'dry-run' : 'disabled');
+  }
   if (!cfg?.enabled) {
-    if (wasEnabled) void releaseChargeLimit(previousSettings);
     wasEnabled = false;
     return;
   }

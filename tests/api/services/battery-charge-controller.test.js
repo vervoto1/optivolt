@@ -494,6 +494,34 @@ describe('battery-charge-controller — releasing the limit when disabled', () =
     expect(callHaService).toHaveBeenCalledTimes(1);
   });
 
+  it('writes the top rung once when a live controller is switched to dry-run (still enabled)', async () => {
+    await enableAtReducedRung();
+    startBatteryChargeController(settings({}, { dryRun: true }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calledValues()).toEqual([400]);
+    expect(console.info).toHaveBeenCalledWith(expect.stringContaining('dry-run: charge current restored 50A → 400A'));
+
+    // The dry-run loop keeps running but never writes; a further dry-run save does not release again.
+    mockStates({ 'sensor.v0': '3.70', 'sensor.v1': '3.70', 'number.cc': '400' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    startBatteryChargeController(settings({}, { dryRun: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calledValues()).toEqual([400]);
+  });
+
+  it('does not write blind when the controller never got a reading (no seed, no command)', async () => {
+    mockStates({ 'sensor.v0': 'unavailable', 'sensor.v1': 'unavailable', 'number.cc': '50' });
+    startBatteryChargeController(settings());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getBatteryChargeStatus().status).toBe('no_voltage');
+    expect(getBatteryChargeStatus().commandedLevel).toBeNull();
+
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
   it('does not write when the controller was in dry-run', async () => {
     await enableAtReducedRung({ dryRun: true });
     startBatteryChargeController(settings({}, { enabled: false }));
