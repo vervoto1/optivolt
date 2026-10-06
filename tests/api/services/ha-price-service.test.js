@@ -655,11 +655,28 @@ describe('pricePointsToSeries', () => {
     ];
     const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
     expect(series.values).toEqual([10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30]);
-    expect(console.warn).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledWith(
       expect.stringContaining('repeating the previous timestamp'),
       ['2026-10-05T23:00:00.000Z'],
     );
+    // The skipped point disagreed with the kept one: say so, with both values.
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant; keeping the first'),
+      { timestamp: '2026-10-05T23:00:00.000Z', kept: expect.closeTo(20), skipped: expect.closeTo(90) },
+    );
+  });
+
+  it('skips a repeated point with the same price silently (no warning)', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(series.values).toEqual([10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30]);
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it('does not cut the window at a tomorrow list that repeats today\'s 23:00', () => {
@@ -673,7 +690,12 @@ describe('pricePointsToSeries', () => {
     expect(at('2026-10-06T21:00:00Z')).toBeCloseTo(33); // 23:00 local Oct 6: today's entry kept
     expect(at('2026-10-06T22:00:00Z')).toBeCloseTo(40); // 00:00 local Oct 7
     expect(at('2026-10-07T21:45:00Z')).toBeCloseTo(63); // 23:45 local Oct 7
-    expect(console.warn).not.toHaveBeenCalled();
+    // The only warning is the disagreeing duplicate 23:00 (kept 33, skipped 99).
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant'),
+      { timestamp: '2026-10-06T21:00:00.000Z', kept: expect.closeTo(33), skipped: expect.closeTo(99) },
+    );
   });
 
   it('does not cut a bare wall-clock feed whose tomorrow list repeats today\'s 23:00', () => {

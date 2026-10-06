@@ -9,7 +9,7 @@ import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
-import { getSolverInputs, buildPlannerConfig, REBALANCE_PENDING_GIVE_UP_MS } from './config-builder.ts';
+import { getSolverInputs, buildPlannerConfig, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
 // Aliased: computePlan's `updateData` option means "refresh the series first".
@@ -289,14 +289,16 @@ const PIN_RELAX_MIN_PROBE_LIMIT_S = 1;
 
 /**
  * A lower bound on the latest start slot a sagged hold needs: the window
- * starting at slot k needs SoC at target by the end of slot k, and no slot can
- * store more than maxChargePower_W x charge efficiency (taper, idle drain and
- * import limits only lower that). Never below `pin + 1` (the pin itself was
- * just found infeasible).
+ * starting at slot k needs SoC at the LP's hold level (the target, or the
+ * lower `rebalanceHoldSoc_percent` within the start tolerance) by the end of
+ * slot k, and no slot can store more than maxChargePower_W x charge
+ * efficiency (taper, idle drain and import limits only lower that). Never
+ * below `pin + 1` (the pin itself was just found infeasible).
  */
 function pinnedHoldStartLowerBound(cfg: SolverConfig, pin: number): number {
   const target_percent = Math.min(cfg.rebalanceTargetSoc_percent ?? cfg.maxSoc_percent, cfg.maxSoc_percent);
-  const deficit_Wh = (target_percent - cfg.initialSoc_percent) / 100 * cfg.batteryCapacity_Wh;
+  const hold_percent = Math.min(cfg.rebalanceHoldSoc_percent ?? target_percent, target_percent);
+  const deficit_Wh = (hold_percent - cfg.initialSoc_percent) / 100 * cfg.batteryCapacity_Wh;
   const perSlotStored_Wh = cfg.maxChargePower_W * (cfg.chargeEfficiency_percent / 100) * (cfg.stepSize_m / 60);
   const slotsNeeded = perSlotStored_Wh > 0 ? Math.ceil(deficit_Wh / perSlotStored_Wh) : Infinity;
   return Math.max(pin + 1, Number.isFinite(slotsNeeded) ? slotsNeeded - 1 : pin + 1);
@@ -368,16 +370,20 @@ function solveWithPinnedHoldFallback(
   const warn = (message: string) => {
     if (!quiet) console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (${message}`);
   };
-  const release = (reason: string): PinnedHoldSolve => {
+  const release = (reason: string, timeLimit_s?: number): PinnedHoldSolve => {
     warn(`${reason}); re-solving with the hold window free to move`);
-    return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg), relaxedMaxStartSlot: maxStart };
+    return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg, timeLimit_s), relaxedMaxStartSlot: maxStart };
   };
 
   if (startHint === undefined) {
     const result = solveOnce(solveCfg);
     if (result.Status === 'Optimal' && hasUsableSolution(result, T)) return { cfg: solveCfg, result };
-    // Neither Optimal nor Infeasible (e.g. a time-limited incumbent): free the window.
-    if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
+    // Neither Optimal nor Infeasible (e.g. a time-limited incumbent): free the
+    // window. That pinned solve may already have used the full time limit, so
+    // the fallback free solve gets half of it.
+    if (result.Status !== 'Infeasible') {
+      return release(`solver status "${result.Status}"`, solveOptionsFor(unpinnedCfg).time_limit / 2);
+    }
     if (maxStart <= pin) {
       // The hold covers the whole horizon, so there is no later start to relax
       // to: the free LP is this same LP. Let the plan fail on it as it is.
@@ -464,13 +470,9 @@ function solveWithPinnedHoldFallback(
   return { cfg: capped(hi), result: best!, relaxedMaxStartSlot: hi };
 }
 
-/**
- * How far below the rebalance target the live SoC may read and still start the
- * hold clock. Packs whose system SoC tops out at 99 % (as in production) would
- * otherwise never start the hold, and every plan would keep the battery held
- * with battery-to-grid export blocked.
- */
-export const REBALANCE_START_TOLERANCE_PERCENT = 1;
+// Defined next to the config that lowers the LP's hold level by the same
+// tolerance; re-exported here for the planner's callers.
+export { REBALANCE_START_TOLERANCE_PERCENT };
 
 /**
  * Post-solve rebalance bookkeeping, run only for an Optimal plan (an early-stop
@@ -478,9 +480,11 @@ export const REBALANCE_START_TOLERANCE_PERCENT = 1;
  *
  * - With rebalancing on and no hold started yet: stamp the hold start once the
  *   live SoC is within REBALANCE_START_TOLERANCE_PERCENT of the target and this
- *   plan holds from slot 0. A plan whose own window starts later (e.g. it
- *   exports at a high price first) is not a hold yet; stamping it would start
- *   the wall-clock countdown while the written schedule drains the battery.
+ *   plan holds from slot 0 (within that tolerance the LP holds at target −
+ *   tolerance, so a slot-0 window is reachable; see config-builder). A plan
+ *   whose own window starts later (e.g. it exports at a high price first) is
+ *   not a hold yet; stamping it would start the wall-clock countdown while the
+ *   written schedule drains the battery.
  *   Otherwise record when the hold first became pending (`pendingSinceMs`), so
  *   config-builder can give up on a hold that never starts.
  * - With rebalancing off: drop a leftover `pendingSinceMs`, so re-enabling

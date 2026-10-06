@@ -24,6 +24,17 @@ import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } 
 export const REBALANCE_PENDING_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
+ * How far below the rebalance target the live SoC may read and still start the
+ * hold clock. Packs whose system SoC tops out at 99 % (as in production) would
+ * otherwise never start the hold, and every plan would keep the battery held
+ * with battery-to-grid export blocked.
+ *
+ * Within this tolerance the LP's hold requirement is lowered by the same
+ * amount (`rebalanceHoldSoc_percent`, see buildSolverConfigFromSettings).
+ */
+export const REBALANCE_START_TOLERANCE_PERCENT = 1;
+
+/**
  * Live EV readings that seed the plan. `targetSoc_percent` is present only when
  * an `evTargetSocEntity` was configured and readable; otherwise the static
  * `evTargetSoc_percent` setting is used.
@@ -190,6 +201,21 @@ export function buildSolverConfigFromSettings(
     base.rebalanceHoldSlots = holdSlots;
     base.rebalanceRemainingSlots = remainingSlots;
     base.rebalanceTargetSoc_percent = settings.maxSoc_percent;
+    // Within REBALANCE_START_TOLERANCE_PERCENT of the target the planner stamps
+    // the hold start (and, once started, pins it to slot 0), so the hold the LP
+    // enforces from slot 0 must be reachable from the live SoC. The LP needs
+    // SoC >= its hold level by the end of the window's first slot; with the
+    // learned charge taper (or CV thresholds) on a large pack, closing the last
+    // point takes more than one slot. At the full target the window could then
+    // never start at slot 0, the clock never stamped (and rebalancing was
+    // switched off after REBALANCE_PENDING_GIVE_UP_MS), and a started hold's
+    // slot-0 pin was infeasible every cycle (a relaxation search each plan).
+    // Only the LP's hold level drops: the DESS-mapped target stays at
+    // rebalanceTargetSoc_percent, so Victron still tops the pack up
+    // (proBattery at >= 100 % is its keep-battery-charged path).
+    if (remainingSlots > 0 && data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT) {
+      base.rebalanceHoldSoc_percent = settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
+    }
     // Once the hold has started its wall-clock countdown is running, so the
     // remaining slots must be held from now on. Without this cap the solver
     // may re-place them later in the horizon (e.g. export now, recharge at a

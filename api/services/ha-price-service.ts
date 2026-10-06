@@ -217,6 +217,7 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
   let run: Run | null = null;
   let lastMs: number | null = null;
   let lastOffsetMs = 0;
+  let lastPrice: number | null = null;
   const repeated: string[] = [];
 
   for (const { price, candidates } of parsed) {
@@ -227,7 +228,13 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
 
     if (lastMs !== null && chosen.ms === lastMs) {
       // Same instant as the previous point: keep the first one, skip this one.
-      repeated.push(new Date(chosen.ms).toISOString());
+      const timestamp = new Date(chosen.ms).toISOString();
+      repeated.push(timestamp);
+      if (price !== lastPrice) {
+        console.warn('[ha-price] Price feed has two different prices for the same instant; keeping the first', {
+          timestamp, kept: lastPrice, skipped: price,
+        });
+      }
       continue;
     }
     if (lastMs !== null && chosen.ms < lastMs + pointMs) {
@@ -244,6 +251,7 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
       run = null;
       lastMs = chosen.ms;
       lastOffsetMs = chosen.offsetMs;
+      lastPrice = null;
       continue;
     }
 
@@ -296,6 +304,7 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
     for (let i = 0; i < slotsPerPoint; i++) run.values.push(price);
     lastMs = chosen.ms;
     lastOffsetMs = chosen.offsetMs;
+    lastPrice = price;
   }
 
   if (repeated.length > 0) {

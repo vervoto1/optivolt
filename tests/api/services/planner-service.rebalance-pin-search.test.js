@@ -50,6 +50,8 @@ import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refres
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
 import { computePlan, getLastEvPreview } from '../../../api/services/planner-service.ts';
+import { SOLVE_TIME_LIMIT_S } from '../../../lib/solve-options.ts';
+import { Strategy, Restrictions } from '../../../lib/dess-mapper.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const NOW_MS = Date.parse(NOW_STRING);
@@ -194,6 +196,8 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     const result = await computePlan();
 
     expect(solverCtl.caps).toEqual([0, SLOTS - 1]);
+    // The free fallback gets half the time limit (the pinned solve may have used all of it).
+    expect(solverCtl.timeLimits_s).toEqual([SOLVE_TIME_LIMIT_S, SOLVE_TIME_LIMIT_S / 2]);
     expect(result.result.Status).toBe('Optimal');
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('solver status "Time limit reached"'));
@@ -208,6 +212,7 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     const result = await computePlan();
 
     expect(solverCtl.caps).toEqual([0, SLOTS - 1]);
+    expect(solverCtl.timeLimits_s).toEqual([30, 15]);
     expect(result.result.Status).toBe('Optimal');
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(result.summary.rebalanceHoldMaxStartSlot).toBe(SLOTS - 1);
@@ -430,5 +435,82 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     expect(solverCtl.caps).toEqual([0, 1, 2, SLOTS - 1]);
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('relaxation search budget exhausted'));
+  });
+});
+
+describe('computePlan — a hold within the start tolerance is reachable from slot 0', () => {
+  // A large pack on 15-min slots: the last 1 % (600 Wh, plus idle drain) does
+  // not fit in one slot at the 2 kW charge cap, and the top band (>= 97 %)
+  // charges at only 800 W, so an LP holding at the full 100 % can never start
+  // the window at slot 0. Within the start tolerance the LP holds at
+  // target − 1 % instead, while the DESS target stays 100 %.
+  const QUARTERS = 16;
+  const quarter = (v) => ({ start: NOW_STRING, step: 15, values: new Array(QUARTERS).fill(v) });
+  const largePackSettings = {
+    ...settings,
+    stepSize_m: 15,
+    batteryCapacity_Wh: 60000,
+    maxChargePower_W: 2000,
+    maxDischargePower_W: 10000,
+    idleDrain_W: 40,
+    rebalanceHoldHours: 1, // 4 slots
+    cvPhase: { enabled: true, thresholds: [{ soc_percent: 97, maxChargePower_W: 800 }] },
+  };
+  const largePackData = (rebalanceState) => ({
+    load: quarter(500),
+    pv: quarter(0),
+    importPrice: quarter(10),
+    exportPrice: quarter(5),
+    soc: { timestamp: NOW_STRING, value: 99 },
+    rebalanceState,
+  });
+  const HOLD = { strategy: Strategy.proBattery, restrictions: Restrictions.batteryToGrid, socTarget_percent: 100 };
+
+  beforeEach(() => {
+    loadSettings.mockResolvedValue({ ...largePackSettings });
+  });
+
+  it('stamps the hold start in one cycle at 99 %', async () => {
+    loadData.mockResolvedValue(largePackData({ startMs: null }));
+
+    const result = await computePlan();
+
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceTargetSoc_percent).toBe(100);
+    expect(result.cfg.rebalanceHoldSoc_percent).toBe(99);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 3 });
+    expect(result.data.rebalanceState).toEqual({ startMs: NOW_MS });
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ rebalanceState: { startMs: NOW_MS } }));
+    // Victron is still asked to top the pack up to 100 %.
+    for (let i = 0; i <= 3; i++) expect(result.rows[i].dess).toMatchObject(HOLD);
+    expect(result.summary.rebalanceStatus).toBe('active');
+  });
+
+  it('the started hold\'s slot-0 pin is feasible: one solve, no relaxation search', async () => {
+    loadData.mockResolvedValue(largePackData({ startMs: NOW_MS }));
+
+    const result = await computePlan();
+
+    expect(solverCtl.caps).toEqual([0]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 3 });
+    expect(result.rows[0].dess).toMatchObject(HOLD);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held'));
+  });
+
+  it('control: at the full target the same pin is infeasible (what the hold level fixes)', async () => {
+    // Below the tolerance the LP keeps the full target; the same physics at
+    // 98.9 % needs the relaxation search.
+    loadData.mockResolvedValue({ ...largePackData({ startMs: NOW_MS }), soc: { timestamp: NOW_STRING, value: 98.9 } });
+
+    const result = await computePlan();
+
+    expect(result.cfg.rebalanceHoldSoc_percent).toBeUndefined();
+    expect(solverCtl.caps[0]).toBe(0);
+    expect(solverCtl.caps.length).toBeGreaterThan(1);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBeGreaterThan(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held from slot 0'));
   });
 });

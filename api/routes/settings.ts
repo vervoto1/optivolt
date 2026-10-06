@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import { loadSettings, updateSettings } from '../services/settings-store.ts';
+import { updateData } from '../services/data-store.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../services/pv-curtailment.ts';
@@ -39,7 +40,17 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     // Merged onto the settings as they are at write time, under the store's
     // lock, so a VRM refresh that loaded them earlier cannot revert this save.
-    const mergedSettings = (await updateSettings(prev => normalizeSettings(mergeSettings(prev, incoming as SettingsPatch))))!;
+    let rebalanceToggled = false;
+    const mergedSettings = (await updateSettings(prev => {
+      const next = normalizeSettings(mergeSettings(prev, incoming as SettingsPatch));
+      rebalanceToggled = next.rebalanceEnabled !== prev.rebalanceEnabled;
+      return next;
+    }))!;
+
+    // Switching rebalancing on or off starts a fresh give-up period: drop a
+    // pending marker left from before, so a disable→re-enable between two
+    // plans cannot give up on the new hold at once (config-builder).
+    if (rebalanceToggled) await clearRebalancePending();
 
     // Restart timers with new settings
     stopAutoCalculate();
@@ -64,5 +75,21 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     next(toHttpError(error, 500, 'Failed to save settings'));
   }
 });
+
+/**
+ * Drop `rebalanceState.pendingSinceMs` (a locked patch of the current data
+ * file; nothing is written when there is none). Best effort: the settings are
+ * already saved, and the planner also drops the marker on its next plan with
+ * rebalancing off.
+ */
+async function clearRebalancePending(): Promise<void> {
+  try {
+    await updateData(d => (d.rebalanceState?.pendingSinceMs == null
+      ? null
+      : { ...d, rebalanceState: { startMs: d.rebalanceState.startMs ?? null } }));
+  } catch (err) {
+    console.warn('[settings] could not clear the pending rebalance marker:', (err as Error).message);
+  }
+}
 
 export default router;

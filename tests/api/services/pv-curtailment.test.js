@@ -1213,6 +1213,36 @@ describe('pv-curtailment service — persisted ownership and boot reconciliation
     expect(getPvCurtailmentStatus().restorePending).toBe(false);
   });
 
+  it('turns the Enphase switch back on while the Victron serial is still unresolved', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    stateFile.current = 'unreadable';
+    getVictronSerial.mockRejectedValueOnce(new Error('serial timeout'));
+    startPvCurtailment({
+      haUrl: 'ws://homeassistant.local:8123/api/websocket', haToken: 'tok',
+      ...makeSettings({ enabled: false, portalId: '', enphaseSwitchEntity: 'switch.enphase_inverters' }),
+    });
+    await reconcilePvCurtailmentAtBoot();
+
+    // No serial: nothing written to Victron, but the HA-side switch is restored.
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(readVictronSetting).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://homeassistant.local:8123/api/services/switch/turn_on');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ entity_id: 'switch.enphase_inverters' });
+    // The Victron part stays pending.
+    expect(stateFile.current).toBe('unreadable');
+    expect(getPvCurtailmentStatus().restorePending).toBe(true);
+
+    // The retry resolves the serial and restores Pv/Disable without switching again.
+    await vi.advanceTimersByTimeAsync(RESTORE_RETRY_MS);
+    await flushPromises();
+    expect(writeVictronSetting).toHaveBeenCalledWith('acsystem/0/Pv/Disable', 0, { serial: 'detected-serial' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(stateFile.current).toBeNull();
+    expect(getPvCurtailmentStatus().restorePending).toBe(false);
+  });
+
   it('retries an unreadable record from the live loop when the serial cannot be detected at boot', async () => {
     stateFile.current = 'unreadable';
     getVictronSerial.mockRejectedValueOnce(new Error('serial timeout'));

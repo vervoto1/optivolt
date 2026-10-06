@@ -24,7 +24,8 @@ vi.mock('../../../api/services/ha-client.ts', () => ({
   fetchHaEntityState: vi.fn(),
 }));
 
-import { buildSolverConfigFromSettings, buildPlannerConfig, applyCalibration, applyEvCalibration, getSolverInputs, REBALANCE_PENDING_GIVE_UP_MS } from '../../../api/services/config-builder.ts';
+import { buildSolverConfigFromSettings, buildPlannerConfig, applyCalibration, applyEvCalibration, getSolverInputs, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from '../../../api/services/config-builder.ts';
+import { buildLP } from '../../../lib/build-lp.ts';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
 import { wireUpdateData } from '../helpers/data-store-mock.js';
@@ -147,6 +148,38 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     const cfg = buildSolverConfigFromSettings(settings, makeData({ startMs: null }), NOW_MS);
     expect(cfg.rebalanceHoldSlots).toBe(5); // ceil(4.4) = 5
     expect(cfg.rebalanceRemainingSlots).toBe(5);
+  });
+
+  describe('LP hold level within the start tolerance', () => {
+    const atSoc = (value, rebalanceState = { startMs: null }) => ({ ...makeData(rebalanceState), soc: { timestamp: NOW_STRING, value } });
+    const on = { ...mockSettings, rebalanceEnabled: true, rebalanceHoldHours: 3 };
+
+    it('holds at target − tolerance once the live SoC is within the tolerance (DESS target stays full)', () => {
+      expect(REBALANCE_START_TOLERANCE_PERCENT).toBe(1);
+      for (const value of [99, 99.5, 100]) {
+        const cfg = buildSolverConfigFromSettings(on, atSoc(value), NOW_MS);
+        expect(cfg.rebalanceHoldSoc_percent).toBe(99);
+        expect(cfg.rebalanceTargetSoc_percent).toBe(100);
+      }
+      // Also for a started (pinned) hold.
+      const started = buildSolverConfigFromSettings(on, atSoc(99, { startMs: NOW_MS - 15 * 60_000 }), NOW_MS);
+      expect(started.rebalanceMaxStartSlot).toBe(0);
+      expect(started.rebalanceHoldSoc_percent).toBe(99);
+    });
+
+    it('keeps the full target below the tolerance and with nothing left to hold', () => {
+      expect(buildSolverConfigFromSettings(on, atSoc(98.9), NOW_MS).rebalanceHoldSoc_percent).toBeUndefined();
+      const completed = buildSolverConfigFromSettings(on, atSoc(100, { startMs: NOW_MS - 12 * 15 * 60_000 }), NOW_MS);
+      expect(completed.rebalanceRemainingSlots).toBe(0);
+      expect(completed.rebalanceHoldSoc_percent).toBeUndefined();
+    });
+
+    it('rebalancing off at 99 %: no hold level, and the LP is byte-identical', () => {
+      const cfg = buildSolverConfigFromSettings(mockSettings, atSoc(99), NOW_MS);
+      expect(Object.keys(cfg).filter(k => k.startsWith('rebalance'))).toEqual([]);
+      const { rebalanceHoldSoc_percent: _unused, ...withoutField } = cfg;
+      expect(buildLP(cfg)).toBe(buildLP(withoutField));
+    });
   });
 
   it('clamps holdSlots to at least 1 when rebalanceHoldHours is 0', () => {

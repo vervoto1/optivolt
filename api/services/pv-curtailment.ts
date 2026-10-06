@@ -512,17 +512,19 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
 
   // A retry that only waits on the Enphase switch does not rewrite Pv/Disable.
   const victronDone = victronRestoredFor === target;
-  if (!victronDone) {
-    if (!target.serial) {
-      // A target from an unreadable record without a configured portal id: detect the
-      // serial now. Until it resolves the restore stays pending and is retried.
-      try {
-        target.serial = await getVictronSerial();
-      } catch (err) {
-        console.warn('[pv-curtailment] could not resolve the Victron serial for the PV restore; will retry:', (err as Error).message);
-        return false;
-      }
+  let serialResolved = true;
+  if (!victronDone && !target.serial) {
+    // A target from an unreadable record without a configured portal id: detect the
+    // serial now. Until it resolves the Victron part stays pending and is retried; the
+    // Enphase switch below is still turned back on, since it does not need the serial.
+    try {
+      target.serial = await getVictronSerial();
+    } catch (err) {
+      console.warn('[pv-curtailment] could not resolve the Victron serial for the PV restore; will retry:', (err as Error).message);
+      serialResolved = false;
     }
+  }
+  if (!victronDone && serialResolved) {
     try {
       await writeVictronSetting(pvDisablePath(target.acsystemInstance), 0, { serial: target.serial });
     } catch (err) {
@@ -560,6 +562,8 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
     }
   }
   const switchRestored = !target.enphaseSwitchEntity || switchRestoredFor === target;
+  // Nothing was written without a serial: no read-back, retry the Victron part.
+  if (!serialResolved) return false;
 
   if (!victronDone) {
     const readback = await confirmPvEnabled(target);
