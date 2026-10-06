@@ -18,7 +18,7 @@ Pure unit tests for core logic modules in `lib/`. 8 test files covering predicti
 | `parse-solution.test.js` | parseSolution column extraction and row assembly (42 lines) |
 | `open-meteo.test.js` | URL building, irradiance parsing, 15-min resolution, hour shifting (312 lines) |
 | `ha-postprocess.test.js` | Sensor merge (kWh to Wh), derived metrics, 15-min aggregation (136 lines) |
-| `dess-mapper.test.js` | 52 tests: strategy detection, restrictions, feed-in, tipping points, SoC boosts (595 lines) |
+| `dess-mapper.test.js` | V2 mapper: strategy selection, restrictions, feed-in, tipping points, SoC boosts, rebalance hold window |
 
 ## For AI Agents
 

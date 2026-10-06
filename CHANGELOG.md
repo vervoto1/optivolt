@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.65 - 2026-10-06
+
+A rebalance hold is now written to Victron as a hold, and a hold that has started can no longer drift later in the horizon. The dead V1 DESS mapper is removed. **Nothing changes while `rebalanceEnabled` is off** (as in production): without a hold window the mapper output and the LP are identical to 0.7.64.
+
+- **Hold-window slots are mapped to a DESS hold** (from upstream 583f704 + 61a045b, adapted).
+  - **What was wrong.** The solver's hold window never reached the mapper: `extractRebalanceWindow` ran after `mapRowsToDessV2`. Inside the window the SoC sits at max, so each slot is its own SoC segment and the price logic found no tipping point:
+    - PV-surplus slots became **selfConsumption / no restrictions**. Victron drops the target for selfConsumption, so load drained the battery during the hold. In a production-snapshot probe, 4 of 12 window slots got this (12 of 12 with PV ×3).
+    - A saturated grid-charge slot ending at 100 % got the +5 % boost clamp `maxSoc − 1` = **99**. That misses Victron's keep-charged path, which needs a target ≥ 100.
+  - **The fix.** `computePlan` extracts the window before mapping and passes it as `DessMapperOptions.rebalanceWindow` (inclusive). Window slots become **proBattery / battery→grid blocked (grid→battery allowed) / target = `rebalanceTargetSoc_percent`** (clamped to `maxSoc_percent` like the LP). There is no CV or `maxSoc − 1` clamp. Feed-in keeps its price-based value, so the negative-price block still applies. On the same snapshot all 12 window slots now map to the hold. `lastPlan.rebalanceWindow` is unchanged.
+- **A started hold is pinned to slot 0.**
+  - **What was wrong.** The LP could place the remaining hold slots anywhere in the horizon while the wall-clock countdown kept running. A probe with a full battery exported at 15 kW, recharged at a cheaper hour and re-entered the hold later; the cycle then auto-completed on the clock after about 15 minutes of real hold. Upstream has the same bug.
+  - **The fix.** Once `rebalanceState.startMs` is set (and slots remain), config-builder sets the new `SolverConfig.rebalanceMaxStartSlot = 0`, and `buildLP` caps the window start there (upstream ecc27d5's `KMAX` start cap). Only `start_balance_0` exists, and the SoC forcing covers exactly the first D slots.
+  - **Infeasibility fallback (fork-specific).** If the battery has sagged too far below the target to be back there by the end of slot 0 (e.g. SoC 85 % with the learned 2.8 kW taper above 98 %), the pinned LP is infeasible. The planner then logs a warning and re-solves with the window free to move (the 0.7.64 behaviour) instead of failing the plan and leaving a stale schedule on the GX. The EV preview uses the same solve path.
+- **The V1 DESS mapper (`mapRowsToDess`) is deleted** (upstream 971c527, redone locally). Only tests used it since b1120fe. It had drifted from V2 (no `g2ev` in its saturation check, no CV cap, an unused `feedinAllowed` local), and its unterminated `/* v8 ignore end */` hid every shared helper and the production `mapRowsToDessV2` from coverage. The tipping-point, empty-rows and flags tests now target V2; the V1 strategy tests are dropped.
+
 ## 0.7.64 - 2026-10-06
 
 The planner now builds the solver config once. Since 2026-04-30 (a848f1b), every production plan (`dataSources.soc = 'mqtt'`) silently dropped the adaptive-learning charge taper, the EV charge taper and the manual prediction adjustments. **This changes live plans: read the deploy gate below before deploying.**

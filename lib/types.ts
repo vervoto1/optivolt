@@ -124,6 +124,12 @@ export interface SolverConfig {
   rebalanceHoldSlots?: number;
   rebalanceRemainingSlots?: number;
   rebalanceTargetSoc_percent?: number;
+  /**
+   * Latest slot index (inclusive) at which the rebalance hold window may start.
+   * Set to 0 once the hold has started so the solver cannot re-place the rest
+   * of a running hold later in the horizon.
+   */
+  rebalanceMaxStartSlot?: number;
 
   // Constant Voltage phase: reduced charge power at high SoC
   cvPhaseThresholds?: CvPhaseThreshold[];

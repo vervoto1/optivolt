@@ -28,7 +28,7 @@ The system has three layers. Server/core code is TypeScript ESM executed directl
 ### `lib/` — Core logic (pure, no I/O unless noted)
 - **`build-lp.ts`** — Generates an LP problem string from time-series data and settings. The LP has per-slot flow variables (`grid_to_load`, `pv_to_battery`, `battery_to_grid`, EV flows, etc.) and tracks `soc` evolution with charge/discharge efficiency. Supports CV phase modeling via MILP binaries.
 - **`parse-solution.ts`** — Parses HiGHS solver output back into per-slot row objects with flows, SoC percentages, import/export, EV decisions, and timestamps.
-- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics. Applies EV discharge constraints and CV-aware target SoC caps.
+- **`dess-mapper.ts`** — Maps solved rows to Victron Dynamic ESS schedule parameters (strategy, restrictions, feed-in, target SoC). Produces per-slot DESS decisions and diagnostics. Applies EV discharge constraints and CV-aware target SoC caps. Slots in the solver's rebalance hold window are mapped to a proBattery hold at the rebalance target.
 - **`vrm-api.ts`** / **`victron-mqtt.ts`** — VRM REST client and MQTT client for writing schedules to Victron. MQTT supports TLS settings.
 
 ### `api/` — Express server

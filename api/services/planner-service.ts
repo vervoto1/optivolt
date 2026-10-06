@@ -252,6 +252,37 @@ async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Pr
   return { settings: { ...settings, rebalanceEnabled: false }, data: { ...data, rebalanceState } };
 }
 
+/**
+ * Build and solve the LP for `solveCfg`. A throwing WASM solve may leave the
+ * heap corrupted, so it drops the cached instance and the next solve gets a
+ * fresh one.
+ *
+ * A started rebalance hold is pinned to slot 0 (`rebalanceMaxStartSlot = 0`).
+ * When the battery has sagged too far below the target to be back there by
+ * the end of slot 0 the pin is infeasible; the plan is then re-solved with the
+ * window free to move (the pre-pin behaviour) rather than failing outright and
+ * leaving a stale schedule on the GX. Returns the config actually solved.
+ */
+function solveWithPinnedHoldFallback(highs: HighsInstance, solveCfg: SolverConfig): { cfg: SolverConfig; result: HighsSolution } {
+  const solveOnce = (c: SolverConfig): HighsSolution => {
+    try {
+      return highs.solve(buildLP(c), solveOptionsFor(c));
+    } catch (err) {
+      /* v8 ignore start */
+      highsPromise = undefined; // force re-initialisation on next call
+      throw err;
+      /* v8 ignore stop */
+    }
+  };
+  const result = solveOnce(solveCfg);
+  if (result.Status !== 'Infeasible' || solveCfg.rebalanceMaxStartSlot == null) {
+    return { cfg: solveCfg, result };
+  }
+  console.warn('[calculate] rebalance hold cannot be held from slot 0 (infeasible); re-solving with the hold window free to move');
+  const { rebalanceMaxStartSlot: _pinnedStartSlot, ...unpinnedCfg } = solveCfg;
+  return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg) };
+}
+
 /** Post-solve: stamp the hold start once the battery has actually reached the target SoC. */
 async function recordRebalanceStartIfAtTarget(settings: Settings, data: Data, startMs: number): Promise<Data> {
   if (data.rebalanceState?.startMs != null) return data;
@@ -278,27 +309,18 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   // calibration. Rebuilding it here used to drop the last two on every
   // soc=mqtt plan.
   const solverInputs = await getSolverInputs({ readLiveSoc: readMqttSocForPlan });
-  const { cfg, timing, evState } = solverInputs;
-  let { data, settings } = solverInputs;
+  const { timing, evState } = solverInputs;
+  let { cfg, data, settings } = solverInputs;
 
   // A just-completed hold cycle solves like any rebalance-free plan
   // (remainingSlots = 0 builds no rebalance variables or constraints); the
   // actual switch-off happens in post-solve bookkeeping.
   const rebalanceCycleComplete = settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0;
 
-  const lpText = buildLP(cfg);
   const highs = await getHighsInstance();
-  const solveOptions = solveOptionsFor(cfg);
-  let result: ReturnType<typeof highs.solve>;
   const t0 = performance.now();
-  try {
-    result = highs.solve(lpText, solveOptions);
-  } catch (err) {
-    /* v8 ignore start */
-    highsPromise = undefined; // force re-initialisation on next call
-    throw err;
-    /* v8 ignore stop */
-  }
+  let result: HighsSolution;
+  ({ cfg, result } = solveWithPinnedHoldFallback(highs, cfg));
   const solveMs = performance.now() - t0;
   const evCfg = cfg.ev;
   const evInfo = evCfg ? {
@@ -317,8 +339,16 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const rows = attachOriginalPredictionValues(parseSolution(result, cfg, timing), data);
 
+  // The hold window the solver chose; the mapper turns its slots into a DESS
+  // hold (proBattery, grid charging allowed, target = rebalance target).
+  const rebalanceWindow = extractRebalanceWindow(
+    result.Columns ?? {},
+    cfg.rebalanceRemainingSlots ?? 0,
+  );
+
   const { perSlot, diagnostics } = mapRowsToDessV2(rows, cfg, {
     blockFeedInOnNegativePrices: settings.blockFeedInOnNegativePrices !== false,
+    rebalanceWindow,
   });
 
   const pvControl = annotatePvCurtailmentSlots(rows, cfg, settings.pvCurtailment);
@@ -350,11 +380,6 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
       console.error(`[calculate] STALE DATA: ${w}`);
     }
   }
-
-  const rebalanceWindow = extractRebalanceWindow(
-    result.Columns ?? {},
-    cfg.rebalanceRemainingSlots ?? 0,
-  );
 
   const rebalanceNudge = getRebalanceNudge(data);
 
@@ -391,20 +416,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         { pluggedIn: true, soc_percent: liveSoc, targetSoc_percent: evState.targetSoc_percent },
       );
       if (previewCfg.ev) {
-        const previewLp = buildLP(previewCfg);
-        let previewResult: ReturnType<typeof highs.solve>;
-        try {
-          previewResult = highs.solve(previewLp, solveOptions);
-        } catch (err) {
-          // Same policy as the main solve: a throwing WASM solve may leave the
-          // heap corrupted, so the next solve gets a fresh instance. A
-          // SolverStatusError from parsing the preview below is not a solver
-          // fault and leaves the instance alone.
-          highsPromise = undefined; // force re-initialisation on next call
-          throw err;
-        }
+        // Same solve policy as the main plan (pinned-hold fallback; a throwing
+        // WASM solve drops the instance). A SolverStatusError from parsing the
+        // preview below is not a solver fault and leaves the instance alone.
+        const preview = solveWithPinnedHoldFallback(highs, previewCfg);
         // Throws SolverStatusError (caught below) when the preview has no usable solution.
-        const previewRows = parseSolution(previewResult, previewCfg, timing);
+        const previewRows = parseSolution(preview.result, preview.cfg, timing);
         lastEvPreview = {
           rows: previewRows,
           timing,

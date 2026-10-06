@@ -22,7 +22,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | `build-lp.ts` | LP/MIP model builder: `buildLP()` generates CPLEX LP format for HiGHS solver with rebalancing MILP |
 | `parse-solution.ts` | HiGHS solver output parser: `parseSolution()` reconstructs energy flows and SoC from solver columns |
 | `plan-summary.ts` | Plan KPI aggregation: `buildPlanSummary()` computes totals, tipping points, rebalance status |
-| `dess-mapper.ts` | Dynamic ESS strategy mapper: `mapRowsToDess()` and `mapRowsToDessV2()` assign strategies per 15-minute slot |
+| `dess-mapper.ts` | Dynamic ESS strategy mapper: `mapRowsToDessV2()` assigns strategies per 15-minute slot (tipping points; rebalance hold window → proBattery hold) |
 
 ## For AI Agents
 

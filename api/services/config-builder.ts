@@ -172,6 +172,14 @@ export function buildSolverConfigFromSettings(
     base.rebalanceHoldSlots = holdSlots;
     base.rebalanceRemainingSlots = remainingSlots;
     base.rebalanceTargetSoc_percent = settings.maxSoc_percent;
+    // Once the hold has started its wall-clock countdown is running, so the
+    // remaining slots must be held from now on. Without this cap the solver
+    // may re-place them later in the horizon (e.g. export now, recharge at a
+    // cheaper hour, re-enter the hold), and the cycle then completes on the
+    // clock after far less real hold time than requested.
+    if (startMs_ != null && remainingSlots > 0) {
+      base.rebalanceMaxStartSlot = 0;
+    }
   }
 
   if (resolveEvMode(settings) === 'native' && evState?.pluggedIn) {
