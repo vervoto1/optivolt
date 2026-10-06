@@ -25,24 +25,55 @@ export async function readJson<T>(filePath: string): Promise<T> {
 }
 
 /**
- * Atomic write: serialise to a temp file in the same directory, then rename
- * over the target. The temp name is unique per call — the same target can be
- * written concurrently (the prediction config by a UI save and by the
- * auto-selector, for instance), and a shared `${file}.tmp` would let the two
- * `writeFile` calls interleave so that whichever `rename` lands last publishes
- * a file containing a mix of both payloads.
+ * Atomic, durable write: serialise to a temp file in the same directory,
+ * fsync it, rename it over the target, then fsync the directory (best effort).
+ *
+ * The temp name is unique per call — the same target can be written
+ * concurrently (the prediction config by a UI save and by the auto-selector,
+ * for instance), and a shared `${file}.tmp` would let the two writes
+ * interleave so that whichever `rename` lands last publishes a file
+ * containing a mix of both payloads.
+ *
+ * The fsync before the rename matters on power loss: without it the rename
+ * can reach disk before the data blocks do, and the boot after the outage
+ * finds a zero-length or partial file that every store rethrows on load.
+ * Any failure before the rename completes removes the temp file.
  */
 export async function writeJson(filePath: string, obj: unknown): Promise<void> {
   const json = `${JSON.stringify(obj, null, 2)}\n`;
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
   const tmpPath = `${filePath}.${process.pid}.${++tmpCounter}.tmp`;
-  await fs.writeFile(tmpPath, json, 'utf8');
   try {
+    const fh = await fs.open(tmpPath, 'w');
+    try {
+      await fh.writeFile(json, 'utf8');
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await fs.rename(tmpPath, filePath);
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
     throw err;
+  }
+  await syncDirectoryBestEffort(dir);
+}
+
+/**
+ * fsync a directory so a just-completed rename is itself durable. Best effort:
+ * some platforms and filesystems refuse to open or sync a directory, and the
+ * data file is already safely on disk by the time this runs.
+ */
+async function syncDirectoryBestEffort(dir: string): Promise<void> {
+  let fh: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    fh = await fs.open(dir, 'r');
+    await fh.sync();
+  } catch {
+    // ignore: durability of the directory entry is a bonus, not a requirement
+  } finally {
+    await fh?.close().catch(() => {});
   }
 }
 
@@ -76,7 +107,7 @@ export async function withJsonLock<T>(filePath: string, fn: () => Promise<T>): P
  * Remove temp files that an interrupted `writeJson` left behind.
  *
  * The temp name is unique per write, so a hard kill (OOM, power loss)
- * between `writeFile` and `rename` leaves a new `<file>.<pid>.<n>.tmp`
+ * between creating the temp file and `rename` leaves a new `<file>.<pid>.<n>.tmp`
  * every time, and nothing else ever touches them: on the add-on's
  * persistent `/data` volume they would accumulate for the life of the
  * install. Called once at boot for `DATA_DIR`; only files older than a few

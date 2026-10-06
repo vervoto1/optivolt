@@ -714,6 +714,79 @@ function normalizeEssConfig(essConfig: EssConfig): EssConfig {
   };
 }
 
+/**
+ * Efficiency fields (percent). Each one divides or scales LP coefficients:
+ * a zero discharge efficiency emits literal `Infinity` coefficients that
+ * HiGHS refuses to parse, and a zero inverter efficiency turns zero-capped
+ * bounds into NaN.
+ */
+const EFFICIENCY_FIELDS = [
+  'chargeEfficiency_percent',
+  'dischargeEfficiency_percent',
+  'inverterEfficiency_percent',
+  'evChargeEfficiency_percent',
+] as const satisfies readonly (keyof Settings)[];
+
+/** Top-level flags that must arrive as real JSON booleans. */
+const STRICT_BOOLEAN_FIELDS = [
+  'blockFeedInOnNegativePrices',
+  'rebalanceEnabled',
+  'evEnabled',
+  'evApplyPriceLimit',
+  'evOpportunisticEnabled',
+  'evOpportunisticType2Enabled',
+  'evLowPriceChargingEnabled',
+  'evLowSocChargingEnabled',
+  'evContinuous',
+  'evKeepOn',
+  'evChargeCurveEnabled',
+  'evActuationEnabled',
+  'evActuationPaused',
+] as const satisfies readonly (keyof Settings)[];
+
+/** Top-level string enums and their allowed values. */
+const STRICT_ENUM_FIELDS = {
+  terminalSocValuation: ['zero', 'min', 'avg', 'max', 'custom'],
+  evDepartureDay: ['today', 'tomorrow'],
+  evFailSafeMode: ['hold', 'stop'],
+  evOverrideMode: ['auto', 'charge', 'stop'],
+} as const satisfies Partial<Record<keyof Settings, readonly string[]>>;
+
+/**
+ * Strict checks for an incoming `POST /settings` patch, run before anything
+ * is merged or persisted. A bad value is rejected with a 400 naming the
+ * field rather than coerced: `normalizeSettings` would silently keep
+ * `rebalanceEnabled: "off"` (truthy, so it forces a charge to maxSoc), keep
+ * an unknown `terminalSocValuation`, and store a zero efficiency that makes
+ * every later solve fail.
+ *
+ * Only the patch is checked, never the stored settings: `normalizeSettings`
+ * also runs on load, and a value that is already on disk must keep failing
+ * loudly at solve time instead of either bricking startup or being clamped
+ * into a silently wrong plan.
+ */
+export function validateSettingsPatch(patch: Record<string, unknown>): void {
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(patch, key) && patch[key] !== undefined;
+
+  for (const field of EFFICIENCY_FIELDS) {
+    if (!has(field)) continue;
+    const value = patch[field];
+    // The EV efficiency has always fallen back to its default when null.
+    if (value === null && field === 'evChargeEfficiency_percent') continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 1 || value > 100) {
+      throw new HttpError(400, `${field} must be a number between 1 and 100`);
+    }
+  }
+
+  for (const field of STRICT_BOOLEAN_FIELDS) {
+    if (has(field)) expectBoolean(patch[field], field);
+  }
+
+  for (const [field, allowed] of Object.entries(STRICT_ENUM_FIELDS)) {
+    if (has(field)) expectEnum(patch[field], allowed, field);
+  }
+}
+
 export function sanitizeSettingsResponse(settings: Settings): Omit<Settings, 'haToken'> & { hasHaToken: boolean } {
   const { haToken, ...rest } = settings;
   return { ...rest, hasHaToken: haToken.length > 0 };

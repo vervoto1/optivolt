@@ -5,53 +5,113 @@ import fs from 'node:fs/promises';
 vi.mock('node:fs/promises');
 
 describe('json-store — writeJson', () => {
+  const TMP = /^\/tmp\/test\/data\.json\.\d+\.\d+\.tmp$/;
+
+  /** One fake FileHandle per fs.open call, recorded in order. */
+  let handles;
+  const makeHandle = (target) => ({
+    target,
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    sync: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  });
+  const fileHandles = () => handles.filter(h => TMP.test(h.target));
+  const dirHandles = () => handles.filter(h => !TMP.test(h.target));
+  const openWith = (tweak = () => {}) => {
+    fs.open.mockImplementation(async (target, flags) => {
+      const h = makeHandle(target);
+      tweak(h, flags);
+      handles.push(h);
+      return h;
+    });
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
+    handles = [];
     fs.mkdir.mockResolvedValue(undefined);
-    fs.writeFile.mockResolvedValue(undefined);
+    openWith();
     fs.rename.mockResolvedValue(undefined);
     fs.unlink.mockResolvedValue(undefined);
   });
-
-  const TMP = /^\/tmp\/test\/data\.json\.\d+\.\d+\.tmp$/;
 
   it('creates parent directory and writes formatted JSON atomically via a temp file', async () => {
     await writeJson('/tmp/test/data.json', { key: 'value' });
 
     expect(fs.mkdir).toHaveBeenCalledWith('/tmp/test', { recursive: true });
-    expect(fs.writeFile).toHaveBeenCalledWith(
-      expect.stringMatching(TMP),
-      expect.stringContaining('"key": "value"'),
-      'utf8',
-    );
-    const [tmpPath] = fs.writeFile.mock.calls[0];
-    expect(fs.rename).toHaveBeenCalledWith(tmpPath, '/tmp/test/data.json');
+    expect(fs.open).toHaveBeenCalledWith(expect.stringMatching(TMP), 'w');
+    const [fh] = fileHandles();
+    expect(fh.writeFile).toHaveBeenCalledWith(expect.stringContaining('"key": "value"'), 'utf8');
+    expect(fs.rename).toHaveBeenCalledWith(fh.target, '/tmp/test/data.json');
+    expect(fs.unlink).not.toHaveBeenCalled();
+  });
+
+  it('fsyncs the temp file before the rename and the directory after it', async () => {
+    const order = [];
+    openWith((h, flags) => {
+      const kind = flags === 'w' ? 'file' : 'dir';
+      h.sync.mockImplementation(async () => { order.push(`sync:${kind}`); });
+      h.close.mockImplementation(async () => { order.push(`close:${kind}`); });
+    });
+    fs.rename.mockImplementation(async () => { order.push('rename'); });
+
+    await writeJson('/tmp/test/data.json', { a: 1 });
+
+    expect(order).toEqual(['sync:file', 'close:file', 'rename', 'sync:dir', 'close:dir']);
+    expect(fs.open).toHaveBeenCalledWith('/tmp/test', 'r');
+    expect(dirHandles()).toHaveLength(1);
+  });
+
+  it('tolerates a directory that cannot be opened', async () => {
+    const real = fs.open.getMockImplementation();
+    fs.open.mockImplementation(async (target, flags) => {
+      if (flags === 'r') throw Object.assign(new Error('EISDIR'), { code: 'EISDIR' });
+      return real(target, flags);
+    });
+
+    await expect(writeJson('/tmp/test/data.json', { a: 1 })).resolves.toBeUndefined();
+    expect(fs.rename).toHaveBeenCalledTimes(1);
+    expect(fs.unlink).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a directory fsync failure and still closes the directory handle', async () => {
+    openWith((h, flags) => {
+      if (flags === 'r') h.sync.mockRejectedValue(new Error('EINVAL'));
+    });
+
+    await expect(writeJson('/tmp/test/data.json', { a: 2 })).resolves.toBeUndefined();
+    expect(dirHandles()[0].close).toHaveBeenCalled();
     expect(fs.unlink).not.toHaveBeenCalled();
   });
 
   it('uses a distinct temp file per write so concurrent writers cannot tear each other', async () => {
     // Two in-flight writes to the same target used to share `${file}.tmp`; the
-    // second writeFile could land mid-way through the first, and whichever
+    // second write could land mid-way through the first, and whichever
     // rename won published a mix of both payloads.
     let releaseFirst;
-    fs.writeFile.mockImplementationOnce(() => new Promise(resolve => { releaseFirst = resolve; }));
-    const first = writeJson('/tmp/test/data.json', { n: 1 });
-    const second = writeJson('/tmp/test/data.json', { n: 2 });
-    await second;
+    let first = true;
+    openWith((h, flags) => {
+      if (flags === 'w' && first) {
+        first = false;
+        h.writeFile.mockImplementation(() => new Promise(resolve => { releaseFirst = resolve; }));
+      }
+    });
+    const p1 = writeJson('/tmp/test/data.json', { n: 1 });
+    const p2 = writeJson('/tmp/test/data.json', { n: 2 });
+    await p2;
     releaseFirst();
-    await first;
+    await p1;
 
-    const tmpPaths = fs.writeFile.mock.calls.map(c => c[0]);
+    const tmpPaths = fileHandles().map(h => h.target);
     expect(tmpPaths).toHaveLength(2);
     expect(tmpPaths[0]).not.toBe(tmpPaths[1]);
-    expect(tmpPaths.every(p => TMP.test(p))).toBe(true);
     expect(fs.rename.mock.calls.map(c => c[1])).toEqual(['/tmp/test/data.json', '/tmp/test/data.json']);
   });
 
   it('writes JSON with a trailing newline', async () => {
-    await writeJson('/tmp/out.json', { x: 1 });
+    await writeJson('/tmp/test/data.json', { x: 1 });
 
-    const [, content] = fs.writeFile.mock.calls[0];
+    const [content] = fileHandles()[0].writeFile.mock.calls[0];
     expect(content.endsWith('\n')).toBe(true);
   });
 
@@ -59,27 +119,47 @@ describe('json-store — writeJson', () => {
     fs.mkdir.mockRejectedValue(new Error('permission denied'));
 
     await expect(writeJson('/no/access/file.json', {})).rejects.toThrow('permission denied');
+    expect(fs.open).not.toHaveBeenCalled();
   });
 
-  it('propagates writeFile errors', async () => {
-    fs.writeFile.mockRejectedValue(new Error('disk full'));
+  it('propagates write errors, closes the handle and removes the temp file', async () => {
+    openWith((h) => { h.writeFile.mockRejectedValue(new Error('disk full')); });
 
-    await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('disk full');
+    await expect(writeJson('/tmp/test/data.json', {})).rejects.toThrow('disk full');
+    const [fh] = fileHandles();
+    expect(fh.close).toHaveBeenCalled();
+    expect(fs.unlink).toHaveBeenCalledWith(fh.target);
+    expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('propagates fsync errors and removes the temp file without renaming it', async () => {
+    openWith((h) => { h.sync.mockRejectedValue(new Error('EIO')); });
+
+    await expect(writeJson('/tmp/test/data.json', {})).rejects.toThrow('EIO');
+    expect(fs.rename).not.toHaveBeenCalled();
+    expect(fs.unlink).toHaveBeenCalledWith(fileHandles()[0].target);
+  });
+
+  it('propagates open errors and still attempts to remove the temp file', async () => {
+    fs.open.mockRejectedValue(new Error('EMFILE'));
+
+    await expect(writeJson('/tmp/test/data.json', {})).rejects.toThrow('EMFILE');
+    expect(fs.unlink).toHaveBeenCalledWith(expect.stringMatching(TMP));
   });
 
   it('propagates rename errors and removes the orphaned temp file', async () => {
     fs.rename.mockRejectedValue(new Error('cross-device link'));
 
-    await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('cross-device link');
-    const [tmpPath] = fs.writeFile.mock.calls[0];
-    expect(fs.unlink).toHaveBeenCalledWith(tmpPath);
+    await expect(writeJson('/tmp/test/data.json', {})).rejects.toThrow('cross-device link');
+    expect(fs.unlink).toHaveBeenCalledWith(fileHandles()[0].target);
+    expect(dirHandles()).toHaveLength(0);
   });
 
   it('still propagates the rename error when the temp-file cleanup fails too', async () => {
     fs.rename.mockRejectedValue(new Error('cross-device link'));
     fs.unlink.mockRejectedValue(new Error('gone already'));
 
-    await expect(writeJson('/tmp/test/file.json', {})).rejects.toThrow('cross-device link');
+    await expect(writeJson('/tmp/test/data.json', {})).rejects.toThrow('cross-device link');
   });
 });
 

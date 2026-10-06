@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 import {
   AUTO_SELECT_LIMITS,
   mergeSettings,
   normalizeSettings,
+  validateSettingsPatch,
   sanitizeSettingsResponse, DESS_PRICE_REFRESH_LIMITS } from '../../../api/services/settings-schema.ts';
+
+const defaultSettings = JSON.parse(fs.readFileSync(new URL('../../../api/defaults/default-settings.json', import.meta.url), 'utf8'));
 
 function validSettings() {
   return {
@@ -770,5 +774,104 @@ describe('settings-schema', () => {
       expect(merged.batteryChargeControl.enabled).toBe(true);
       expect(merged.batteryChargeControl.currentLevels).toEqual([400, 180, 50, 0]);
     });
+  });
+});
+
+describe('validateSettingsPatch — strict checks on POST /settings', () => {
+  // The top-level scalars of the production add-on's settings (GET /settings,
+  // 2026-10), i.e. the shape the UI posts back on every save.
+  const productionShaped = {
+    stepSize_m: 15, batteryCapacity_Wh: 35000, minSoc_percent: 5, maxSoc_percent: 100,
+    maxChargePower_W: 16000, maxDischargePower_W: 16000, maxGridImport_W: 18000, maxGridExport_W: 18000,
+    chargeEfficiency_percent: 95, dischargeEfficiency_percent: 95, inverterEfficiency_percent: 95,
+    batteryCost_cent_per_kWh: 1, idleDrain_W: 50,
+    blockFeedInOnNegativePrices: true, terminalSocValuation: 'zero', terminalSocCustomPrice_cents_per_kWh: 0,
+    optimizerQuickSettings: ['dischargeEfficiency_percent'],
+    dataSources: { load: 'api', pv: 'api', prices: 'ha', soc: 'mqtt', evLoad: 'api' },
+    rebalanceEnabled: false, rebalanceHoldHours: 3,
+    haUrl: 'ws://homeassistant.local:8123/api/websocket',
+    evEnabled: true, evMinChargeCurrent_A: 16, evMaxChargeCurrent_A: 16, evChargePhases: 3,
+    evBatteryCapacity_kWh: 75, evDepartureTime: '', evDepartureDay: 'tomorrow', evTargetSoc_percent: 90,
+    evChargeEfficiency_percent: 94, evStartTime: '', evApplyPriceLimit: false, evMinSoc_percent: 0,
+    evOpportunisticEnabled: false, evOpportunisticLevel_percent: 90,
+    evOpportunisticType2Enabled: false, evOpportunisticType2Level_percent: 100,
+    evLowPriceChargingEnabled: true, evLowSocChargingEnabled: true, evContinuous: false, evKeepOn: false,
+    evChargeCurveEnabled: true, evActuationEnabled: true, evControlIntervalSeconds: 60,
+    evMaxPlanAgeSeconds: 1800, evFailSafeMode: 'hold', evActuationPaused: false, evOverrideMode: 'auto',
+    // Legacy / UI-only keys the stored file still carries: not validated.
+    evSource: 'native', victronControlMode: 'dess', tableShowKwh: false,
+  };
+
+  it('accepts the shipped defaults and production-shaped settings', () => {
+    expect(() => validateSettingsPatch(defaultSettings)).not.toThrow();
+    expect(() => validateSettingsPatch(productionShaped)).not.toThrow();
+    expect(() => validateSettingsPatch(validSettings())).not.toThrow();
+  });
+
+  it('accepts an empty or partial patch: only the fields present are checked', () => {
+    expect(() => validateSettingsPatch({})).not.toThrow();
+    expect(() => validateSettingsPatch({ maxSoc_percent: 90 })).not.toThrow();
+    expect(() => validateSettingsPatch({ dischargeEfficiency_percent: undefined })).not.toThrow();
+  });
+
+  it.each([
+    'chargeEfficiency_percent',
+    'dischargeEfficiency_percent',
+    'inverterEfficiency_percent',
+    'evChargeEfficiency_percent',
+  ])('rejects a non-positive, sub-1%%, above-100%% or non-numeric %s and names the field', (field) => {
+    for (const bad of [0, -5, 0.4, 100.5, 250, Number.NaN, Number.POSITIVE_INFINITY, '95', true]) {
+      expect(() => validateSettingsPatch({ [field]: bad })).toThrow(`${field} must be a number between 1 and 100`);
+    }
+    for (const good of [1, 50, 94.5, 100]) {
+      expect(() => validateSettingsPatch({ [field]: good })).not.toThrow();
+    }
+  });
+
+  it('rejects with a 400 status so the route reports a validation error', () => {
+    let caught;
+    try { validateSettingsPatch({ dischargeEfficiency_percent: 0 }); } catch (err) { caught = err; }
+    expect(caught?.statusCode).toBe(400);
+  });
+
+  it('keeps a null EV efficiency falling back to its default, but rejects null battery efficiencies', () => {
+    expect(() => validateSettingsPatch({ evChargeEfficiency_percent: null })).not.toThrow();
+    expect(() => validateSettingsPatch({ dischargeEfficiency_percent: null }))
+      .toThrow('dischargeEfficiency_percent must be a number between 1 and 100');
+  });
+
+  it.each([
+    'blockFeedInOnNegativePrices', 'rebalanceEnabled', 'evEnabled', 'evApplyPriceLimit',
+    'evOpportunisticEnabled', 'evOpportunisticType2Enabled', 'evLowPriceChargingEnabled',
+    'evLowSocChargingEnabled', 'evContinuous', 'evKeepOn', 'evChargeCurveEnabled',
+    'evActuationEnabled', 'evActuationPaused',
+  ])('rejects a non-boolean %s instead of coercing it', (field) => {
+    for (const bad of ['off', 'false', 'true', 'no', 0, 1, null]) {
+      expect(() => validateSettingsPatch({ [field]: bad })).toThrow(`${field} must be a boolean`);
+    }
+    expect(() => validateSettingsPatch({ [field]: true })).not.toThrow();
+    expect(() => validateSettingsPatch({ [field]: false })).not.toThrow();
+  });
+
+  it('rejects unknown enum values (including case typos) and accepts every valid one', () => {
+    const enums = {
+      terminalSocValuation: ['zero', 'min', 'avg', 'max', 'custom'],
+      evDepartureDay: ['today', 'tomorrow'],
+      evFailSafeMode: ['hold', 'stop'],
+      evOverrideMode: ['auto', 'charge', 'stop'],
+    };
+    for (const [field, allowed] of Object.entries(enums)) {
+      for (const ok of allowed) expect(() => validateSettingsPatch({ [field]: ok })).not.toThrow();
+      for (const bad of ['bogus', allowed[1].toUpperCase(), '', 42, null]) {
+        expect(() => validateSettingsPatch({ [field]: bad })).toThrow(`${field} must be one of: ${allowed.join(', ')}`);
+      }
+    }
+  });
+
+  it('leaves the load path alone: normalizeSettings does not clamp a stored zero efficiency', () => {
+    // A value already on disk must keep failing loudly at solve time; a silent
+    // clamp to 1 % would make every auto-calc write a nonsense schedule.
+    const stored = normalizeSettings({ ...validSettings(), inverterEfficiency_percent: 95, dischargeEfficiency_percent: 0 });
+    expect(stored.dischargeEfficiency_percent).toBe(0);
   });
 });
