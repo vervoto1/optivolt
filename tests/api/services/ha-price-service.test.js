@@ -294,8 +294,8 @@ describe('fetchPricesFromHA', () => {
   });
 
   it('never turns a non-numeric price into 0 c/kWh', async () => {
-    // A non-numeric value used to become 0 (free electricity). Now the point
-    // is dropped; a single missing hour carries the previous price forward.
+    // A non-numeric value used to become 0 (free electricity). Now the run
+    // ends at that point: the hour is neither 0 nor bridged with 00:00's price.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-03-17T00:30:00+01:00'));
     try {
@@ -315,7 +315,7 @@ describe('fetchPricesFromHA', () => {
 
       expect(result).not.toBeNull();
       expect(result.importPrice.start).toBe('2026-03-16T23:00:00.000Z');
-      const expected = [20, 20, 20, 20, 20, 20, 20, 20, 30, 30, 30, 30];
+      const expected = [20, 20, 20, 20];
       expect(result.importPrice.values).toEqual(expected);
       expect(result.exportPrice.values).toEqual(expected);
     } finally {
@@ -528,6 +528,37 @@ describe('pricePointsToSeries', () => {
     expect(at('2026-10-25T02:00:00Z')).toBe(3);
   });
 
+  it('drops the skipped 02:00 of a bare wall-clock spring-forward feed (24 entries) instead of ending the feed', () => {
+    // A generic sensor that always lists 00..23 in naive local time. JS maps
+    // the nonexistent 02:00 onto 03:00 CEST; it must not take 03:00's slot.
+    const points = Array.from({ length: 24 }, (_, h) => ({ time: `2026-03-29T${pad2(h)}:00:00`, value: h }));
+    for (const nowIso of ['2026-03-29T00:30:00+01:00', '2026-03-29T12:00:00+02:00', '2026-03-29T23:30:00+02:00']) {
+      const series = pricePointsToSeries(points, opts({ multiplier: 1, nowMs: Date.parse(nowIso) }));
+      expect(series.start).toBe('2026-03-28T23:00:00.000Z');
+      expect(series.values).toHaveLength(23 * 4);
+      const at = slotReader(series);
+      expect(at('2026-03-29T00:00:00Z')).toBe(1); // 01:00 CET
+      expect(at('2026-03-29T01:00:00Z')).toBe(3); // 03:00 CEST, its own price
+      expect(at('2026-03-29T21:45:00Z')).toBe(23);
+    }
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('wall-clock times the server time zone skips'),
+      ['2026-03-29T02:00:00'],
+    );
+  });
+
+  it('drops the skipped quarters of a bare 15-min spring-forward feed (space-separated times)', () => {
+    const points = [];
+    for (const h of [1, 2, 3]) {
+      for (const m of [0, 15, 30, 45]) points.push({ time: `2026-03-29 ${pad2(h)}:${pad2(m)}:00`, value: h + m / 100 });
+    }
+    const series = pricePointsToSeries(points, opts({
+      interval: 15, multiplier: 1, nowMs: Date.parse('2026-03-29T00:30:00Z'),
+    }));
+    expect(series.start).toBe('2026-03-29T00:00:00.000Z');
+    expect(series.values).toEqual([1, 1.15, 1.3, 1.45, 3, 3.15, 3.3, 3.45]);
+  });
+
   it('keeps the spring-forward day (23 entries) contiguous', () => {
     const points = [...geSpotDay('2026-03-29', 0.10), ...geSpotDay('2026-03-30', 0.40)];
     const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-03-29T12:00:00+02:00') }));
@@ -670,14 +701,63 @@ describe('pricePointsToSeries', () => {
     ['true', true],
     ['missing', undefined],
     ['non-numeric string', 'n/a'],
-  ])('drops a %s price (never 0 or 1) and carries the previous price over that hour', (_label, bad) => {
+  ])('ends the run at an invalid price: %s (never 0 or 1, never bridged)', (_label, bad) => {
     const points = [
       { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
       { time: '2026-10-06T01:00:00+02:00', value: bad },
       { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
     ];
+    const before = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(before.start).toBe('2026-10-05T22:00:00.000Z');
+    expect(before.values).toEqual([10, 10, 10, 10]);
+
+    // Inside the invalid hour no run covers now: keep the previous prices.
+    expect(pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T01:30:00+02:00') }))).toBeNull();
+
+    const after = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T02:30:00+02:00') }));
+    expect(after.start).toBe('2026-10-06T00:00:00.000Z');
+    expect(after.values).toEqual([30, 30, 30, 30]);
+  });
+
+  it('never fills tomorrow\'s invalid hours (every other hour null)', () => {
+    const today = geSpotDay('2026-10-06', 0.10);
+    const tomorrow = geSpotDay('2026-10-07', 0.40).map((p, i) => (i % 2 === 1 ? { ...p, value: null } : p));
+    const series = pricePointsToSeries([...today, ...tomorrow], opts({ nowMs: Date.parse('2026-10-06T14:00:00+02:00') }));
+    expect(series.start).toBe('2026-10-05T22:00:00.000Z');
+    expect(series.values).toHaveLength((24 + 1) * 4); // today + Oct 7 00:00 only
+    expect(slotReader(series)('2026-10-06T22:45:00Z')).toBeCloseTo(40);
+  });
+
+  it('ends the run at a null price whose time falls in a hole after the run', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T02:00:00+02:00', value: null },
+      { time: '2026-10-06T03:00:00+02:00', value: 0.3 },
+    ];
     const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
-    expect(series.values).toEqual([10, 10, 10, 10, 10, 10, 10, 10, 30, 30, 30, 30]);
+    expect(series.values).toEqual([10, 10, 10, 10]);
+  });
+
+  it('bridges at most one omitted hour per run; a second one splits the run', () => {
+    const points = geSpotDay('2026-10-06', 0.10).filter(p => !/T(07|15):/.test(p.time));
+    const morning = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T05:00:00+02:00') }));
+    expect(morning.start).toBe('2026-10-05T22:00:00.000Z');
+    expect(morning.values).toHaveLength(15 * 4); // 00:00..14:59 local, 07:00 bridged
+    expect(slotReader(morning)('2026-10-06T05:00:00Z')).toBeCloseTo(16);
+
+    const evening = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T18:00:00+02:00') }));
+    expect(evening.start).toBe('2026-10-06T14:00:00.000Z'); // 16:00 local
+    expect(evening.values).toHaveLength(8 * 4);
+  });
+
+  it('fills no hole when a point\'s timestamp could not be parsed (it may belong there)', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: 'garbage', value: 0.9 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(series.values).toEqual([10, 10, 10, 10]);
   });
 
   it.each([
