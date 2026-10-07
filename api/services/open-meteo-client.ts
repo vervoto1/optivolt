@@ -5,8 +5,16 @@
  * Uses the pure URL builders and response parsers from lib/open-meteo.ts.
  */
 
-import { buildArchiveUrl, buildForecastUrl, parseIrradianceResponse, parseForecastResponse } from '../../lib/open-meteo.ts';
+import {
+  buildArchiveUrl,
+  buildForecastUrl,
+  buildTemperatureUrl,
+  parseIrradianceResponse,
+  parseForecastResponse,
+  parseTemperatureResponse,
+} from '../../lib/open-meteo.ts';
 import type { IrradianceRecord } from '../../lib/predict-pv.ts';
+import type { TemperatureRecord } from '../../lib/load-predictor-temperature.ts';
 import { fetchWithTimeout } from '../../lib/fetch-utils.ts';
 
 const OPEN_METEO_TIMEOUT_MS = 15_000;
@@ -51,4 +59,28 @@ export async function fetchForecastIrradiance(
 
   const data = await response.json();
   return parseForecastResponse(data, resolution);
+}
+
+/**
+ * Fetch hourly outside temperature (past + forecast) from the Open-Meteo
+ * Forecast API. pastDays is capped at 92 and forecastDays at 16 (API limits);
+ * hours older than about 68 days come back null and are dropped by the parser
+ * (OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA).
+ */
+export async function fetchTemperatureSeries(
+  lat: number,
+  lon: number,
+  pastDays: number,
+  forecastDays: number,
+  timeoutMs = OPEN_METEO_TIMEOUT_MS,
+): Promise<TemperatureRecord[]> {
+  const url = buildTemperatureUrl({ latitude: lat, longitude: lon, pastDays, forecastDays });
+  const response = await fetchWithTimeout(url, {}, { timeoutMs, label: 'Open-Meteo temperature request' });
+
+  if (!response.ok) {
+    throw new Error(`Open-Meteo temperature request returned status ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseTemperatureResponse(data);
 }

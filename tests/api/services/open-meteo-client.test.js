@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
-import { fetchArchiveIrradiance, fetchForecastIrradiance } from '../../../api/services/open-meteo-client.ts';
+import { fetchArchiveIrradiance, fetchForecastIrradiance, fetchTemperatureSeries } from '../../../api/services/open-meteo-client.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -280,5 +280,32 @@ describe('open-meteo-client — request deadlines', () => {
 
     await expect(fetchForecastIrradiance(51.05, 3.71, undefined, 60, 5))
       .rejects.toThrow('Open-Meteo Forecast API request timed out after 5ms');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchTemperatureSeries
+// ---------------------------------------------------------------------------
+
+describe('fetchTemperatureSeries', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('fetches hourly temperature_2m with capped day counts and parses it', async () => {
+    mockFetch.mockResolvedValue(makeOkResponse({
+      hourly: { time: ['2026-03-21T12:00'], temperature_2m: [9.5] },
+    }));
+    const records = await fetchTemperatureSeries(52.1, 5.2, 200, 3);
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('hourly=temperature_2m');
+    expect(url).toContain('past_days=92');
+    expect(url).toContain('forecast_days=3');
+    expect(records).toEqual([{ time: Date.UTC(2026, 2, 21, 12), temp_C: 9.5 }]);
+  });
+
+  it('throws an Open-Meteo error on a non-ok response', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse(429));
+    await expect(fetchTemperatureSeries(52.1, 5.2, 30, 2)).rejects.toThrow('Open-Meteo temperature request returned status 429');
   });
 });

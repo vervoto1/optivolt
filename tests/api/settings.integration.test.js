@@ -128,4 +128,133 @@ describe('Settings route integration', () => {
     expect(saved.rebalanceEnabled).toBe(true);
     expect(saved.dischargeEfficiency_percent).toBe(0);
   });
+
+  it('POST /settings rejects a rebalanceHoldHours above 12 h and accepts the bound', async () => {
+    await writeSettings({ rebalanceHoldHours: 3 });
+    const before = await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8');
+
+    for (const bad of [12.25, 30, -1]) {
+      const res = await post(settingsRouter, '/', { rebalanceHoldHours: bad });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/rebalanceHoldHours must be a number between 0 and 12/);
+    }
+    expect(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).toBe(before);
+
+    const ok = await post(settingsRouter, '/', { rebalanceHoldHours: 12 });
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).rebalanceHoldHours).toBe(12);
+  });
+
+  describe('rebalance cycle reset on toggle', () => {
+    const PENDING_SINCE_MS = Date.parse('2024-01-01T00:00:00Z');
+    const dataPath = () => path.join(tempDir, 'data.json');
+
+    async function writeDataWithRebalanceState(rebalanceState) {
+      const defaults = JSON.parse(await fs.readFile(new URL('../../api/defaults/default-data.json', import.meta.url), 'utf8'));
+      await fs.writeFile(dataPath(), `${JSON.stringify({ ...defaults, rebalanceState }, null, 2)}\n`, 'utf8');
+    }
+    const readRebalanceState = async () => JSON.parse(await fs.readFile(dataPath(), 'utf8')).rebalanceState;
+
+    // Switching rebalancing on stamps the pending marker with the save time.
+    async function postAndReadPendingStamp(patch) {
+      const beforeMs = Date.now();
+      const res = await post(settingsRouter, '/', patch);
+      const afterMs = Date.now();
+      const state = await readRebalanceState();
+      expect(state.pendingSinceMs).toBeGreaterThanOrEqual(beforeMs);
+      expect(state.pendingSinceMs).toBeLessThanOrEqual(afterMs);
+      return { res, state };
+    }
+
+    it('POST /settings replaces a stale pendingSinceMs when rebalancing is switched on again', async () => {
+      // Disabled, then re-enabled before any plan ran with rebalancing off.
+      await writeSettings({ rebalanceEnabled: false });
+      await writeDataWithRebalanceState({ startMs: null, pendingSinceMs: PENDING_SINCE_MS });
+
+      const { res, state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
+
+      expect(res.status).toBe(200);
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
+      expect(state.pendingSinceMs).not.toBe(PENDING_SINCE_MS);
+    });
+
+    it('POST /settings starts the give-up period when rebalancing is switched on with no cycle state', async () => {
+      // Stamped here rather than only from an Optimal plan, so solves that keep
+      // failing cannot keep the hold pending forever.
+      await writeSettings({ rebalanceEnabled: false });
+      await writeDataWithRebalanceState(undefined);
+
+      const { res, state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
+
+      expect(res.status).toBe(200);
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
+    });
+
+    it('POST /settings resets a started hold when rebalancing is switched off mid-hold', async () => {
+      await writeSettings({ rebalanceEnabled: true });
+      await writeDataWithRebalanceState({ startMs: PENDING_SINCE_MS, pendingSinceMs: PENDING_SINCE_MS });
+
+      await post(settingsRouter, '/', { rebalanceEnabled: false });
+
+      expect(await readRebalanceState()).toEqual({ startMs: null });
+    });
+
+    it('POST /settings resets a started hold when rebalancing is switched on again', async () => {
+      // Disabled mid-hold before this fix (or before any plan ran): the stale
+      // start would otherwise read as a completed cycle on the next plan.
+      await writeSettings({ rebalanceEnabled: false });
+      await writeDataWithRebalanceState({ startMs: PENDING_SINCE_MS });
+
+      const { state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
+
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
+    });
+
+    it('POST /settings keeps the rest of the data file when it resets the cycle', async () => {
+      await writeSettings({ rebalanceEnabled: true });
+      await writeDataWithRebalanceState({ startMs: PENDING_SINCE_MS });
+      const raw = JSON.parse(await fs.readFile(dataPath(), 'utf8'));
+      await fs.writeFile(dataPath(), JSON.stringify({ ...raw, lastFullSocAt: '2024-01-01T00:00:00.000Z' }), 'utf8');
+
+      await post(settingsRouter, '/', { rebalanceEnabled: false });
+
+      const saved = JSON.parse(await fs.readFile(dataPath(), 'utf8'));
+      expect(saved.rebalanceState).toEqual({ startMs: null });
+      expect(saved.lastFullSocAt).toBe('2024-01-01T00:00:00.000Z');
+      expect(saved.load).toEqual(raw.load);
+    });
+
+    it('POST /settings writes nothing on a toggle when there is no cycle progress to reset', async () => {
+      await writeSettings({ rebalanceEnabled: true });
+      await writeDataWithRebalanceState({ startMs: null });
+      const before = await fs.readFile(dataPath(), 'utf8');
+
+      await post(settingsRouter, '/', { rebalanceEnabled: false });
+
+      expect(await fs.readFile(dataPath(), 'utf8')).toBe(before);
+    });
+
+    it('POST /settings leaves the marker alone when rebalanceEnabled does not change', async () => {
+      await writeSettings({ rebalanceEnabled: true });
+      await writeDataWithRebalanceState({ startMs: null, pendingSinceMs: PENDING_SINCE_MS });
+      const before = await fs.readFile(dataPath(), 'utf8');
+
+      await post(settingsRouter, '/', { rebalanceEnabled: true, maxSoc_percent: 95 });
+
+      expect(await fs.readFile(dataPath(), 'utf8')).toBe(before);
+    });
+
+    it('POST /settings still saves when the data file cannot be patched', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await writeSettings({ rebalanceEnabled: false });
+      await fs.writeFile(dataPath(), '{ not json', 'utf8');
+
+      const res = await post(settingsRouter, '/', { rebalanceEnabled: true });
+
+      expect(res.status).toBe(200);
+      expect(JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).rebalanceEnabled).toBe(true);
+      expect(warn).toHaveBeenCalledWith('[settings] could not reset the rebalance cycle progress:', expect.any(String));
+      warn.mockRestore();
+    });
+  });
 });

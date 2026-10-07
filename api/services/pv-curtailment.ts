@@ -146,7 +146,7 @@ export async function reconcilePvCurtailmentAtBoot(): Promise<void> {
     if (state === 'unreadable') {
       // The record exists but was damaged (e.g. truncated by a power loss): a disable may
       // still be in place. Restore it with the current settings' target.
-      const fallback = await currentSettingsTarget();
+      const fallback = currentSettingsTarget();
       if (!fallback) return;
       console.warn(
         `[pv-curtailment] the persisted Pv/Disable record is unreadable; restoring PV on acsystem `
@@ -189,23 +189,23 @@ export async function reconcilePvCurtailmentAtBoot(): Promise<void> {
   }
 }
 
-/** The restore target the current settings point at, or null (logged) when it cannot be resolved. */
-async function currentSettingsTarget(): Promise<PvDisableTarget | null> {
+/**
+ * The restore target the current settings point at, or null (logged) without settings.
+ * Without a configured portal id the serial is left empty and detected by the restore
+ * itself, so a GX that is unreachable at boot only delays the restore (it stays pending
+ * and is retried) instead of dropping it.
+ */
+function currentSettingsTarget(): PvDisableTarget | null {
   const cfg = activeConfig;
   if (!cfg) {
     console.warn('[pv-curtailment] no PV curtailment settings to restore an unreadable record with; leaving it for the next start');
     return null;
   }
-  try {
-    return {
-      serial: cfg.portalId || await getVictronSerial(),
-      acsystemInstance: cfg.acsystemInstance,
-      enphaseSwitchEntity: cfg.enphaseSwitchEntity ?? '',
-    };
-  } catch (err) {
-    console.warn('[pv-curtailment] could not resolve the Victron serial to restore an unreadable record; leaving it for the next start:', (err as Error).message);
-    return null;
-  }
+  return {
+    serial: cfg.portalId || '',
+    acsystemInstance: cfg.acsystemInstance,
+    enphaseSwitchEntity: cfg.enphaseSwitchEntity ?? '',
+  };
 }
 
 /**
@@ -424,6 +424,8 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
   }
 
   const serial = cfg.portalId || await getVictronSerial();
+  // Stopped while the serial was being detected: nothing is recorded or disabled.
+  if (generation !== serviceGeneration) return;
   const target: PvDisableTarget = {
     serial,
     acsystemInstance: cfg.acsystemInstance,
@@ -434,9 +436,13 @@ async function applyPvDisabled(disabled: boolean, decision: PvCurtailmentDecisio
   await savePvCurtailmentState({ ownsDisable: true, sinceMs: Date.now(), ...target });
   ownedTarget = target;
   restorePending = true;
-  // Stopped while saving: do not disable. The record makes the next start restore,
-  // which is a harmless Pv/Disable=0.
-  if (generation !== serviceGeneration) return;
+  // Stopped while saving: do not disable. The record is restored (a harmless
+  // Pv/Disable=0) by whatever runs now: the standalone retry when the feature was
+  // restarted switched off, the live loop when it is on, or the next start.
+  if (generation !== serviceGeneration) {
+    syncRestoreRetry();
+    return;
+  }
 
   await writeVictronSetting(pvDisablePath(target.acsystemInstance), 1, { serial });
   // Stopped (or a restore started) while the disable was being published: that restore
@@ -500,11 +506,25 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
     switchFailures = 0;
     unansweredReadbacks = 0;
   }
-  const nowMs = Date.now();
+  // Monotonic: the give-up span must not jump with the wall clock (e.g. an RTC
+  // correction right after boot).
+  const nowMs = performance.now();
 
   // A retry that only waits on the Enphase switch does not rewrite Pv/Disable.
   const victronDone = victronRestoredFor === target;
-  if (!victronDone) {
+  let serialResolved = true;
+  if (!victronDone && !target.serial) {
+    // A target from an unreadable record without a configured portal id: detect the
+    // serial now. Until it resolves the Victron part stays pending and is retried; the
+    // Enphase switch below is still turned back on, since it does not need the serial.
+    try {
+      target.serial = await getVictronSerial();
+    } catch (err) {
+      console.warn('[pv-curtailment] could not resolve the Victron serial for the PV restore; will retry:', (err as Error).message);
+      serialResolved = false;
+    }
+  }
+  if (!victronDone && serialResolved) {
     try {
       await writeVictronSetting(pvDisablePath(target.acsystemInstance), 0, { serial: target.serial });
     } catch (err) {
@@ -542,12 +562,19 @@ async function runRestore(record: PvCurtailmentWriteRecord): Promise<boolean> {
     }
   }
   const switchRestored = !target.enphaseSwitchEntity || switchRestoredFor === target;
+  // Nothing was written without a serial: no read-back, retry the Victron part.
+  if (!serialResolved) return false;
 
   if (!victronDone) {
     const readback = await confirmPvEnabled(target);
     if (readback === 'unanswered' && ++unansweredReadbacks === 1) firstUnansweredMs = nowMs;
     if (readback === 'enabled') {
       victronRestoredFor = target;
+    } else if (readback === 'disabled') {
+      // The GX answered and PV really is still off: never give up on that, so the
+      // unanswered streak starts over.
+      unansweredReadbacks = 0;
+      firstUnansweredMs = 0;
     } else if (readback === 'unanswered' && restoreGivenUp(unansweredReadbacks, firstUnansweredMs, nowMs)) {
       // Every Pv/Disable=0 publish went out, but the read-back never answered (stale
       // serial/instance in the record, or no N/ reply on this GX): stop retrying.

@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   clampHistoricalPredictor,
+  clampTemperaturePredictor,
   normalizePredictionConfigPatch,
+  normalizeTemperaturePredictor,
+  TEMPERATURE_LOOKBACK_WEEKS_MAX,
   LOOKBACK_WEEKS_MAX,
   LOOKBACK_WEEKS_MIN,
 } from '../../../api/services/prediction-config-schema.ts';
+import { temperaturePastDays } from '../../../lib/load-predictor-temperature.ts';
+import { OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA } from '../../../lib/open-meteo.ts';
 
 const hp = (overrides = {}) => ({ sensor: 'Total Load', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', ...overrides });
 
@@ -102,5 +107,46 @@ describe('clampHistoricalPredictor', () => {
     expect(clampHistoricalPredictor(undefined)).toBeUndefined();
     expect(clampHistoricalPredictor(null)).toBeNull();
     expect(clampHistoricalPredictor('x')).toBe('x');
+  });
+});
+
+describe('temperature predictor (opt-in)', () => {
+  const tp = (overrides = {}) => ({ sensor: 'Load without EV', lookbackWeeks: 4, dayFilter: 'all', bins: 3, ...overrides });
+
+  it('accepts activeType "temperature" and a valid temperaturePredictor', () => {
+    const out = normalizePredictionConfigPatch({ activeType: 'temperature', temperaturePredictor: { ...tp(), extra: 1 } });
+    expect(out.activeType).toBe('temperature');
+    expect(out.temperaturePredictor).toEqual(tp());
+  });
+
+  it('bounds lookbackWeeks to the days Open-Meteo fills with temperatures, and bins to 2-8', () => {
+    // Lookback + recent week + margins must stay inside the ~68 past days the
+    // Forecast API actually returns data for (past_days accepts 92, but the
+    // older hours come back null).
+    expect(TEMPERATURE_LOOKBACK_WEEKS_MAX).toBe(8);
+    expect(temperaturePastDays(TEMPERATURE_LOOKBACK_WEEKS_MAX, 7)).toBeLessThanOrEqual(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
+    expect(temperaturePastDays(TEMPERATURE_LOOKBACK_WEEKS_MAX + 1, 7)).toBeGreaterThan(OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA);
+    expect(normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 8 }) }).temperaturePredictor.lookbackWeeks).toBe(8);
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 9 }) }))
+      .toThrow('temperaturePredictor.lookbackWeeks');
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ lookbackWeeks: 0 }) })).toThrow();
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ bins: 1 }) })).toThrow('temperaturePredictor.bins');
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ bins: 9 }) })).toThrow('temperaturePredictor.bins');
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ dayFilter: 'nope' }) })).toThrow('temperaturePredictor.dayFilter');
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: tp({ sensor: '' }) })).toThrow('temperaturePredictor.sensor');
+    expect(() => normalizePredictionConfigPatch({ temperaturePredictor: 'x' })).toThrow();
+  });
+
+  it('labels errors with the caller’s name (the Chart route validates a strategy)', () => {
+    expect(() => normalizeTemperaturePredictor(tp({ bins: 0 }), 'strategy')).toThrow('strategy.bins');
+  });
+
+  it('clamps a stored temperature predictor on load without throwing', () => {
+    expect(clampTemperaturePredictor(tp({ lookbackWeeks: 40, bins: 0, dayFilter: 'x' })))
+      .toEqual(tp({ lookbackWeeks: 8, bins: 2, dayFilter: 'all' }));
+    expect(clampTemperaturePredictor(tp({ lookbackWeeks: 'a', bins: null }))).toEqual(tp({ lookbackWeeks: 4, bins: 3 }));
+    const ok = tp();
+    expect(clampTemperaturePredictor(ok)).toBe(ok);
+    expect(clampTemperaturePredictor(undefined)).toBeUndefined();
   });
 });

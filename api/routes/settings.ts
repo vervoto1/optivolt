@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import { loadSettings, updateSettings } from '../services/settings-store.ts';
+import { updateData } from '../services/data-store.ts';
 import { startAutoCalculate, stopAutoCalculate } from '../services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../services/pv-curtailment.ts';
@@ -39,7 +40,21 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     // Merged onto the settings as they are at write time, under the store's
     // lock, so a VRM refresh that loaded them earlier cannot revert this save.
-    const mergedSettings = (await updateSettings(prev => normalizeSettings(mergeSettings(prev, incoming as SettingsPatch))))!;
+    let rebalanceToggled = false;
+    const mergedSettings = (await updateSettings(prev => {
+      const next = normalizeSettings(mergeSettings(prev, incoming as SettingsPatch));
+      rebalanceToggled = next.rebalanceEnabled !== prev.rebalanceEnabled;
+      return next;
+    }))!;
+
+    // Switching rebalancing on or off starts a fresh cycle: drop the hold
+    // start and the pending marker left from before. A kept pending marker
+    // could make config-builder give up on the new hold at once; a kept hold
+    // start (disabled mid-hold) would let the countdown run on while
+    // rebalancing is off, so re-enabling later found the cycle "complete" and
+    // switched rebalancing off again without holding. Switching it on also
+    // starts the give-up period now (see resetRebalanceCycle).
+    if (rebalanceToggled) await resetRebalanceCycle(mergedSettings.rebalanceEnabled);
 
     // Restart timers with new settings
     stopAutoCalculate();
@@ -64,5 +79,33 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     next(toHttpError(error, 500, 'Failed to save settings'));
   }
 });
+
+/**
+ * Reset the rebalance cycle progress (a locked patch of the current data file;
+ * other fields are kept). Best effort: the settings are already saved.
+ *
+ * - Switched on: clear `rebalanceState.startMs` and stamp
+ *   `rebalanceState.pendingSinceMs` with now. The planner also stamps it, but
+ *   only from an Optimal plan, so with solves that keep failing (time limit,
+ *   an infeasible hold) the REBALANCE_PENDING_GIVE_UP_MS give-up would never
+ *   run and the hold would stay mapped indefinitely.
+ * - Switched off: clear `startMs` and `pendingSinceMs`; nothing is written
+ *   when both are already clear.
+ */
+async function resetRebalanceCycle(enabled: boolean): Promise<void> {
+  try {
+    await updateData(d => {
+      const state = d.rebalanceState;
+      if (enabled) {
+        return { ...d, rebalanceState: { ...state, startMs: null, pendingSinceMs: Date.now() } };
+      }
+      if (!state || (state.startMs == null && state.pendingSinceMs == null)) return null;
+      const { pendingSinceMs: _pendingSinceMs, ...rest } = state;
+      return { ...d, rebalanceState: { ...rest, startMs: null } };
+    });
+  } catch (err) {
+    console.warn('[settings] could not reset the rebalance cycle progress:', (err as Error).message);
+  }
+}
 
 export default router;

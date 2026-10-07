@@ -140,6 +140,15 @@ describe('loadPredictionConfig — stored strategy bounds', () => {
     expect(config.historicalPredictor).toEqual({ sensor: 'Total Load', lookbackWeeks: 1, dayFilter: 'same', aggregation: 'mean' });
   });
 
+  it('clamps a stored temperature predictor too, and adds none when absent', async () => {
+    _set(getDefaultPath(), {});
+    _set(PREDICTION_CONFIG_PATH, { temperaturePredictor: { sensor: 'Load', lookbackWeeks: 30, dayFilter: 'all', bins: 3 } });
+    expect((await loadPredictionConfig()).temperaturePredictor).toEqual({ sensor: 'Load', lookbackWeeks: 8, dayFilter: 'all', bins: 3 });
+
+    _set(PREDICTION_CONFIG_PATH, { activeType: 'historical' });
+    expect(await loadPredictionConfig()).not.toHaveProperty('temperaturePredictor');
+  });
+
   it('leaves a config without a historical predictor alone', async () => {
     _set(getDefaultPath(), { activeType: 'fixed', fixedPredictor: { load_W: 300 } });
     const config = await loadPredictionConfig();

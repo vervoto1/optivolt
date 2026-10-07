@@ -35,11 +35,19 @@ function setupDom() {
     <select id="pred-active-type" data-predictions-only="true">
       <option value="historical">Historical</option>
       <option value="fixed">Fixed</option>
+      <option value="temperature">Temperature</option>
     </select>
     <select id="pred-active-sensor" data-predictions-only="true"></select>
     <input id="pred-fixed-load-w" data-predictions-only="true" />
     <div id="pred-fixed-fields"></div>
     <div id="pred-historical-fields"></div>
+    <div id="pred-temperature-fields" class="hidden"></div>
+    <input id="pred-temp-lookback" data-predictions-only="true" />
+    <input id="pred-temp-bins" data-predictions-only="true" />
+    <select id="pred-temp-filter" data-predictions-only="true">
+      <option value="all">all</option>
+      <option value="same">same</option>
+    </select>
     <input id="pred-active-lookback" data-predictions-only="true" />
     <select id="pred-active-filter" data-predictions-only="true">
       <option value="same">same</option>
@@ -659,5 +667,190 @@ describe('prediction config form before the stored config has loaded', () => {
     api.fetchPredictionConfig.mockResolvedValue({});
     await form.hydratePredictionForm();
     expect(() => deps.assertCanSave()).not.toThrow();
+  });
+});
+
+describe('temperature predictor fields (opt-in)', () => {
+  // Fresh module state per test: whether the form sends temperaturePredictor is module-level.
+  let api;
+  let form;
+  let validation;
+
+  const sensors = [{ id: 'sensor.load', name: 'Load' }, { id: 'sensor.ev', name: 'EV' }];
+  const hp = { sensor: 'Load', lookbackWeeks: 2, dayFilter: 'weekday-weekend', aggregation: 'median' };
+  const wire = () => form.wirePredictionForm({ onForecastAll: vi.fn(), onPvForecast: vi.fn(), onForecastResolutionChange: vi.fn() });
+  const hidden = id => document.getElementById(id).classList.contains('hidden');
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    setupDom();
+    vi.resetModules();
+    api = await import('../../app/src/api/api.js');
+    validation = await import('../../app/src/predictions-validation.js');
+    form = await import('../../app/src/predictions/config-form.js');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+  });
+
+  it('sends no temperaturePredictor for a config that never used it (stored file unchanged)', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+
+    expect(form.readPredictionFormValues()).not.toHaveProperty('temperaturePredictor');
+    // The fields still show usable defaults should the user pick the type.
+    expect(document.getElementById('pred-temp-lookback').value).toBe('4');
+    expect(document.getElementById('pred-temp-bins').value).toBe('3');
+    expect(document.getElementById('pred-temp-filter').value).toBe('all');
+    expect(hidden('pred-temperature-fields')).toBe(true);
+  });
+
+  it('hydrates a stored temperature predictor and keeps the historical fallback visible', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({
+      sensors,
+      activeType: 'temperature',
+      historicalPredictor: hp,
+      temperaturePredictor: { sensor: 'Load', lookbackWeeks: 6, dayFilter: 'same', bins: 4 },
+    });
+    await form.hydratePredictionForm();
+
+    expect(hidden('pred-temperature-fields')).toBe(false);
+    expect(hidden('pred-historical-fields')).toBe(false);
+    expect(hidden('pred-fixed-fields')).toBe(true);
+    expect(form.readPredictionFormValues()).toMatchObject({
+      activeType: 'temperature',
+      historicalPredictor: hp,
+      temperaturePredictor: { sensor: 'Load', lookbackWeeks: 6, dayFilter: 'same', bins: 4 },
+    });
+  });
+
+  it('includes the predictor once the type is selected or a temperature field is edited', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+    wire();
+
+    document.getElementById('pred-temp-bins').value = '5';
+    document.getElementById('pred-temp-bins').dispatchEvent(new Event('input', { bubbles: true }));
+    expect(form.readPredictionFormValues()).toMatchObject({
+      activeType: 'historical',
+      temperaturePredictor: { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 5 },
+    });
+
+    const type = document.getElementById('pred-active-type');
+    type.value = 'temperature';
+    type.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(hidden('pred-temperature-fields')).toBe(false);
+    document.getElementById('pred-temp-lookback').value = '';
+    expect(form.readPredictionFormValues().temperaturePredictor.lookbackWeeks).toBe(4);
+  });
+
+  it('applyTemperatureRow switches the form to the row’s temperature strategy and sensor', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+
+    form.applyTemperatureRow({ sensor: 'EV', lookbackWeeks: 8, dayFilter: 'same', bins: 6 });
+    expect(hidden('pred-temperature-fields')).toBe(false);
+    expect(form.readPredictionFormValues()).toMatchObject({
+      activeType: 'temperature',
+      historicalPredictor: { ...hp, sensor: 'EV' },
+      temperaturePredictor: { sensor: 'EV', lookbackWeeks: 8, dayFilter: 'same', bins: 6 },
+    });
+  });
+
+  describe('useTemperatureRow (the Use button on a temperature row)', () => {
+    const row = { sensor: 'Load', lookbackWeeks: 8, dayFilter: 'same', bins: 6 };
+
+    it('leaves the stored historical strategy alone, even when the form holds a stale one', async () => {
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: hp });
+      await form.hydratePredictionForm();
+      // Auto-select has since switched the stored strategy server-side.
+      const switched = { ...hp, lookbackWeeks: 3, dayFilter: 'same' };
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: switched });
+      api.savePredictionConfig.mockResolvedValue({});
+
+      await form.useTemperatureRow(row);
+
+      const sent = api.savePredictionConfig.mock.calls[0][0];
+      expect(sent).not.toHaveProperty('historicalPredictor');
+      expect(sent).toMatchObject({ activeType: 'temperature', temperaturePredictor: row });
+      // The form now shows the stored fallback, so a later save carries it.
+      expect(form.readPredictionFormValues().historicalPredictor).toEqual(switched);
+      expect(hidden('pred-temperature-fields')).toBe(false);
+    });
+
+    it('moves only the fallback’s sensor when the row is for another sensor', async () => {
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: hp });
+      await form.hydratePredictionForm();
+      const switched = { ...hp, lookbackWeeks: 3 };
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: switched });
+      api.savePredictionConfig.mockResolvedValue({});
+
+      await form.useTemperatureRow({ ...row, sensor: 'EV' });
+
+      expect(api.savePredictionConfig.mock.calls[0][0]).toMatchObject({
+        activeType: 'temperature',
+        historicalPredictor: { ...switched, sensor: 'EV' },
+        temperaturePredictor: { ...row, sensor: 'EV' },
+      });
+    });
+
+    it('sends the strategy the user edited in the form as it is', async () => {
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: hp });
+      await form.hydratePredictionForm();
+      wire();
+      const lookback = document.getElementById('pred-active-lookback');
+      lookback.value = '6';
+      lookback.dispatchEvent(new Event('change', { bubbles: true }));
+      api.fetchPredictionConfig.mockClear();
+      api.savePredictionConfig.mockResolvedValue({});
+
+      await form.useTemperatureRow(row);
+
+      expect(api.fetchPredictionConfig).not.toHaveBeenCalled();
+      expect(api.savePredictionConfig.mock.calls[0][0].historicalPredictor).toEqual({ ...hp, lookbackWeeks: 6 });
+    });
+
+    it('leaves the form untouched when the stored config cannot be read', async () => {
+      api.fetchPredictionConfig.mockResolvedValueOnce({ sensors, activeType: 'historical', historicalPredictor: hp });
+      await form.hydratePredictionForm();
+      api.fetchPredictionConfig.mockRejectedValueOnce(new Error('502'));
+
+      await expect(form.useTemperatureRow(row)).rejects.toThrow('502');
+      expect(document.getElementById('pred-active-type').value).toBe('historical');
+      expect(api.savePredictionConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  it('setComparisonStatus paints warnings amber', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+    wire();
+    const { setComparisonStatus, refreshPredictorFields } = validation.initValidation.mock.calls[0][0];
+    setComparisonStatus('Done (caveat)', 'warning');
+    expect(document.getElementById('pred-status').className).toContain('text-amber-600');
+
+    // refreshPredictorFields hides the temperature fields after a programmatic type change.
+    document.getElementById('pred-active-type').value = 'temperature';
+    refreshPredictorFields();
+    expect(hidden('pred-temperature-fields')).toBe(false);
+    document.getElementById('pred-active-type').value = 'historical';
+    refreshPredictorFields();
+    expect(hidden('pred-temperature-fields')).toBe(true);
+  });
+
+  it('highlights the temperature row as active when the type is selected', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({
+      sensors,
+      activeType: 'temperature',
+      historicalPredictor: hp,
+      temperaturePredictor: { sensor: 'Load', lookbackWeeks: 6, dayFilter: 'same', bins: 4 },
+    });
+    await form.hydratePredictionForm();
+    wire();
+    const deps = validation.initValidation.mock.calls[0][0];
+    expect(deps.useTemperatureRow).toBe(form.useTemperatureRow);
+    expect(deps.getHighlights().active).toEqual({ type: 'temperature', sensor: 'Load', lookbackWeeks: 6, dayFilter: 'same', bins: 4 });
   });
 });

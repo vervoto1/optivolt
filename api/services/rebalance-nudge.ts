@@ -33,6 +33,19 @@ export function recordFullSocObservation(data: Data, soc: SocData = data.soc): D
   };
 }
 
+/**
+ * Record a completed rebalance hold as the last full-SoC time. A hold that ran
+ * to completion is what the nudge asks for, even on a pack whose system SoC
+ * tops out at 99 % and so never reads FULL_SOC_PERCENT. Never moves an
+ * existing, later observation backwards.
+ */
+export function recordCompletedRebalanceHold(data: Data, completedAtMs: number): Data {
+  if (!Number.isFinite(completedAtMs)) return data;
+  const existingMs = parseTimestampMs(data.lastFullSocAt);
+  if (existingMs != null && existingMs >= completedAtMs) return data;
+  return { ...data, lastFullSocAt: new Date(completedAtMs).toISOString() };
+}
+
 export function getRebalanceNudge(data: Data, nowMs = Date.now()): RebalanceNudge {
   const lastFullMs = parseTimestampMs(data.lastFullSocAt);
   if (lastFullMs == null) {

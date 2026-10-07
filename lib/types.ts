@@ -125,6 +125,14 @@ export interface SolverConfig {
   rebalanceRemainingSlots?: number;
   rebalanceTargetSoc_percent?: number;
   /**
+   * SoC the LP requires through the hold window, when lower than
+   * `rebalanceTargetSoc_percent` (which stays the DESS-mapped target). Unset,
+   * the LP holds at `rebalanceTargetSoc_percent`. The planner sets it to
+   * target − REBALANCE_START_TOLERANCE_PERCENT once the live SoC is within that
+   * tolerance, so a hold from slot 0 is reachable from the current SoC.
+   */
+  rebalanceHoldSoc_percent?: number;
+  /**
    * Latest slot index (inclusive) at which the rebalance hold window may start.
    * Set to 0 once the hold has started so the solver cannot re-place the rest
    * of a running hold later in the horizon; the planner raises it to the

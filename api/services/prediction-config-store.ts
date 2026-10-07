@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.ts';
-import { clampHistoricalPredictor } from './prediction-config-schema.ts';
+import { clampHistoricalPredictor, clampTemperaturePredictor } from './prediction-config-schema.ts';
 import type { PredictionConfig, PredictionValidationWindow, PvPredictionConfig } from '../types.ts';
 
 // v8 ignore next — module-level setup
@@ -83,6 +83,11 @@ export async function loadPredictionConfig(): Promise<PredictionConfig> {
     // validates a new one: an out-of-range lookbackWeeks from a pre-0.7.56
     // file would otherwise still reach predict() on every auto-calculate tick.
     historicalPredictor: clampHistoricalPredictor(rest.historicalPredictor),
+    // Same for the temperature predictor: its lookback also sizes an
+    // Open-Meteo request, which only fills about the last 68 past days.
+    ...(rest.temperaturePredictor !== undefined
+      ? { temperaturePredictor: clampTemperaturePredictor(rest.temperaturePredictor) }
+      : {}),
     // Always recompute validationWindow — never trust a persisted value
     validationWindow: computeValidationWindow(7),
   };

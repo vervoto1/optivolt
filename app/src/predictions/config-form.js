@@ -3,9 +3,24 @@ import { debounce } from '../utils.js';
 import { initValidation, rerenderTable } from '../predictions-validation.js';
 import { getLastAutoSelectRun, initAutoSelect } from './auto-select.js';
 import { formatStrategy } from './strategy.js';
+import { wireSensorCheck } from './sensor-check.js';
 
 /** Form fields whose values make up `historicalPredictor`. */
 const STRATEGY_FIELD_IDS = ['pred-active-sensor', 'pred-active-lookback', 'pred-active-filter', 'pred-active-agg'];
+
+/** Form fields of the opt-in temperature predictor (its sensor is the shared Sensor select). */
+const TEMPERATURE_FIELD_IDS = ['pred-temp-lookback', 'pred-temp-bins', 'pred-temp-filter'];
+
+/** Form defaults for a temperature predictor the server has not stored yet. */
+const TEMPERATURE_DEFAULTS = { lookbackWeeks: 4, dayFilter: 'all', bins: 3 };
+
+/**
+ * True when the form should send `temperaturePredictor`: the server already
+ * stores one, the user edited a temperature field, or the type is selected.
+ * Otherwise saves leave the key out, so a config that never used the
+ * temperature predictor stays byte-for-byte what it was.
+ */
+let temperatureInUse = false;
 
 /**
  * True once the user has changed a strategy field since the last hydrate/save.
@@ -71,6 +86,8 @@ export function applyPredictionConfigToForm(config) {
   setVal('pred-active-type', config.activeType ?? 'historical');
   setVal('pred-fixed-load-w', config.fixedPredictor?.load_W ?? '');
   renderHistoricalConfig(config.historicalPredictor ?? null);
+  temperatureInUse = !!config.temperaturePredictor;
+  renderTemperatureConfig(config.temperaturePredictor ?? TEMPERATURE_DEFAULTS);
   renderPvConfig(config.pvConfig ?? null);
   updatePredictorFieldVisibility();
   // The form now mirrors the server, so nothing local is pending.
@@ -92,6 +109,12 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
     el?.addEventListener('change', markStrategyDirty);
   }
 
+  for (const id of TEMPERATURE_FIELD_IDS) {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', markTemperatureInUse);
+    el?.addEventListener('change', markTemperatureInUse);
+  }
+
   document.getElementById('pred-active-type')
     ?.addEventListener('change', updatePredictorFieldVisibility);
 
@@ -99,18 +122,26 @@ export function wirePredictionForm({ onForecastAll, onPvForecast, onForecastReso
     readFormValues: readPredictionFormValues,
     assertCanSave: assertPredictionFormHydrated,
     renderHistoricalConfig,
+    useTemperatureRow,
+    refreshPredictorFields: updatePredictorFieldVisibility,
     setComparisonStatus,
     getHighlights: () => {
       // The run record's `best` is a bare strategy score; the sensor it was
       // scored for is the record's top-level `sensor`.
       const run = getLastAutoSelectRun();
+      const values = readPredictionFormValues();
+      // Untyped strategies are historical (see sameStrategy in predictions-validation.js).
+      const active = values.activeType === 'temperature'
+        ? (values.temperaturePredictor ? { type: 'temperature', ...values.temperaturePredictor } : null)
+        : values.historicalPredictor ?? null;
       return {
-        active: readPredictionFormValues().historicalPredictor ?? null,
+        active,
         best: run?.best ? { ...run.best, sensor: run.sensor } : null,
       };
     },
   };
   initValidation(validationDeps);
+  wireSensorCheck();
 
   void initAutoSelect({
     getCurrentStrategy: () => readPredictionFormValues().historicalPredictor ?? null,
@@ -175,6 +206,50 @@ export async function applyStrategyToForm({ lookbackWeeks, dayFilter, aggregatio
   setComparisonStatus(`Active config updated: ${formatStrategy(strategy)}`);
 }
 
+/**
+ * The comparison table's Use button on a temperature row: an explicit,
+ * user-initiated switch of the live load forecast to the temperature
+ * predictor (nothing else ever selects it). The shared Sensor select moves to
+ * the row's sensor, so the historical fallback predicts the same series.
+ */
+export function applyTemperatureRow({ sensor, lookbackWeeks, dayFilter, bins }) {
+  setVal('pred-active-sensor', sensor ?? '');
+  renderTemperatureConfig({ lookbackWeeks, dayFilter, bins });
+  setVal('pred-active-type', 'temperature');
+  markTemperatureInUse();
+  updatePredictorFieldVisibility();
+}
+
+/**
+ * Apply a temperature row and save it (the Use button). Unlike a plain form
+ * save this does not push the form's possibly stale historical strategy: the
+ * auto-selector may have rewritten `historicalPredictor` server-side since
+ * the page loaded, and a whole-form save would quietly revert that. Unless
+ * the user edited the strategy fields here, `historicalPredictor` is sent
+ * only when the row moves the fallback to another sensor, and then as the
+ * stored strategy with just the sensor changed. The form's strategy fields
+ * are refreshed from the stored one either way.
+ */
+export async function useTemperatureRow(row) {
+  assertPredictionFormHydrated();
+  // Read before touching the form, so a failed read leaves it as it was.
+  const stored = strategyDirty ? null : (await fetchPredictionConfig()).historicalPredictor ?? null;
+  applyTemperatureRow(row);
+  const partial = readPredictionFormValues();
+  if (stored) {
+    const fallback = { ...stored, sensor: row.sensor };
+    renderHistoricalConfig(fallback);
+    if (stored.sensor === row.sensor) delete partial.historicalPredictor;
+    else partial.historicalPredictor = fallback;
+  }
+  await savePredictionConfig(partial);
+  strategyDirty = false;
+}
+
+function markTemperatureInUse() {
+  temperatureInUse = true;
+}
+
 /** Throws unless the form holds the stored config (see `formHydrated`). */
 function assertPredictionFormHydrated() {
   if (!formHydrated) throw new Error(NOT_HYDRATED_MESSAGE);
@@ -221,6 +296,13 @@ export function readPredictionFormValues() {
     aggregation: getVal('pred-active-agg') || 'mean',
   } : null;
 
+  const temperaturePredictor = activeSensor && (temperatureInUse || activeType === 'temperature') ? {
+    sensor: activeSensor,
+    lookbackWeeks: intOr(getVal('pred-temp-lookback'), TEMPERATURE_DEFAULTS.lookbackWeeks),
+    dayFilter: getVal('pred-temp-filter') || TEMPERATURE_DEFAULTS.dayFilter,
+    bins: intOr(getVal('pred-temp-bins'), TEMPERATURE_DEFAULTS.bins),
+  } : null;
+
   const fixedLoadW = getVal('pred-fixed-load-w');
   const fixedLoadWParsed = fixedLoadW !== '' ? parseFloat(fixedLoadW) : NaN;
   const fixedPredictor = Number.isFinite(fixedLoadWParsed) && fixedLoadWParsed >= 0 ? { load_W: fixedLoadWParsed } : null;
@@ -242,8 +324,14 @@ export function readPredictionFormValues() {
     activeType,
     ...(historicalPredictor ? { historicalPredictor } : {}),
     ...(fixedPredictor ? { fixedPredictor } : {}),
+    ...(temperaturePredictor ? { temperaturePredictor } : {}),
     pvConfig,
   };
+}
+
+function intOr(raw, fallback) {
+  const value = parseInt(raw, 10);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function coordOrNull(raw) {
@@ -256,7 +344,16 @@ function updatePredictorFieldVisibility() {
   const type = getVal('pred-active-type') || 'historical';
   const isFixed = type === 'fixed';
   document.getElementById('pred-fixed-fields')?.classList.toggle('hidden', !isFixed);
+  // The temperature type keeps the historical fields visible: they are its fallback.
   document.getElementById('pred-historical-fields')?.classList.toggle('hidden', isFixed);
+  document.getElementById('pred-temperature-fields')?.classList.toggle('hidden', type !== 'temperature');
+}
+
+function renderTemperatureConfig(temperaturePredictor) {
+  if (!temperaturePredictor) return;
+  setVal('pred-temp-lookback', temperaturePredictor.lookbackWeeks ?? TEMPERATURE_DEFAULTS.lookbackWeeks);
+  setVal('pred-temp-filter', temperaturePredictor.dayFilter ?? TEMPERATURE_DEFAULTS.dayFilter);
+  setVal('pred-temp-bins', temperaturePredictor.bins ?? TEMPERATURE_DEFAULTS.bins);
 }
 
 function renderHistoricalConfig(historicalPredictor) {
@@ -278,13 +375,16 @@ function renderPvConfig(pvConfig) {
   setVal('pred-pv-model', pvConfig.pvModel ?? 'clearSkyRatio');
 }
 
+/** `isError`: true for red, 'warning' for amber (a result with caveats, not a failure). */
 function setComparisonStatus(msg, isError = false) {
   const el = document.getElementById('pred-status');
   if (!el) return;
   el.textContent = msg;
-  el.className = isError
-    ? 'text-sm text-red-600 dark:text-red-400'
-    : 'text-sm text-ink-soft dark:text-slate-400';
+  el.className = isError === 'warning'
+    ? 'text-sm text-amber-600 dark:text-amber-400'
+    : isError
+      ? 'text-sm text-red-600 dark:text-red-400'
+      : 'text-sm text-ink-soft dark:text-slate-400';
 }
 
 function setVal(id, value) {

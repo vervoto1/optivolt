@@ -891,6 +891,7 @@
             <select id="pred-active-type" class="form-select" data-predictions-only="true">
               <option value="historical">Historical</option>
               <option value="fixed">Fixed</option>
+              <option value="temperature">Temperature (opt-in)</option>
             </select>
           </label>
 
@@ -935,6 +936,37 @@
                 <option value="all">All days</option>
               </select>
             </label>
+          </div>
+
+          <div id="pred-temperature-fields" class="space-y-3 hidden">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Temp.
+                  lookback (weeks)</span>
+                <input id="pred-temp-lookback" type="number" min="1" max="8" step="1" class="form-input"
+                  data-predictions-only="true" />
+              </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Temp.
+                  bins</span>
+                <input id="pred-temp-bins" type="number" min="2" max="8" step="1" class="form-input"
+                  data-predictions-only="true" />
+              </label>
+            </div>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Temp. day
+                filter</span>
+              <select id="pred-temp-filter" class="form-select" data-predictions-only="true">
+                <option value="all">All days</option>
+                <option value="weekday-weekend">Weekday / Weekend</option>
+                <option value="weekday-sat-sun">Weekday / Sat / Sun</option>
+                <option value="same">Same day of week</option>
+              </select>
+            </label>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Anchors the load on the outside temperature
+              (Open-Meteo, at the PV site coordinates). The historical strategy above is its fallback when
+              Open-Meteo or the anchors are unavailable. Strategy auto-select never switches to this type and
+              pauses while it is active; compare it in Strategy Comparison first.</p>
           </div>
 
           <div class="mt-4">
@@ -1170,9 +1202,10 @@
             </label>
           </div>
 
-          <p class="text-xs text-slate-500 dark:text-slate-400">Selection scores every lookback / day-filter /
-            aggregation strategy for the active sensor over the window and only switches when the best beats the
-            current one by the minimum gain. Comparison runs the 7-day table for all sensors.</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Selection scores every historical lookback /
+            day-filter / aggregation strategy for the active sensor over the window and only switches when the best
+            beats the current one by the minimum gain. It never selects the temperature predictor. Comparison runs
+            the 7-day table for all sensors, temperature strategies included.</p>
 
           <div class="grid grid-cols-2 gap-3">
             <button id="autosel-run" type="button"
@@ -1481,13 +1514,16 @@
               <tr class="text-left">
                 <th
                   class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900">
+                  Type</th>
+                <th
+                  class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900">
                   Lookback</th>
                 <th
                   class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900">
                   Day filter</th>
                 <th
                   class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900">
-                  Agg</th>
+                  Params</th>
                 <th
                   class="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900 text-right">
                   MAE</th>
@@ -1611,7 +1647,7 @@
             <input id="idle-drain" type="number" min="0" step="1" class="form-input" data-settings-input />
           </label>
           <label class="text-sm">Rebalance hold (h)
-            <input id="rebalance-hold-hours" type="number" min="0.25" step="0.25" class="form-input" data-settings-input />
+            <input id="rebalance-hold-hours" type="number" min="0.25" max="12" step="0.25" class="form-input" data-settings-input />
           </label>
           <label class="toggle col-span-2 mt-2">
             <input id="block-feedin-negative-prices" type="checkbox" checked data-settings-input>
@@ -1857,6 +1893,11 @@
               <textarea id="pred-derived" rows="5" class="form-input font-mono text-xs" data-predictions-only="true"
                 placeholder='[{"name":"Total Load","formula":["+Grid Import","-Grid Export"]}]'></textarea>
             </label>
+            <button id="pred-sensor-check" type="button"
+              class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 focus:outline-hidden focus:ring-2 focus:ring-sky-400/50 transition-colors">
+              Check sensors in Home Assistant
+            </button>
+            <div id="pred-sensor-status" role="status" aria-live="polite" class="space-y-1 text-xs"></div>
           </div>
         </section>
 

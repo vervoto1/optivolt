@@ -1,7 +1,14 @@
 import { assertCondition, toHttpError } from '../http-errors.ts';
 import type { Data, PredictionAdjustmentSeries, PredictionRunConfig, TimeSeries } from '../types.ts';
 import { loadPredictionConfig } from './prediction-config-store.ts';
-import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from './load-prediction-service.ts';
+import {
+  runValidation,
+  runForecast as runLoadForecast,
+  scoreStrategyPredictions,
+  scoreTemperatureStrategyPredictions,
+  TEMPERATURE_MISSING_COORDINATES_MESSAGE,
+} from './load-prediction-service.ts';
+import type { TemperaturePredictConfig } from '../../lib/load-predictor-temperature.ts';
 import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import { formatStrategy } from '../../lib/strategy-selector.ts';
 import type { ForecastRunResult } from './load-prediction-service.ts';
@@ -30,7 +37,6 @@ async function runWithHaGuards<T>(
   type: string,
   meta: Record<string, unknown>,
   fn: () => Promise<T>,
-  { isPv = false }: { isPv?: boolean } = {},
 ): Promise<T> {
   assertHaConnection(config);
   assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
@@ -40,7 +46,7 @@ async function runWithHaGuards<T>(
   try {
     return await fn();
   } catch (err) {
-    throw mapPredictionError(err, isPv);
+    throw mapPredictionError(err);
   }
 }
 
@@ -55,6 +61,17 @@ export function executeStrategyPredictions(config: PredictionRunConfig, strategy
     'validate/strategy',
     { strategy: `${strategy.sensor}/${formatStrategy(strategy)}` },
     () => scoreStrategyPredictions(config, strategy),
+  );
+}
+
+/** Per-hour predictions for one temperature strategy (a temperature row's Chart button). */
+export async function executeTemperatureStrategyPredictions(config: PredictionRunConfig, strategy: TemperaturePredictConfig) {
+  assertCondition(hasPvCoordinates(config.pvConfig), 400, `Cannot chart a temperature strategy: ${TEMPERATURE_MISSING_COORDINATES_MESSAGE}`);
+  return runWithHaGuards(
+    config,
+    'validate/strategy',
+    { strategy: `${strategy.sensor}/temperature/${strategy.lookbackWeeks}w/${strategy.dayFilter}/${strategy.bins} bins` },
+    () => scoreTemperatureStrategyPredictions(config, strategy),
   );
 }
 
@@ -99,6 +116,18 @@ export async function executeLoadForecast(config: PredictionRunConfig, logLabel:
     assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
     assertCondition(config.historicalPredictor != null, 400, 'historicalPredictor is required for historical activeType');
   }
+  if (config.activeType === 'temperature') {
+    // The historical predictor is the temperature predictor's fallback
+    // (Open-Meteo down, no anchors yet), so it is required here too.
+    assertHaConnection(config);
+    assertCondition(config.sensors.length > 0, 400, 'At least one sensor must be configured');
+    assertCondition(config.temperaturePredictor != null, 400, 'temperaturePredictor is required for temperature activeType');
+    assertCondition(
+      config.historicalPredictor != null,
+      400,
+      'historicalPredictor is required for temperature activeType (it is the fallback when Open-Meteo is unavailable)',
+    );
+  }
   if (config.activeType === 'fixed') {
     assertCondition(config.fixedPredictor != null, 400, 'fixedPredictor is required for fixed activeType');
     assertCondition(
@@ -113,7 +142,7 @@ export async function executeLoadForecast(config: PredictionRunConfig, logLabel:
   try {
     return await runLoadForecast(config);
   } catch (err) {
-    throw mapPredictionError(err, false);
+    throw mapPredictionError(err);
   }
 }
 
@@ -124,7 +153,7 @@ export async function executePvForecast(config: PredictionRunConfig, logLabel: s
     return null;
   }
 
-  return runWithHaGuards(config, logLabel + ' (pv)', { pvConfig: config.pvConfig }, () => runPvForecast(config), { isPv: true });
+  return runWithHaGuards(config, logLabel + ' (pv)', { pvConfig: config.pvConfig }, () => runPvForecast(config));
 }
 
 export async function persistForecastData(updates: { load?: TimeSeries; pv?: TimeSeries }) {
@@ -203,9 +232,15 @@ function applyForecastAdjustments<T extends { forecast?: TimeSeries } | null>(
   };
 }
 
-function mapPredictionError(err: unknown, isPv: boolean): Error {
+/**
+ * Open-Meteo failures (PV forecast, temperature strategies) and HA connection
+ * failures become 502s. Open-Meteo is checked first: its timeout message also
+ * contains "timed out", which would otherwise read as an HA outage. Only the
+ * PV and temperature paths call Open-Meteo, so the check needs no path flag.
+ */
+function mapPredictionError(err: unknown): Error {
   const msg = err instanceof Error ? err.message : String(err);
-  if (isPv && msg.includes('Open-Meteo')) {
+  if (msg.includes('Open-Meteo')) {
     return toHttpError(err, 502, `Open-Meteo error: ${msg}`);
   }
   if (msg.includes('auth') || msg.includes('WebSocket') || msg.includes('timed out') || msg.includes('connection refused')) {

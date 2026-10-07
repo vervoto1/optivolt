@@ -95,6 +95,7 @@ export function buildLP({
   // rebalancing (MILP)
   rebalanceRemainingSlots,
   rebalanceTargetSoc_percent,
+  rebalanceHoldSoc_percent,
   rebalanceMaxStartSlot,
 
   // EV charging
@@ -196,8 +197,11 @@ export function buildLP({
   const D = Math.min(T, Math.max(0, Math.trunc(rebalanceRemainingSlots ?? 0)));
   // Clamp target SoC to maxSoc_percent so the model is never forced above its own upper bound.
   const safeTargetSoc_percent = Math.min(rebalanceTargetSoc_percent ?? maxSoc_percent, maxSoc_percent);
+  // The hold level the LP enforces: the target, or the lower reachable level
+  // the planner sets within the start tolerance (never above the target).
+  const holdSoc_percent = Math.min(rebalanceHoldSoc_percent ?? safeTargetSoc_percent, safeTargetSoc_percent);
   const rebalanceTargetSoc_Wh = D > 0
-    ? (safeTargetSoc_percent / 100) * batteryCapacity_Wh
+    ? (holdSoc_percent / 100) * batteryCapacity_Wh
     : 0;
   // Latest allowed start position of the window (inclusive). Defaults to T - D
   // (any start that still fits); rebalanceMaxStartSlot caps it. config-builder

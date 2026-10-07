@@ -447,6 +447,19 @@ describe('buildLP — MILP rebalancing', () => {
     expect(lp).not.toContain('c_rebalance_5:');
   });
 
+  it('holds at rebalanceHoldSoc_percent when set, never above the target', () => {
+    const base = { ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: 0 };
+    const lp = buildLP({ ...base, rebalanceHoldSoc_percent: 99 });
+    for (let t = 0; t < D; t++) {
+      expect(lp).toContain(`c_rebalance_${t}: soc_${t} - 9900 start_balance_0 >= 0`);
+    }
+    // Unset or at/above the target: the LP is exactly the full-target LP.
+    expect(buildLP({ ...base, rebalanceHoldSoc_percent: 100 })).toBe(buildLP(base));
+    expect(buildLP({ ...base, rebalanceHoldSoc_percent: 120 })).toBe(buildLP(base));
+    // No remaining slots: the field emits nothing.
+    expect(buildLP({ ...mockData, rebalanceHoldSoc_percent: 99 })).toBe(buildLP(mockData));
+  });
+
   it('ignores a rebalanceMaxStartSlot beyond T - D', () => {
     const lp = buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: 99 });
     expect(lp).toBe(buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100 }));

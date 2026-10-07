@@ -9,14 +9,14 @@ import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
-import { getSolverInputs, buildPlannerConfig } from './config-builder.ts';
+import { getSolverInputs, buildPlannerConfig, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
 // Aliased: computePlan's `updateData` option means "refresh the series first".
 import { updateData as updateStoredData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
-import { getRebalanceNudge, type RebalanceNudge } from './rebalance-nudge.ts';
+import { getRebalanceNudge, recordCompletedRebalanceHold, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
 import { getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
@@ -242,14 +242,45 @@ async function readMqttSocForPlan(settings: Settings): Promise<number> {
  * start marker. Deliberately not pre-solve — a failed solve (or a failure
  * mapping its result) must never mutate user settings. Both writes are locked
  * patches of the current files, never the snapshots loaded for this plan.
+ *
+ * A cycle that ran its hold to completion also records the hold's end as
+ * `lastFullSocAt` (in the same data patch): a pack whose system SoC tops out
+ * at 99 % never reads 100 %, so the 10-day rebalance nudge would otherwise
+ * never reset after a successful cycle. The give-up path (a hold that never
+ * started) leaves it alone.
  */
-async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Promise<{ settings: Settings; data: Data }> {
+async function finishCompletedRebalanceCycle(
+  settings: Settings,
+  cfg: SolverConfig,
+  data: Data,
+): Promise<{ settings: Settings; data: Data }> {
+  const holdStartMs = data.rebalanceState?.startMs;
+  let completedAtMs: number | null = null;
+  if (holdStartMs == null) {
+    // remainingSlots is 0 without a started hold only when config-builder gave
+    // up on a hold that never started (REBALANCE_PENDING_GIVE_UP_MS).
+    const pendingSinceMs = data.rebalanceState?.pendingSinceMs;
+    const since = pendingSinceMs != null ? ` (pending since ${new Date(pendingSinceMs).toISOString()})` : '';
+    console.warn(
+      `[calculate] rebalance hold did not start within ${REBALANCE_PENDING_GIVE_UP_MS / 86_400_000} days of being enabled${since}; `
+      + 'switching rebalancing off so the battery is no longer held for it and export is not blocked indefinitely',
+    );
+  } else {
+    console.log('[calculate] rebalance hold cycle complete; switching rebalancing off');
+    // The hold ended once its slots had elapsed on the wall clock (never later than now).
+    const holdEndMs = holdStartMs + (cfg.rebalanceHoldSlots ?? 0) * cfg.stepSize_m * 60_000;
+    completedAtMs = Math.min(holdEndMs, Date.now());
+  }
   const rebalanceState = { startMs: null };
+  const finish = (d: Data): Data => {
+    const next = { ...d, rebalanceState };
+    return completedAtMs == null ? next : recordCompletedRebalanceHold(next, completedAtMs);
+  };
   await Promise.all([
     updateSettings(s => ({ ...s, rebalanceEnabled: false })),
-    updateStoredData(d => ({ ...d, rebalanceState })),
+    updateStoredData(finish),
   ]);
-  return { settings: { ...settings, rebalanceEnabled: false }, data: { ...data, rebalanceState } };
+  return { settings: { ...settings, rebalanceEnabled: false }, data: finish(data) };
 }
 
 /** How the solve treated a started hold's slot-0 pin. */
@@ -277,14 +308,16 @@ const PIN_RELAX_MIN_PROBE_LIMIT_S = 1;
 
 /**
  * A lower bound on the latest start slot a sagged hold needs: the window
- * starting at slot k needs SoC at target by the end of slot k, and no slot can
- * store more than maxChargePower_W x charge efficiency (taper, idle drain and
- * import limits only lower that). Never below `pin + 1` (the pin itself was
- * just found infeasible).
+ * starting at slot k needs SoC at the LP's hold level (the target, or the
+ * lower `rebalanceHoldSoc_percent` within the start tolerance) by the end of
+ * slot k, and no slot can store more than maxChargePower_W x charge
+ * efficiency (taper, idle drain and import limits only lower that). Never
+ * below `pin + 1` (the pin itself was just found infeasible).
  */
 function pinnedHoldStartLowerBound(cfg: SolverConfig, pin: number): number {
   const target_percent = Math.min(cfg.rebalanceTargetSoc_percent ?? cfg.maxSoc_percent, cfg.maxSoc_percent);
-  const deficit_Wh = (target_percent - cfg.initialSoc_percent) / 100 * cfg.batteryCapacity_Wh;
+  const hold_percent = Math.min(cfg.rebalanceHoldSoc_percent ?? target_percent, target_percent);
+  const deficit_Wh = (hold_percent - cfg.initialSoc_percent) / 100 * cfg.batteryCapacity_Wh;
   const perSlotStored_Wh = cfg.maxChargePower_W * (cfg.chargeEfficiency_percent / 100) * (cfg.stepSize_m / 60);
   const slotsNeeded = perSlotStored_Wh > 0 ? Math.ceil(deficit_Wh / perSlotStored_Wh) : Infinity;
   return Math.max(pin + 1, Number.isFinite(slotsNeeded) ? slotsNeeded - 1 : pin + 1);
@@ -321,7 +354,8 @@ function hasUsableSolution(result: HighsSolution, T: number): boolean {
  * plan and leaving a stale schedule on the GX when no cap below T - D is
  * found, the budget runs out before any feasible cap, or a pinned or gallop
  * solve ends with a status other than Optimal or Infeasible (e.g. a time
- * limit).
+ * limit, even with an incumbent). When the hold covers the whole horizon
+ * (T - D = 0) an infeasible pin is returned as is: the free LP is the same LP.
  *
  * `startHint` is the main plan's relaxed cap, passed by the EV preview: the
  * pin already failed there and the preview only adds EV charging, so the
@@ -355,15 +389,26 @@ function solveWithPinnedHoldFallback(
   const warn = (message: string) => {
     if (!quiet) console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (${message}`);
   };
-  const release = (reason: string): PinnedHoldSolve => {
+  const release = (reason: string, timeLimit_s?: number): PinnedHoldSolve => {
     warn(`${reason}); re-solving with the hold window free to move`);
-    return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg), relaxedMaxStartSlot: maxStart };
+    return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg, timeLimit_s), relaxedMaxStartSlot: maxStart };
   };
 
   if (startHint === undefined) {
     const result = solveOnce(solveCfg);
-    if (hasUsableSolution(result, T)) return { cfg: solveCfg, result };
-    if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
+    if (result.Status === 'Optimal' && hasUsableSolution(result, T)) return { cfg: solveCfg, result };
+    // Neither Optimal nor Infeasible (e.g. a time-limited incumbent): free the
+    // window. That pinned solve may already have used the full time limit, so
+    // the fallback free solve gets half of it.
+    if (result.Status !== 'Infeasible') {
+      return release(`solver status "${result.Status}"`, solveOptionsFor(unpinnedCfg).time_limit / 2);
+    }
+    if (maxStart <= pin) {
+      // The hold covers the whole horizon, so there is no later start to relax
+      // to: the free LP is this same LP. Let the plan fail on it as it is.
+      warn('infeasible; the hold covers the whole horizon, so there is no later start to relax to)');
+      return { cfg: solveCfg, result };
+    }
   }
 
   const isOptimal = (r: HighsSolution) => r.Status === 'Optimal' && hasUsableSolution(r, T);
@@ -415,7 +460,12 @@ function solveWithPinnedHoldFallback(
     }
   }
   // Bisect (lo, hi] down to the smallest feasible cap while the budget lasts.
-  while (hi - lo > 1 && canProbe()) {
+  let stoppedBy: string | undefined;
+  while (hi - lo > 1) {
+    if (!canProbe()) {
+      stoppedBy = 'budget/time limit';
+      break;
+    }
     const mid = Math.floor((lo + hi) / 2);
     const r = probe(mid);
     if (isOptimal(r)) {
@@ -424,34 +474,65 @@ function solveWithPinnedHoldFallback(
     } else if (r.Status === 'Infeasible') {
       lo = mid;
     } else {
+      stoppedBy = `solver status "${r.Status}"`;
       break; // keep the Optimal cap already found
     }
   }
   if (hi >= maxStart) {
-    warn(`infeasible; no start cap below slot ${maxStart} found, ${probes} relaxed solves); hold window free to move`);
+    const outcome = stoppedBy
+      ? `search stopped (${stoppedBy}) before finding a start cap below slot ${maxStart}`
+      : `no start cap below slot ${maxStart} found`;
+    warn(`infeasible; ${outcome}, ${probes} relaxed solves); hold window free to move`);
     return { cfg: unpinnedCfg, result: best!, relaxedMaxStartSlot: maxStart };
   }
   warn(`infeasible); hold window allowed to start up to slot ${hi} (${probes} relaxed solves)`);
   return { cfg: capped(hi), result: best!, relaxedMaxStartSlot: hi };
 }
 
+// Defined next to the config that lowers the LP's hold level by the same
+// tolerance; re-exported here for the planner's callers.
+export { REBALANCE_START_TOLERANCE_PERCENT };
+
 /**
- * Post-solve: stamp the hold start once the battery has actually reached the
- * target SoC and this plan holds it from slot 0. A plan whose own window
- * starts later (e.g. it exports at a high price first) is not a hold yet;
- * stamping it would start the wall-clock countdown while the written schedule
- * drains the battery.
+ * Post-solve rebalance bookkeeping, run only for an Optimal plan (an early-stop
+ * incumbent is display-only and must not start the countdown).
+ *
+ * - With rebalancing on and no hold started yet: stamp the hold start once the
+ *   live SoC is within REBALANCE_START_TOLERANCE_PERCENT of the target and this
+ *   plan holds from slot 0. Within that tolerance config-builder caps the
+ *   window start at slot 0 and lowers the LP's hold level to target −
+ *   tolerance, so the plan holds from slot 0 unless even that is infeasible.
+ *   A plan whose window starts later (the cap relaxed by the search in
+ *   solveWithPinnedHoldFallback) is not a hold yet; stamping it would start
+ *   the wall-clock countdown while the written schedule is not holding.
+ *   Otherwise record when the hold first became pending (`pendingSinceMs`), so
+ *   config-builder can give up on a hold that never starts.
+ * - With rebalancing off: drop a leftover `pendingSinceMs`, so re-enabling
+ *   later starts a fresh give-up period. Nothing is written when there is none.
  */
-async function recordRebalanceStartIfAtTarget(
+async function recordRebalanceProgress(
   settings: Settings,
+  cfg: SolverConfig,
   data: Data,
   startMs: number,
   rebalanceWindow: RebalanceWindow | undefined,
 ): Promise<Data> {
-  if (data.rebalanceState?.startMs != null) return data;
-  if (data.soc.value < settings.maxSoc_percent) return data;
-  if (rebalanceWindow?.startIdx !== 0) return data;
-  const rebalanceState = { startMs };
+  const state = data.rebalanceState;
+  if (!settings.rebalanceEnabled) {
+    if (state?.pendingSinceMs == null) return data;
+    const rebalanceState = { startMs: state.startMs ?? null };
+    await updateStoredData(d => ({ ...d, rebalanceState }));
+    return { ...data, rebalanceState };
+  }
+  if (state?.startMs != null) return data;
+  const target_percent = Math.min(cfg.rebalanceTargetSoc_percent ?? cfg.maxSoc_percent, cfg.maxSoc_percent);
+  if (data.soc.value >= target_percent - REBALANCE_START_TOLERANCE_PERCENT && rebalanceWindow?.startIdx === 0) {
+    const rebalanceState = { startMs };
+    await updateStoredData(d => ({ ...d, rebalanceState }));
+    return { ...data, rebalanceState };
+  }
+  if (state?.pendingSinceMs != null) return data;
+  const rebalanceState = { startMs: null, pendingSinceMs: startMs };
   await updateStoredData(d => ({ ...d, rebalanceState }));
   return { ...data, rebalanceState };
 }
@@ -485,7 +566,16 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const t0 = performance.now();
   let result: HighsSolution;
   let relaxedMaxStartSlot: number | undefined;
+  const pinnedStartSlot = cfg.rebalanceMaxStartSlot;
   ({ cfg, result, relaxedMaxStartSlot } = solveWithPinnedHoldFallback(highs, cfg));
+  if (data.rebalanceState?.startMs != null && pinnedStartSlot != null && cfg.rebalanceMaxStartSlot == null) {
+    // The pinned solve fell back to the free solve (e.g. it ended without an
+    // Optimal result): this plan no longer keeps the running hold at slot 0.
+    console.warn(
+      '[calculate] the started rebalance hold lost its slot-0 pin (fallback to the free solve, see the warning above): '
+      + 'the running hold window may move later in the horizon while its countdown keeps running',
+    );
+  }
   const solveMs = performance.now() - t0;
   const evCfg = cfg.ev;
   const evInfo = evCfg ? {
@@ -521,11 +611,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   // Post-solve bookkeeping — reached only when the solve, parse and DESS
   // mapping succeeded, so a failure never flips settings or rebalance state.
+  // The hold start (and its pending marker) is recorded only from an Optimal
+  // plan: a non-Optimal incumbent is display-only (see below).
   if (rebalanceCycleComplete) {
-    ({ settings, data } = await finishCompletedRebalanceCycle(settings, data));
-  }
-  if (settings.rebalanceEnabled) {
-    data = await recordRebalanceStartIfAtTarget(settings, data, timing.startMs, rebalanceWindow);
+    ({ settings, data } = await finishCompletedRebalanceCycle(settings, cfg, data));
+  } else if (result.Status === 'Optimal') {
+    data = await recordRebalanceProgress(settings, cfg, data, timing.startMs, rebalanceWindow);
   }
 
   /* v8 ignore next 4 — rebalanceCtx undefined branch (tests cover enabled=true;

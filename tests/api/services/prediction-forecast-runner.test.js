@@ -9,6 +9,8 @@ vi.mock('../../../api/services/load-prediction-service.ts', () => ({
   runValidation: vi.fn(),
   runForecast: vi.fn(),
   scoreStrategyPredictions: vi.fn(),
+  scoreTemperatureStrategyPredictions: vi.fn(),
+  TEMPERATURE_MISSING_COORDINATES_MESSAGE: 'needs coordinates',
 }));
 vi.mock('../../../api/services/pv-prediction-service.ts', () => ({
   runPvForecast: vi.fn(),
@@ -37,6 +39,7 @@ import {
   buildPredictionRunConfig,
   executePredictionValidation,
   executeStrategyPredictions,
+  executeTemperatureStrategyPredictions,
   runCombinedPredictionForecast,
   executeLoadForecast,
   executePvForecast,
@@ -45,7 +48,12 @@ import {
 } from '../../../api/services/prediction-forecast-runner.ts';
 
 import { loadPredictionConfig } from '../../../api/services/prediction-config-store.ts';
-import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from '../../../api/services/load-prediction-service.ts';
+import {
+  runValidation,
+  runForecast as runLoadForecast,
+  scoreStrategyPredictions,
+  scoreTemperatureStrategyPredictions,
+} from '../../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../../api/services/pv-prediction-service.ts';
 import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
 import { wireUpdateData } from '../helpers/data-store-mock.js';
@@ -531,5 +539,49 @@ describe('withAdjustedForecast', () => {
     loadActiveAdjustmentsAndPrune.mockResolvedValue({ adjustments: [] });
     const result = await withAdjustedForecast(null, 'load');
     expect(result).toBeNull();
+  });
+});
+
+describe('temperature predictor guards', () => {
+  const hp = { sensor: 'House', lookbackWeeks: 4, dayFilter: 'all', aggregation: 'mean' };
+  const tp = { sensor: 'House', lookbackWeeks: 4, dayFilter: 'all', bins: 3 };
+  const located = { latitude: 52.1, longitude: 5.2 };
+
+  it('runs a temperature forecast when it has its predictor and the historical fallback', async () => {
+    runLoadForecast.mockResolvedValue({ forecast: makeSeries(), warnings: ['fell back'] });
+    const cfg = makeConfig({ activeType: 'temperature', temperaturePredictor: tp, historicalPredictor: hp });
+    const result = await executeLoadForecast(cfg, 'unit');
+    expect(result.warnings).toEqual(['fell back']);
+  });
+
+  it('requires temperaturePredictor, a historical fallback, sensors and HA (400)', async () => {
+    await expect(executeLoadForecast(makeConfig({ activeType: 'temperature', historicalPredictor: hp }), 'unit'))
+      .rejects.toMatchObject({ statusCode: 400, message: /temperaturePredictor is required/ });
+    await expect(executeLoadForecast(makeConfig({ activeType: 'temperature', temperaturePredictor: tp }), 'unit'))
+      .rejects.toMatchObject({ statusCode: 400, message: /historicalPredictor is required for temperature/ });
+    await expect(executeLoadForecast(makeConfig({ activeType: 'temperature', temperaturePredictor: tp, historicalPredictor: hp, sensors: [] }), 'unit'))
+      .rejects.toMatchObject({ statusCode: 400, message: /At least one sensor/ });
+    await expect(executeLoadForecast(makeConfig({ activeType: 'temperature', temperaturePredictor: tp, historicalPredictor: hp, haUrl: '', haToken: '' }), 'unit'))
+      .rejects.toMatchObject({ statusCode: 400, message: /haUrl and haToken/ });
+  });
+
+  it('maps an Open-Meteo failure on the load path to 502 before the HA "timed out" rule', async () => {
+    runLoadForecast.mockRejectedValue(new Error('Temperature load forecast unavailable (Open-Meteo temperature request timed out after 15000ms) and no historical predictor is configured to fall back on'));
+    const cfg = makeConfig({ activeType: 'temperature', temperaturePredictor: tp, historicalPredictor: hp });
+    await expect(executeLoadForecast(cfg, 'unit')).rejects.toMatchObject({ statusCode: 502, message: /^Open-Meteo error/ });
+  });
+
+  it('charts a temperature strategy through the shared HA guards', async () => {
+    scoreTemperatureStrategyPredictions.mockResolvedValue({ strategy: tp, validationPredictions: [{ time: 1 }] });
+    const result = await executeTemperatureStrategyPredictions(makeConfig({ pvConfig: located }), tp);
+    expect(result.validationPredictions).toHaveLength(1);
+    await expect(executeTemperatureStrategyPredictions(makeConfig({ pvConfig: located, sensors: [] }), tp))
+      .rejects.toMatchObject({ statusCode: 400, message: /At least one sensor/ });
+  });
+
+  it('refuses to chart a temperature strategy without site coordinates (400)', async () => {
+    await expect(executeTemperatureStrategyPredictions(makeConfig({ pvConfig: { latitude: 0, longitude: 0 } }), tp))
+      .rejects.toMatchObject({ statusCode: 400, message: /needs coordinates/ });
+    expect(scoreTemperatureStrategyPredictions).not.toHaveBeenCalled();
   });
 });

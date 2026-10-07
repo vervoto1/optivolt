@@ -468,11 +468,11 @@ describe('predictions-validation', () => {
       const rows = document.querySelectorAll('#pred-metrics-body tr');
       expect(rows.length).toBe(3);
       // Sorted by mae ascending: 50, 100, NaN
-      // mae is in 4th column (index 3) — first row should be lowest mae
-      const firstMae = rows[0].querySelectorAll('td')[3]?.textContent;
+      // mae is in 5th column (index 4, after Type) — first row should be lowest mae
+      const firstMae = rows[0].querySelectorAll('td')[4]?.textContent;
       expect(firstMae).toContain('50');
       // Last row should be NaN (rendered as —)
-      const lastMae = rows[2].querySelectorAll('td')[3]?.textContent;
+      const lastMae = rows[2].querySelectorAll('td')[4]?.textContent;
       expect(lastMae).toBe('—');
     });
   });
@@ -597,5 +597,107 @@ describe('predictions-validation', () => {
     const row = document.querySelector('#pred-metrics-body tr');
     expect(row.textContent).not.toContain('active');
     expect(row.textContent).not.toContain('best');
+  });
+  describe('temperature rows', () => {
+    const hist = { type: 'historical', sensor: 'Load', lookbackWeeks: 2, dayFilter: 'all', aggregation: 'median', mae: 300, rmse: 400, mape: 50, n: 168, nSkipped: 0, validationPredictions: [] };
+    const temp = { type: 'temperature', sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3, mae: 250, rmse: 350, mape: 40, n: 168, nSkipped: 0, validationPredictions: [] };
+
+    async function renderRows({ deps = {}, warnings = [] } = {}) {
+      savePredictionConfig.mockResolvedValue({});
+      runValidation.mockResolvedValue({ sensorNames: ['Load'], results: [hist, temp], warnings });
+      const all = {
+        readFormValues: vi.fn(() => ({ activeType: 'temperature' })),
+        renderLoadConfig: vi.fn(),
+        setComparisonStatus: vi.fn(),
+        ...deps,
+      };
+      initValidation(all);
+      document.getElementById('pred-run-validation').click();
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll('#pred-metrics-body tr').length).toBe(2);
+      });
+      return all;
+    }
+
+    it('shows a Type column and the bin count in place of the aggregation', async () => {
+      await renderRows();
+      const [first, second] = [...document.querySelectorAll('#pred-metrics-body tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim()));
+      expect(first.slice(0, 4)).toEqual(['temperature', '4w', 'all', '3 bins']);
+      expect(second.slice(0, 4)).toEqual(['historical', '2w', 'all', 'median']);
+    });
+
+    it('puts the temperature-skip warning on the status line as a warning, not an error', async () => {
+      const { setComparisonStatus } = await renderRows({ warnings: ['Temperature strategies skipped: no coordinates'] });
+      expect(setComparisonStatus).toHaveBeenLastCalledWith(
+        'Validation complete — 2 combinations evaluated (Temperature strategies skipped: no coordinates)',
+        'warning',
+      );
+    });
+
+    it('badges the active temperature strategy only on the temperature row', async () => {
+      const getHighlights = () => ({ active: { type: 'temperature', sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 }, best: null });
+      await renderRows({ deps: { getHighlights } });
+      const rows = document.querySelectorAll('#pred-metrics-body tr');
+      expect(rows[0].textContent).toContain('active');
+      expect(rows[1].textContent).not.toContain('active');
+    });
+
+    it('a historical highlight never badges a temperature row', async () => {
+      const getHighlights = () => ({ active: { sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', aggregation: 'median' }, best: null });
+      await renderRows({ deps: { getHighlights } });
+      expect(document.querySelectorAll('#pred-metrics-body tr')[0].textContent).not.toContain('active');
+    });
+
+    it('Use on a temperature row hands the row to the form, which applies and saves it', async () => {
+      const useTemperatureRow = vi.fn().mockResolvedValue(undefined);
+      const { setComparisonStatus } = await renderRows({ deps: { useTemperatureRow } });
+      savePredictionConfig.mockClear();
+      document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(useTemperatureRow).toHaveBeenCalledOnce());
+      expect(useTemperatureRow).toHaveBeenCalledWith({ sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 });
+      // The form owns the save (it must not push a stale historical strategy).
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(setComparisonStatus).toHaveBeenLastCalledWith(expect.stringContaining('Load / temperature / 4w / all / 3 bins')));
+    });
+
+    it('Use on a temperature row reports a failed save', async () => {
+      const useTemperatureRow = vi.fn().mockRejectedValue(new Error('HTTP 500'));
+      const { setComparisonStatus } = await renderRows({ deps: { useTemperatureRow } });
+      document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(setComparisonStatus).toHaveBeenLastCalledWith('Failed to save active config: HTTP 500', true));
+    });
+
+    it('Use on a historical row while the temperature type is active refreshes the predictor fields', async () => {
+      const refreshPredictorFields = vi.fn();
+      const renderHistoricalConfig = vi.fn();
+      await renderRows({ deps: { refreshPredictorFields, renderHistoricalConfig } });
+      const type = document.createElement('select');
+      type.id = 'pred-active-type';
+      type.innerHTML = '<option value="historical">h</option><option value="temperature">t</option>';
+      type.value = 'temperature';
+      document.body.appendChild(type);
+      savePredictionConfig.mockClear();
+      document.querySelectorAll('#pred-metrics-body tr')[1].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(savePredictionConfig).toHaveBeenCalledOnce());
+      expect(type.value).toBe('historical');
+      expect(refreshPredictorFields).toHaveBeenCalledOnce();
+    });
+
+    it('Use on a temperature row refuses when the form cannot apply it', async () => {
+      const { setComparisonStatus } = await renderRows();
+      savePredictionConfig.mockClear();
+      document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-use').click();
+      await vi.waitFor(() => expect(setComparisonStatus).toHaveBeenLastCalledWith(expect.stringContaining('Failed to save active config'), true));
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+    });
+
+    it('Chart on a temperature row requests the temperature strategy', async () => {
+      await renderRows();
+      fetchStrategyPredictions.mockResolvedValue({ validationPredictions: [{ date: '2026-03-14T00:00:00.000Z', hour: 0, actual: 100, predicted: 90 }] });
+      document.querySelectorAll('#pred-metrics-body tr')[0].querySelector('.btn-chart').click();
+      await vi.waitFor(() => expect(document.getElementById('pred-chart-section').hidden).toBe(false));
+      expect(fetchStrategyPredictions).toHaveBeenCalledWith({ type: 'temperature', sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 });
+      expect(document.getElementById('pred-chart-title').textContent).toBe('Accuracy: Load / temperature / 4w / all / 3 bins');
+    });
   });
 });

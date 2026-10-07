@@ -568,6 +568,14 @@ describe('fetchHaEntityStates (bulk)', () => {
     );
   });
 
+  it('adds an abort deadline only when the caller asks for one', async () => {
+    global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
+    await fetchHaEntityStates({ haUrl: 'ws://ha:8123/api/websocket', haToken: 't', timeoutMs: 5000 });
+    const [, init] = global.fetch.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.headers).toEqual({ Authorization: 'Bearer t' });
+  });
+
   it('throws when HA is not configured (no token, no supervisor)', async () => {
     await expect(fetchHaEntityStates({ haUrl: '', haToken: '' }))
       .rejects.toThrow('not configured');

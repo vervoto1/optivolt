@@ -345,6 +345,13 @@ export interface SocData {
 
 export interface RebalanceState {
   startMs: number | null;
+  /**
+   * When rebalancing first became pending (enabled, hold not started). Stamped
+   * when the settings route switches rebalancing on (the first Optimal plan
+   * stamps it as a fallback). Cleared when the hold starts, the cycle ends or
+   * rebalancing is switched off.
+   */
+  pendingSinceMs?: number | null;
 }
 
 export type PredictionAdjustmentSeries = 'load' | 'pv';
@@ -569,12 +576,28 @@ export interface PvPredictionConfig {
   forecastResolution?: 15 | 60;
 }
 
+/** Temperature-anchored load predictor (lib/load-predictor-temperature.ts). */
+export interface TemperaturePredictor {
+  sensor: string;
+  lookbackWeeks: number;
+  dayFilter: DayFilter;
+  bins: number;
+}
+
 export interface PredictionConfig {
   sensors: HaSensor[];
   derived: HaDerivedSensor[];
-  activeType?: 'historical' | 'fixed';
+  /**
+   * Which predictor feeds the live load forecast. 'temperature' is opt-in
+   * only: nothing switches to it automatically (the strategy auto-select
+   * tunes the historical predictor only and skips while another type is
+   * active), and it falls back to `historicalPredictor` when Open-Meteo or
+   * its anchors fail.
+   */
+  activeType?: 'historical' | 'fixed' | 'temperature';
   historicalPredictor?: { sensor: string; lookbackWeeks: number; dayFilter: DayFilter; aggregation: Aggregation };
   fixedPredictor?: { load_W: number };
+  temperaturePredictor?: TemperaturePredictor;
   validationWindow?: PredictionValidationWindow;
   includeRecent?: boolean;
   pvConfig?: PvPredictionConfig;

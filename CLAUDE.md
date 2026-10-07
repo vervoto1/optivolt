@@ -94,7 +94,7 @@ The version must be updated in **3 locations** when bumping, plus the changelog:
 
 ## Victron control modes
 
-The target system is a **3-phase Victron Multi RS Solar** with Cerbo GX running **Venus OS Large 3.71**. Two control modes exist:
+The target system is a **3-phase Victron Multi RS Solar** with Cerbo GX running **Venus OS Large 3.80** (MQTT broker dbus-flashmq v26, which can refuse password logins — e.g. while booting or after a TokensOnly switch; the 0.7.61 client keeps reconnecting through that). Two control modes exist:
 
 ### DESS (Dynamic ESS, Mode 4 / Node-RED)
 - Writes 4 schedule slots via MQTT to `Settings/DynamicEss/Schedule/{0-3}/`.

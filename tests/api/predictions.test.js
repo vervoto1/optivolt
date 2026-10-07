@@ -8,9 +8,16 @@ vi.mock('../../api/services/settings-store.ts');
 vi.mock('../../api/services/data-store.ts');
 vi.mock('../../api/services/prediction-auto-select.ts');
 vi.mock('../../api/services/prediction-auto-select-store.ts');
+vi.mock('../../api/services/ha-client.ts');
 
 import { loadPredictionConfig, savePredictionConfig, updatePredictionConfig } from '../../api/services/prediction-config-store.ts';
-import { runValidation, runForecast, scoreStrategyPredictions } from '../../api/services/load-prediction-service.ts';
+import {
+  runValidation,
+  runForecast,
+  scoreStrategyPredictions,
+  scoreTemperatureStrategyPredictions,
+} from '../../api/services/load-prediction-service.ts';
+import { fetchHaEntityStates } from '../../api/services/ha-client.ts';
 import { runPvForecast } from '../../api/services/pv-prediction-service.ts';
 import { loadSettings } from '../../api/services/settings-store.ts';
 import { loadData, saveData, updateData } from '../../api/services/data-store.ts';
@@ -621,5 +628,62 @@ describe('Prediction route contracts', () => {
     const res = await del(predictionsRouter, '/adjustments/a');
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('Failed to delete prediction adjustment');
+  });
+  describe('temperature strategies and sensor check', () => {
+    const tStrategy = { type: 'temperature', sensor: 'Grid Import', lookbackWeeks: 4, dayFilter: 'all', bins: 3 };
+
+    it('POST /predictions/validate/strategy routes a temperature body to the temperature scorer', async () => {
+      scoreTemperatureStrategyPredictions.mockResolvedValue({ strategy: tStrategy, validationPredictions: [{ time: 1 }] });
+      const res = await post(predictionsRouter, '/validate/strategy', tStrategy);
+      expect(res.status).toBe(200);
+      expect(res.body.validationPredictions).toHaveLength(1);
+      const { type: _type, ...strategy } = tStrategy;
+      expect(scoreTemperatureStrategyPredictions).toHaveBeenCalledWith(expect.objectContaining({ haUrl: mockSettings.haUrl }), strategy);
+      expect(scoreStrategyPredictions).not.toHaveBeenCalled();
+    });
+
+    it('POST /predictions/validate/strategy validates a temperature strategy and needs coordinates', async () => {
+      let res = await post(predictionsRouter, '/validate/strategy', { ...tStrategy, bins: 20 });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('strategy.bins');
+
+      loadPredictionConfig.mockResolvedValue({ ...structuredClone(mockConfig), pvConfig: { latitude: 0, longitude: 0 } });
+      res = await post(predictionsRouter, '/validate/strategy', tStrategy);
+      expect(res.status).toBe(400);
+      expect(scoreTemperatureStrategyPredictions).not.toHaveBeenCalled();
+    });
+
+    it('POST /predictions/sensors/check reports each entity, and the stored sensors by default', async () => {
+      fetchHaEntityStates.mockResolvedValue([
+        { entity_id: 'sensor.grid', state: '123.4', attributes: { unit_of_measurement: 'kWh', state_class: 'total_increasing' } },
+      ]);
+      let res = await post(predictionsRouter, '/sensors/check', {});
+      expect(res.status).toBe(200);
+      expect(res.body.reachable).toBe(true);
+      expect(res.body.sensors).toEqual([expect.objectContaining({ id: 'sensor.grid', status: 'ok', state: '123.4', unit: 'kWh' })]);
+      expect(fetchHaEntityStates).toHaveBeenCalledWith(expect.objectContaining({ haUrl: mockSettings.haUrl, timeoutMs: expect.any(Number) }));
+
+      res = await post(predictionsRouter, '/sensors/check', {
+        sensors: [{ id: 'sensor.typo', name: 'Grid Import', unit: 'kWh' }],
+        derived: [{ name: 'Load', formula: ['+Grid Import', '-Nope'] }],
+      });
+      expect(res.body.sensors[0]).toMatchObject({ id: 'sensor.typo', status: 'error' });
+      expect(res.body.derived[0]).toMatchObject({ name: 'Load', status: 'error' });
+    });
+
+    it('POST /predictions/sensors/check answers 200 with reachable=false when HA is down (never blocks)', async () => {
+      fetchHaEntityStates.mockRejectedValue(new Error('This operation was aborted'));
+      const res = await post(predictionsRouter, '/sensors/check', {});
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ reachable: false, error: 'This operation was aborted' });
+      expect(res.body.sensors[0]).toMatchObject({ id: 'sensor.grid', checked: false });
+    });
+
+    it('POST /predictions/sensors/check rejects a malformed sensor list (400) and saves nothing', async () => {
+      const res = await post(predictionsRouter, '/sensors/check', { sensors: 'nope' });
+      expect(res.status).toBe(400);
+      expect(savePredictionConfig).not.toHaveBeenCalled();
+      expect(fetchHaEntityStates).not.toHaveBeenCalled();
+    });
   });
 });

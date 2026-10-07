@@ -6,6 +6,7 @@
  */
 
 import type { IrradianceRecord } from './predict-pv.ts';
+import type { TemperatureRecord } from './load-predictor-temperature.ts';
 
 // ----------------------------- URL Builders --------------------------------
 
@@ -68,6 +69,49 @@ export function buildForecastUrl({
   );
 }
 
+/** Open-Meteo Forecast API limits for `past_days` and `forecast_days`. */
+export const OPEN_METEO_MAX_PAST_DAYS = 92;
+export const OPEN_METEO_MAX_FORECAST_DAYS = 16;
+
+/**
+ * Past days of hourly `temperature_2m` the Forecast API actually fills. It
+ * accepts `past_days` up to 92, but hours older than this come back as null
+ * (a probe on 2026-10-06 returned 576 null hours, the first non-null one 68
+ * days back). `parseTemperatureResponse` drops the nulls, so a window sized
+ * past this silently loses its oldest days. Temperature lookbacks are capped
+ * to stay inside it, and the callers warn when lookback days come back
+ * without a temperature anyway.
+ */
+export const OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA = 68;
+
+interface TemperatureUrlParams {
+  latitude: number;
+  longitude: number;
+  pastDays: number;
+  forecastDays: number;
+}
+
+/**
+ * Build URL for hourly outside temperature from the Open-Meteo Forecast API.
+ * Uses the default best_match model (up to 16 forecast days; `past_days` is
+ * accepted up to 92 but only about the last 68 days carry data, see
+ * OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA) — the ICON D2 model used for
+ * radiation only covers ~2 days. Day counts are clamped to the API limits (an
+ * out-of-range value is a 400).
+ */
+export function buildTemperatureUrl({ latitude, longitude, pastDays, forecastDays }: TemperatureUrlParams): string {
+  const past = Math.max(0, Math.min(Math.ceil(pastDays), OPEN_METEO_MAX_PAST_DAYS));
+  const forecast = Math.max(1, Math.min(Math.ceil(forecastDays), OPEN_METEO_MAX_FORECAST_DAYS));
+  return (
+    `https://api.open-meteo.com/v1/forecast`
+    + `?latitude=${latitude}&longitude=${longitude}`
+    + `&hourly=temperature_2m`
+    + `&timezone=GMT`
+    + `&past_days=${past}`
+    + `&forecast_days=${forecast}`
+  );
+}
+
 // ----------------------------- Response Parsers ----------------------------
 
 interface OpenMeteoHourlyResponse {
@@ -117,6 +161,35 @@ export function parseIrradianceResponse(data: OpenMeteoHourlyResponse): Irradian
     });
   }
 
+  return records;
+}
+
+interface OpenMeteoTemperatureResponse {
+  hourly?: {
+    time?: string[];
+    temperature_2m?: (number | null)[];
+  };
+}
+
+/**
+ * Parse an Open-Meteo hourly temperature response into TemperatureRecords.
+ * temperature_2m is instantaneous at the labeled time (unlike radiation,
+ * which is backward-averaged), so no alignment shift is needed. Null or
+ * non-finite values (missing data) are skipped; a response without an
+ * hourly block is an error rather than "no temperatures".
+ */
+export function parseTemperatureResponse(data: OpenMeteoTemperatureResponse): TemperatureRecord[] {
+  const time = data?.hourly?.time;
+  const temperature_2m = data?.hourly?.temperature_2m;
+  if (!Array.isArray(time) || !Array.isArray(temperature_2m)) {
+    throw new Error('Open-Meteo temperature response has no hourly temperature_2m data');
+  }
+  const records: TemperatureRecord[] = [];
+  for (let i = 0; i < time.length; i++) {
+    const temp_C = temperature_2m[i];
+    if (typeof temp_C !== 'number' || !Number.isFinite(temp_C)) continue;
+    records.push({ time: new Date(time[i] + 'Z').getTime(), temp_C });
+  }
   return records;
 }
 

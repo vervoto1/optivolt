@@ -14,6 +14,27 @@ import type { SolverConfig, EvConfig, TimeSeries } from '../../lib/types.ts';
 import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 /**
+ * How long a rebalance hold may stay pending (rebalancing enabled, the hold
+ * clock never started) before the planner gives up and switches rebalancing
+ * off. With grid charging allowed the solver places a hold inside its 1–2 day
+ * horizon, so three days of pending means the hold cannot start on this
+ * system (e.g. the pack never gets within tolerance of the target). Persisted
+ * as `rebalanceState.pendingSinceMs`.
+ */
+export const REBALANCE_PENDING_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * How far below the rebalance target the live SoC may read and still start the
+ * hold clock. Packs whose system SoC tops out at 99 % (as in production) would
+ * otherwise never start the hold, and every plan would keep the battery held
+ * with battery-to-grid export blocked.
+ *
+ * Within this tolerance the LP's hold requirement is lowered by the same
+ * amount (`rebalanceHoldSoc_percent`, see buildSolverConfigFromSettings).
+ */
+export const REBALANCE_START_TOLERANCE_PERCENT = 1;
+
+/**
  * Live EV readings that seed the plan. `targetSoc_percent` is present only when
  * an `evTargetSocEntity` was configured and readable; otherwise the static
  * `evTargetSoc_percent` setting is used.
@@ -166,18 +187,55 @@ export function buildSolverConfigFromSettings(
     const slotsElapsed = startMs_ != null
       ? Math.floor((nowMs - startMs_) / (settings.stepSize_m * 60_000))
       : 0;
+    // A hold that has been pending (enabled, never started) for
+    // REBALANCE_PENDING_GIVE_UP_MS solves like a completed cycle: no hold
+    // window, and the planner switches rebalancing off after the solve. The
+    // window's DESS hold blocks battery-to-grid export, so a hold that can
+    // never start must not stay mapped forever.
+    const pendingSinceMs = data.rebalanceState?.pendingSinceMs ?? null;
+    const pendingExpired = startMs_ == null && pendingSinceMs != null
+      && nowMs - pendingSinceMs >= REBALANCE_PENDING_GIVE_UP_MS;
     const remainingSlots = startMs_ != null
       ? Math.max(0, holdSlots - slotsElapsed)
-      : holdSlots;
+      : (pendingExpired ? 0 : holdSlots);
     base.rebalanceHoldSlots = holdSlots;
     base.rebalanceRemainingSlots = remainingSlots;
     base.rebalanceTargetSoc_percent = settings.maxSoc_percent;
+    // Within REBALANCE_START_TOLERANCE_PERCENT of the target the planner stamps
+    // the hold start (and, once started, pins it to slot 0), so the hold the LP
+    // enforces from slot 0 must be reachable from the live SoC. The LP needs
+    // SoC >= its hold level by the end of the window's first slot; with the
+    // learned charge taper (or CV thresholds) on a large pack, closing the last
+    // point takes more than one slot. At the full target the window could then
+    // never start at slot 0, the clock never stamped (and rebalancing was
+    // switched off after REBALANCE_PENDING_GIVE_UP_MS), and a started hold's
+    // slot-0 pin was infeasible every cycle (a relaxation search each plan).
+    // Only the LP's hold level drops: the DESS-mapped target stays at
+    // rebalanceTargetSoc_percent, so Victron still tops the pack up
+    // (proBattery at >= 100 % is its keep-battery-charged path).
+    // A started hold keeps the relaxed level regardless of the live SoC: its
+    // start is pinned to slot 0, so a reading that dips just under the
+    // tolerance band (e.g. 98.9 % on a 100 % target) would otherwise restore
+    // the full target, make the pin infeasible and push the window to k > 0
+    // while the wall-clock countdown keeps running.
+    //
     // Once the hold has started its wall-clock countdown is running, so the
     // remaining slots must be held from now on. Without this cap the solver
     // may re-place them later in the horizon (e.g. export now, recharge at a
     // cheaper hour, re-enter the hold), and the cycle then completes on the
     // clock after far less real hold time than requested.
-    if (startMs_ != null && remainingSlots > 0) {
+    // A hold that has not started yet gets the same slot-0 cap once the live
+    // SoC is within the start tolerance (the relaxed hold level above makes
+    // slot 0 reachable). Left free, the window's start is decided by a
+    // 1e-6-per-slot tie-break that is far below the MIP gap, so an "Optimal"
+    // plan may place it at any near-equal-cost k > 0 on every cycle: the
+    // planner only stamps a plan that holds from slot 0, so the clock would
+    // never start and the pending give-up would switch rebalancing off
+    // without a hold. With the cap the plan holds from slot 0 and stamps; a
+    // cap that is infeasible goes through the planner's relaxation search.
+    const withinStartTolerance = data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
+    if (remainingSlots > 0 && (startMs_ != null || withinStartTolerance)) {
+      base.rebalanceHoldSoc_percent = settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
       base.rebalanceMaxStartSlot = 0;
     }
   }

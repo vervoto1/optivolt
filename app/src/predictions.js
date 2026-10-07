@@ -142,16 +142,26 @@ function updateForecastUI(type, result) {
   refreshAdjustedForecastsFromRaw();
   forecastChart.render();
   updateMetrics(type, result);
-  updateStatus(type, `${label} forecast updated`);
+  // A fallback (e.g. the temperature predictor handing over to the historical
+  // one when Open-Meteo is down) still produced a forecast, so it is amber,
+  // not red, and says what happened.
+  const warnings = result.warnings ?? [];
+  if (warnings.length > 0) {
+    updateStatus(type, `${label} forecast updated: ${warnings.join('; ')}`, 'warning');
+  } else {
+    updateStatus(type, `${label} forecast updated`);
+  }
 }
 
 function updateStatus(prefix, msg, isError = false) {
   const el = document.getElementById(`${prefix}-summary-status`);
   if (!el) return;
   el.textContent = msg;
-  el.className = isError
-    ? 'text-sm font-medium text-red-600 dark:text-red-400'
-    : 'text-sm font-medium text-emerald-600 dark:text-emerald-400';
+  el.className = isError === 'warning'
+    ? 'text-sm font-medium text-amber-600 dark:text-amber-400'
+    : isError
+      ? 'text-sm font-medium text-red-600 dark:text-red-400'
+      : 'text-sm font-medium text-emerald-600 dark:text-emerald-400';
 }
 
 function updateMetrics(prefix, resultObject) {

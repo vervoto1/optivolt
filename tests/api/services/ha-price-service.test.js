@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchPricesFromHA, parseStrictPrice, pricePointsToSeries } from '../../../api/services/ha-price-service.ts';
+import { fetchPricesFromHA, parseStrictPrice, pricePointsToSeries, resetDuplicatePriceWarnings } from '../../../api/services/ha-price-service.ts';
 
 const makeSettings = (overrides = {}) => ({
   haUrl: 'ws://homeassistant.local:8123/api/websocket',
@@ -66,9 +66,13 @@ describe('fetchPricesFromHA', () => {
 
   beforeEach(() => {
     vi.stubGlobal('fetch', fetchMock);
+    // The fixtures are 2026-03-17 feeds: a feed must still cover now to be used.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-03-17T00:30:00+01:00'));
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.resetAllMocks();
   });
@@ -447,6 +451,7 @@ describe('pricePointsToSeries', () => {
   });
 
   beforeEach(() => {
+    resetDuplicatePriceWarnings();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -642,7 +647,7 @@ describe('pricePointsToSeries', () => {
     });
   });
 
-  it('stops at a duplicate timestamp', () => {
+  it('skips a point repeating the previous timestamp, keeping the first', () => {
     const points = [
       { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
       { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
@@ -650,7 +655,138 @@ describe('pricePointsToSeries', () => {
       { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
     ];
     const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
-    expect(series.values).toEqual([10, 10, 10, 10, 20, 20, 20, 20]);
+    expect(series.values).toEqual([10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30]);
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('repeating the previous timestamp'),
+      ['2026-10-05T23:00:00.000Z'],
+    );
+    // The skipped point disagreed with the kept one: say so, with both values.
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant; keeping the first'),
+      { timestamp: '2026-10-05T23:00:00.000Z', kept: expect.closeTo(20), skipped: expect.closeTo(90) },
+    );
+  });
+
+  it('reports a conflicting duplicate instant once per process, not on every refresh', () => {
+    const duplicateWarnings = () => console.warn.mock.calls
+      .filter(([msg]) => msg.includes('two different prices for the same instant'))
+      .map(([, details]) => details.timestamp);
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.9 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    const nowMs = Date.parse('2026-10-06T00:30:00+02:00');
+    const first = pricePointsToSeries(points, opts({ nowMs }));
+    const second = pricePointsToSeries(points, opts({ nowMs }));
+    expect(second).toEqual(first);
+    expect(duplicateWarnings()).toEqual(['2026-10-05T23:00:00.000Z']);
+
+    // Another instant still warns; the remembered one stays quiet.
+    const later = points.map(p => ({ ...p, time: p.time.replace('2026-10-06', '2026-10-07') }));
+    pricePointsToSeries(later, opts({ nowMs: nowMs + 86_400_000 }));
+    pricePointsToSeries(points, opts({ nowMs }));
+    expect(duplicateWarnings()).toEqual(['2026-10-05T23:00:00.000Z', '2026-10-06T23:00:00.000Z']);
+
+    // Both pruned once more than two days old relative to the caller's now:
+    // each warns again.
+    pricePointsToSeries(later, opts({ nowMs: nowMs + 4 * 86_400_000 }));
+    pricePointsToSeries(points, opts({ nowMs }));
+    expect(duplicateWarnings()).toEqual([
+      '2026-10-05T23:00:00.000Z', '2026-10-06T23:00:00.000Z',
+      '2026-10-06T23:00:00.000Z', '2026-10-05T23:00:00.000Z',
+    ]);
+  });
+
+  it('does not warn about a duplicate instant whose kept value is null', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: null },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.9 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(console.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant'),
+      expect.anything(),
+    );
+  });
+
+  it('skips a repeated point with the same price silently (no warning)', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(series.values).toEqual([10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30]);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not cut the window at a tomorrow list that repeats today\'s 23:00', () => {
+    const today = geSpotDay('2026-10-06', 0.10);
+    const tomorrow = [{ time: '2026-10-06T23:00:00+02:00', value: 0.99 }, ...geSpotDay('2026-10-07', 0.40)];
+    const series = pricePointsToSeries([...today, ...tomorrow], opts({ nowMs: Date.parse('2026-10-06T14:00:00+02:00') }));
+
+    expect(series.start).toBe('2026-10-05T22:00:00.000Z');
+    expect(series.values).toHaveLength(48 * 4);
+    const at = slotReader(series);
+    expect(at('2026-10-06T21:00:00Z')).toBeCloseTo(33); // 23:00 local Oct 6: today's entry kept
+    expect(at('2026-10-06T22:00:00Z')).toBeCloseTo(40); // 00:00 local Oct 7
+    expect(at('2026-10-07T21:45:00Z')).toBeCloseTo(63); // 23:45 local Oct 7
+    // The only warning is the disagreeing duplicate 23:00 (kept 33, skipped 99).
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant'),
+      { timestamp: '2026-10-06T21:00:00.000Z', kept: expect.closeTo(33), skipped: expect.closeTo(99) },
+    );
+  });
+
+  it('does not cut a bare wall-clock feed whose tomorrow list repeats today\'s 23:00', () => {
+    const bare = (date, base) => Array.from({ length: 24 }, (_, h) => ({ time: `${date}T${pad2(h)}:00:00`, value: base + h / 100 }));
+    const points = [...bare('2026-10-06', 0.10), { time: '2026-10-06T23:00:00', value: 0.99 }, ...bare('2026-10-07', 0.40)];
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T14:00:00+02:00') }));
+
+    expect(series.values).toHaveLength(48 * 4);
+    const at = slotReader(series);
+    expect(at('2026-10-06T21:00:00Z')).toBeCloseTo(33);
+    expect(at('2026-10-06T22:00:00Z')).toBeCloseTo(40);
+  });
+
+  it('repairs a naive fold=0 feed that stamps both 02:00 hours of 2026-10-25 with +02:00', () => {
+    // 25 entries; the second 02:00 carries the first occurrence's offset, i.e.
+    // repeats its instant. It is skipped and the hole it leaves is filled like a
+    // merged repeated hour (with the first occurrence's price).
+    const points = [];
+    for (let h = 0; h < 24; h++) {
+      const off = h < 3 ? '+02:00' : '+01:00';
+      points.push({ time: `2026-10-25T${pad2(h)}:00:00${off}`, value: h });
+      if (h === 2) points.push({ time: '2026-10-25T02:00:00+02:00', value: 99 });
+    }
+    const series = pricePointsToSeries(points, opts({ multiplier: 1, nowMs: Date.parse('2026-10-24T22:30:00Z') }));
+
+    expect(series.start).toBe('2026-10-24T22:00:00.000Z');
+    expect(series.values).toHaveLength(25 * 4);
+    const at = slotReader(series);
+    expect(at('2026-10-25T00:00:00Z')).toBe(2); // 02:00 CEST
+    expect(at('2026-10-25T01:00:00Z')).toBe(2); // 02:00 CET (filled)
+    expect(at('2026-10-25T02:00:00Z')).toBe(3); // 03:00 CET
+    expect(at('2026-10-25T22:45:00Z')).toBe(23); // 23:45 CET
+  });
+
+  it('returns null (keeping previous prices) for a clean feed that ended before the current slot', () => {
+    const series = pricePointsToSeries(geSpotDay('2026-10-06', 0.10), opts({ nowMs: Date.parse('2026-10-07T00:10:00+02:00') }));
+    expect(series).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('ends before the current slot'),
+      { now: '2026-10-06T22:00:00.000Z', end: '2026-10-06T22:00:00.000Z' },
+    );
+    // Its last slot still covers now: used.
+    const last = pricePointsToSeries(geSpotDay('2026-10-06', 0.10), opts({ nowMs: Date.parse('2026-10-06T23:50:00+02:00') }));
+    expect(last.values).toHaveLength(96);
   });
 
   it('sorts a feed whose timestamps all carry an explicit offset', () => {
@@ -864,7 +1000,7 @@ describe('pricePointsToSeries', () => {
       { time: '2026-10-06T13:00:00+02:00', value: -0.05 },
       { time: '2026-10-06T14:00:00+02:00', value: ' 0.2 ' },
     ];
-    const hourly = pricePointsToSeries(points, opts({ multiplier: 1 }));
+    const hourly = pricePointsToSeries(points, opts({ multiplier: 1, nowMs: Date.parse('2026-10-06T12:30:00+02:00') }));
     expect(hourly.values).toEqual([0, 0, 0, 0, -0.05, -0.05, -0.05, -0.05, 0.2, 0.2, 0.2, 0.2]);
   });
 

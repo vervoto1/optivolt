@@ -16,6 +16,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | `predict-pv.ts` | PV forecasting with Bird Clear Sky Model: `calculateClearSkyGHI()`, `estimateHourlyCapacity()`, `forecastPv()`, `validatePvForecast()` |
 | `open-meteo.ts` | Open-Meteo API URL builders and response parsers: `buildForecastUrl()`, `parseIrradianceResponse()`, `parseMinutely15Response()` |
 | `predict-load.ts` | Historical load prediction: `predict()`, `validate()`, `generateAllConfigs()`, day filtering, mean/median aggregation |
+| `load-predictor-temperature.ts` | Temperature-anchored load predictor (upstream #191/#193, local-calendar keyed): effective day temps, quantile-bin anchors, interpolation with idle floor, rolling backtest |
 | `ha-postprocess.ts` | Home Assistant stats normalization: `postprocess()`, `aggregateTo15Min()`, sensor merging, derived sensors |
 | `victron-mqtt.ts` | MQTT client for Victron: `VictronMqttClient` class with battery SoC, settings, Dynamic ESS schedule writes |
 | `vrm-api.ts` | VRM REST client: `VRMClient` class for forecasts, prices, DESS settings, unit normalization (kW to W, EUR to cents) |

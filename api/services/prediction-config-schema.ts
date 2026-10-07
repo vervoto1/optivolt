@@ -30,7 +30,23 @@ export const LOOKBACK_WEEKS_MAX = 52;
 
 const DAY_FILTERS: readonly DayFilter[] = ['same', 'all', 'weekday-weekend', 'weekday-sat-sun'];
 const AGGREGATIONS: readonly Aggregation[] = ['mean', 'median'];
-const ACTIVE_TYPES = ['historical', 'fixed'] as const;
+const ACTIVE_TYPES = ['historical', 'fixed', 'temperature'] as const;
+
+/**
+ * Temperature predictor bounds. The lookback cap keeps the live forecast's
+ * Open-Meteo window — the lookback plus the recent-accuracy week plus the
+ * inertia and local-day margins (`temperaturePastDays`) — inside the days the
+ * Forecast API actually fills with temperatures (about 68, see
+ * OPEN_METEO_TEMPERATURE_PAST_DAYS_WITH_DATA; `past_days` itself accepts 92
+ * but returns nulls past that): 8 weeks needs 66 days, 9 would need 73.
+ */
+export const TEMPERATURE_LOOKBACK_WEEKS_MIN = 1;
+export const TEMPERATURE_LOOKBACK_WEEKS_MAX = 8;
+export const TEMPERATURE_BINS_MIN = 2;
+export const TEMPERATURE_BINS_MAX = 8;
+const DEFAULT_TEMPERATURE_LOOKBACK_WEEKS = 4;
+const DEFAULT_TEMPERATURE_DAY_FILTER: DayFilter = 'all';
+const DEFAULT_TEMPERATURE_BINS = 3;
 
 /** Fallbacks for a stored strategy field that is missing or not a valid value (see `clampHistoricalPredictor`). */
 const DEFAULT_LOOKBACK_WEEKS = 4;
@@ -70,6 +86,36 @@ export function clampHistoricalPredictor<T>(value: T): T {
   return { ...value, lookbackWeeks, dayFilter, aggregation } as T;
 }
 
+export function normalizeTemperaturePredictor(value: unknown, label = 'temperaturePredictor'): NonNullable<PredictionConfig['temperaturePredictor']> {
+  assertObject(value, label);
+  return {
+    sensor: expectNonEmptyString(value.sensor, `${label}.sensor`),
+    lookbackWeeks: expectIntegerInRange(
+      value.lookbackWeeks, TEMPERATURE_LOOKBACK_WEEKS_MIN, TEMPERATURE_LOOKBACK_WEEKS_MAX, `${label}.lookbackWeeks`,
+    ),
+    dayFilter: expectEnum(value.dayFilter, DAY_FILTERS, `${label}.dayFilter`),
+    bins: expectIntegerInRange(value.bins, TEMPERATURE_BINS_MIN, TEMPERATURE_BINS_MAX, `${label}.bins`),
+  };
+}
+
+/**
+ * Load-time counterpart of `normalizeTemperaturePredictor` (see
+ * `clampHistoricalPredictor`): coerce a stored predictor into range without
+ * throwing. An absent or non-object value is returned as-is.
+ */
+export function clampTemperaturePredictor<T>(value: T): T {
+  if (!isObject(value)) return value;
+  const lookbackWeeks = clampInt(
+    value.lookbackWeeks, TEMPERATURE_LOOKBACK_WEEKS_MIN, TEMPERATURE_LOOKBACK_WEEKS_MAX, DEFAULT_TEMPERATURE_LOOKBACK_WEEKS,
+  );
+  const dayFilter = DAY_FILTERS.includes(value.dayFilter as DayFilter) ? value.dayFilter : DEFAULT_TEMPERATURE_DAY_FILTER;
+  const bins = clampInt(value.bins, TEMPERATURE_BINS_MIN, TEMPERATURE_BINS_MAX, DEFAULT_TEMPERATURE_BINS);
+  if (lookbackWeeks === value.lookbackWeeks && dayFilter === value.dayFilter && bins === value.bins) {
+    return value;
+  }
+  return { ...value, lookbackWeeks, dayFilter, bins } as T;
+}
+
 function normalizeFixedPredictor(value: unknown): PredictionConfig['fixedPredictor'] {
   assertObject(value, 'fixedPredictor');
   const load_W = expectFiniteNumber(value.load_W, 'fixedPredictor.load_W');
@@ -106,6 +152,7 @@ export function normalizePredictionConfigPatch(incoming: unknown): Partial<Predi
   if ('activeType' in patch) patch.activeType = expectEnum(patch.activeType, ACTIVE_TYPES, 'activeType');
   if ('historicalPredictor' in patch) patch.historicalPredictor = normalizeHistoricalPredictor(patch.historicalPredictor);
   if ('fixedPredictor' in patch) patch.fixedPredictor = normalizeFixedPredictor(patch.fixedPredictor);
+  if ('temperaturePredictor' in patch) patch.temperaturePredictor = normalizeTemperaturePredictor(patch.temperaturePredictor);
   if ('sensors' in patch) patch.sensors = normalizeSensorList(patch.sensors, 'sensors', 'id');
   if ('derived' in patch) patch.derived = normalizeSensorList(patch.derived, 'derived', 'name');
   if ('pvConfig' in patch) patch.pvConfig = normalizePvConfig(patch.pvConfig);
