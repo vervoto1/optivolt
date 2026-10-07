@@ -588,8 +588,13 @@ export function buildLP({
     for (let k = 0; k < cvK; k++) {
       const tightM = maxSoc_Wh - cvThresholdWh[k];
       if (t === 0) {
-        // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant
-        lines.push(` c_cv_${k}_${t}: ${toNum(initialSoc_Wh)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+        // Slot 0: start-of-slot SoC is the known initialSoc_Wh constant, so the
+        // forward row is `initialSoc - M·cv <= threshold`. The constant MUST sit
+        // on the right-hand side: the HiGHS LP-format reader silently drops a
+        // bare constant on the LHS, which left the slot-0 taper unenforced.
+        // M also covers an initialSoc above maxSoc so the row stays feasible.
+        const m0 = Math.max(tightM, initialSoc_Wh - cvThresholdWh[k]);
+        lines.push(` c_cv_${k}_${t}: - ${toNum(m0)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k] - initialSoc_Wh)}`);
         // Reverse: threshold * cv <= initialSoc (cv=1 only if initialSoc >= threshold)
         lines.push(` c_cv_rev_${k}_${t}: ${toNum(cvThresholdWh[k])} ${cvBin(k, t)} <= ${toNum(initialSoc_Wh)}`);
       } else {
@@ -691,7 +696,10 @@ export function buildLP({
         for (let k = 0; k < evCvK; k++) {
           const tightM = evCapacityWh - evCvThresholdWh[k];
           if (t === 0) {
-            lines.push(` c_ev_cv_${k}_${t}: ${toNum(evInitialWh)} - ${toNum(tightM)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k])}`);
+            // Constant on the RHS (the LP reader drops an LHS constant); M also
+            // covers an initial EV SoC above capacity.
+            const m0 = Math.max(tightM, evInitialWh - evCvThresholdWh[k]);
+            lines.push(` c_ev_cv_${k}_${t}: - ${toNum(m0)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k] - evInitialWh)}`);
             lines.push(` c_ev_cv_rev_${k}_${t}: ${toNum(evCvThresholdWh[k])} ${evCvBin(k, t)} <= ${toNum(evInitialWh)}`);
           } else {
             lines.push(` c_ev_cv_${k}_${t}: ${evSocVar(t - 1)} - ${toNum(tightM)} ${evCvBin(k, t)} <= ${toNum(evCvThresholdWh[k])}`);

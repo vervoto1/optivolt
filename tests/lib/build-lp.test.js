@@ -580,8 +580,10 @@ describe('buildLP — CV phase', () => {
   it('slot 0 uses initialSoc_Wh constant (not soc variable) in big-M constraint', () => {
     // initialSoc_percent = 90, capacity = 10000, so initialSoc_Wh = 9000
     const lp = buildLP({ ...mockData, cvPhaseThresholds: twoThresholds });
-    // c_cv_0_0 should contain the constant 9000, not a soc_ variable
-    expect(lp).toMatch(/c_cv_0_0: 9000/);
+    // c_cv_0_0 folds the constant onto the RHS: -M·cv <= threshold - initialSoc
+    // (M = 10000 - 9500 = 500; RHS = 9500 - 9000 = 500). An LHS constant would
+    // be silently dropped by the HiGHS LP reader.
+    expect(lp).toMatch(/^ c_cv_0_0: - 500 cv_0_0 <= 500$/m);
     expect(lp).not.toMatch(/c_cv_0_0:.*soc_/);
   });
 

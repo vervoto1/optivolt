@@ -570,3 +570,46 @@ describe('computePlan — a hold within the start tolerance is reachable from sl
     expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
   });
 });
+
+describe('computePlan — a started hold sagged into the charge-taper band (v0.7.68)', () => {
+  // Since 0.7.68 the slot-0 charge taper binds (the old LP writer put the
+  // initial SoC on the left-hand side of c_cv_k_0, where the HiGHS reader drops
+  // it, so slot 0 always planned full charge power and this pin solved Optimal
+  // at slot 0). A started hold pinned to slot 0 whose battery has sagged above
+  // a low taper threshold is now infeasible at slot 0; the relaxation search
+  // must move the window to the smallest feasible start instead of failing.
+  //
+  // Hold level 99 % (target 100 % minus the start tolerance), SoC 97 %, taper
+  // 95 % → 50 W on a 10 kWh pack with 60-min slots: slot 0 can add at most
+  // 0.5 %, so the pin is infeasible. Cap 1 is feasible: the taper keys on the
+  // start-of-slot SoC and is free at exactly the threshold, so the plan lets
+  // the load take the battery down to 95 % in slot 0 and charges at full power
+  // to 99 % in slot 1.
+  const taperSettings = {
+    ...settings,
+    cvPhase: { enabled: true, thresholds: [{ soc_percent: 95, maxChargePower_W: 50 }] },
+  };
+  const saggedData = { ...data, soc: { timestamp: NOW_STRING, value: 97 } };
+
+  it('relaxes the slot-0 pin to the smallest feasible start, plan Optimal, warning logged', async () => {
+    loadSettings.mockResolvedValue(structuredClone(taperSettings));
+    loadData.mockResolvedValue(structuredClone(saggedData));
+
+    const result = await computePlan();
+
+    expect(result.cfg.cvPhaseThresholds).toEqual([{ soc_percent: 95, maxChargePower_W: 50 }]);
+    expect(result.cfg.rebalanceHoldSoc_percent).toBe(99);
+    // pinned solve (cap 0) infeasible; the first relaxed cap (the lower bound, 1) is feasible
+    expect(solverCtl.caps).toEqual([0, 1]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(1);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBe(1);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 1, endIdx: 1 });
+    // The taper holds in slot 0 (at most 50 W of DC charge from a 97 % start)
+    // and the battery is back at the hold level by the end of slot 1.
+    expect(result.rows[0].g2b + result.rows[0].pv2b).toBeLessThanOrEqual(50 + 1);
+    expect(result.rows[1].soc_percent).toBeGreaterThanOrEqual(99 - 1e-6);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held from slot 0'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('allowed to start up to slot 1 (1 relaxed solves)'));
+  });
+});
