@@ -278,8 +278,14 @@ describe('updateSettings', () => {
   });
 
   it('loads, mutates, normalises and saves, returning what was persisted', async () => {
-    const next = await updateSettings(s => ({ ...s, rebalanceEnabled: true, batteryCapacity_Wh: 4000.4 }));
+    const next = await updateSettings(s => ({
+      ...s, rebalanceEnabled: true, batteryCapacity_Wh: 4000.4, minSoc_percent: 95, maxSoc_percent: 90,
+    }));
     expect(next.rebalanceEnabled).toBe(true);
+    // The normalised value that was written, not the raw mutate output.
+    expect(next.batteryCapacity_Wh).toBe(4000);
+    expect(next.minSoc_percent).toBe(90);
+    expect(next.maxSoc_percent).toBe(95);
     expect(writeJson).toHaveBeenCalledWith(SETTINGS_PATH, expect.objectContaining({ rebalanceEnabled: true, batteryCapacity_Wh: 4000 }));
     expect((await loadSettings()).rebalanceEnabled).toBe(true);
   });

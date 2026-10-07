@@ -42,7 +42,12 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     // lock, so a VRM refresh that loaded them earlier cannot revert this save.
     let rebalanceToggled = false;
     const mergedSettings = (await updateSettings(prev => {
-      const next = normalizeSettings(mergeSettings(prev, incoming as SettingsPatch));
+      // Checked against the merged result: a patch that would invert a
+      // min/max pair is rejected (400) instead of being stored swapped.
+      const next = normalizeSettings(mergeSettings(prev, incoming as SettingsPatch), {
+        savingPatch: incoming as Record<string, unknown>,
+        previous: prev,
+      });
       rebalanceToggled = next.rebalanceEnabled !== prev.rebalanceEnabled;
       return next;
     }))!;

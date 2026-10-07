@@ -41,7 +41,10 @@ async function requestJson(path, init = {}) {
         message = raw;
       }
     }
-    throw new Error(message);
+    const error = new Error(message);
+    // Callers can tell a rejected request (e.g. 400) from a network failure.
+    error.status = response.status;
+    throw error;
   }
 
   if (!raw) {

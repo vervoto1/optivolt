@@ -33,8 +33,14 @@ function revealCards(panel) {
 
 // ---------- DOM ----------
 const els = getElements();
-const optimizer = createOptimizerController({ els });
 let optimizerQuickSettings = null;
+const optimizer = createOptimizerController({
+  els,
+  services: {
+    // Refilled source fields must show in their pinned quick-settings copies.
+    onSettingsRehydrated: () => optimizerQuickSettings?.syncMirrors(),
+  },
+});
 
 // How stale the server's cached plan may be before boot kicks off a fresh
 // solve in the background (the cached plan still renders immediately).
@@ -142,6 +148,9 @@ async function boot() {
     section: els.optimizerQuickSettingsSection,
     body: els.optimizerQuickSettingsBody,
     onSelectionChange: () => {
+      // Pin buttons write the hidden selection input from code (no input
+      // event), so mark the key edited here.
+      optimizer.markSettingsDirty("optimizerQuickSettings");
       void optimizer.persistConfig();
     },
   });
@@ -172,9 +181,10 @@ async function boot() {
     debounceRun: optimizer.debounceRun,
   });
 
-  // The inputs now mirror the server's persisted settings; mark that snapshot
-  // as clean so the initial run doesn't POST an identical copy straight back.
-  optimizer.seedPersistedConfig();
+  // From here on, a user edit of a settings control marks its key for the
+  // next save; hydrating from code (above, or a VRM refresh) marks nothing,
+  // so the initial run doesn't POST the server's settings straight back.
+  optimizer.trackSettingsEdits(document);
 
   if (els.status) {
     els.status.textContent =
@@ -211,7 +221,8 @@ async function onRefreshVrmSettings() {
     if (els.status) els.status.textContent = "Refreshing system settings from VRM…";
     const payload = await refreshVrmSettings();
     const saved = payload?.settings || {};
-    hydrateUI(els, saved);
+    // Fields with an unsaved edit keep it; the rest show the stored values.
+    optimizer.hydrateServerSettings(saved);
     optimizerQuickSettings?.refresh();
     if (els.status) els.status.textContent = "System settings saved from VRM.";
   } catch (err) {

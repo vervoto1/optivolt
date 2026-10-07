@@ -92,6 +92,18 @@ describe('API Client', () => {
     await expect(getJson('/fail')).rejects.toThrow('API request to /fail failed with 400');
   });
 
+  it('carries the HTTP status on the thrown error', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: 'dischargeEfficiency_percent must be a number between 1 and 100' }),
+    });
+    await expect(getJson('/fail')).rejects.toMatchObject({
+      message: 'dischargeEfficiency_percent must be a number between 1 and 100',
+      status: 400,
+    });
+  });
+
   it('returns null for OK response with empty body', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

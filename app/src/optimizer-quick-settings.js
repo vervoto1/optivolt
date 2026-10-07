@@ -100,10 +100,20 @@ export function initOptimizerQuickSettings({
 
   refresh();
 
+  // Copy every source field into its pinned copy, e.g. after the source was
+  // refilled from code (no event). The copy being typed in is left alone.
+  function syncMirrors() {
+    for (const [id, mirror] of state.mirrorsById) {
+      if (mirror === state.doc.activeElement) continue;
+      syncMirrorFromSource(state, id);
+    }
+  }
+
   return {
     getSelectedIds: () => [...state.selectedIds],
     refresh,
     setSelectedIds: (ids, opts = {}) => setSelectedIds(state, ids, opts),
+    syncMirrors,
   };
 }
 

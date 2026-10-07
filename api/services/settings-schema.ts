@@ -192,7 +192,55 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
   return merged;
 }
 
-export function normalizeSettings(settings: Settings): Settings {
+type OrderedPairKey = 'minSoc_percent' | 'maxSoc_percent' | 'evMinChargeCurrent_A' | 'evMaxChargeCurrent_A';
+
+/**
+ * Keep a min/max pair ordered. On a save (`savingPatch` given), a pair the
+ * patch inverts is rejected with a 400 naming the patch key, so a half-typed
+ * value (max SoC "8" on the way to "85" with min 20) is refused instead of
+ * being stored swapped. When the patch carries both keys, the one whose value
+ * it changes is blamed (min when it changes both). When loading a stored
+ * file, or when the patch touches neither key, an inverted pair is repaired
+ * by swapping it.
+ */
+function orderPair(
+  s: Settings,
+  minKey: OrderedPairKey,
+  maxKey: OrderedPairKey,
+  options: NormalizeSettingsOptions,
+): void {
+  const min = s[minKey];
+  const max = s[maxKey];
+  if (max >= min) return;
+  const { savingPatch, previous } = options;
+  if (savingPatch) {
+    const has = (key: string) => Object.prototype.hasOwnProperty.call(savingPatch, key) && savingPatch[key] !== undefined;
+    const changes = (key: OrderedPairKey) => has(key) && (previous == null || previous[key] !== s[key]);
+    const minError = () => new HttpError(400, `${minKey} (${min}) must not be above ${maxKey} (${max})`);
+    const maxError = () => new HttpError(400, `${maxKey} (${max}) must not be below ${minKey} (${min})`);
+    if (changes(minKey)) throw minError();
+    if (changes(maxKey)) throw maxError();
+    if (has(minKey)) throw minError();
+    if (has(maxKey)) throw maxError();
+  }
+  s[minKey] = max;
+  s[maxKey] = min;
+}
+
+export interface NormalizeSettingsOptions {
+  /**
+   * The POST /settings patch being saved. With it, a min/max pair the patch
+   * inverts is rejected (400) rather than swapped; see orderPair.
+   */
+  savingPatch?: Record<string, unknown>;
+  /**
+   * The stored settings the patch is merged onto. When the patch carries both
+   * keys of an inverted pair, the key whose value it changes is the one named.
+   */
+  previous?: Settings;
+}
+
+export function normalizeSettings(settings: Settings, options: NormalizeSettingsOptions = {}): Settings {
   const normalized: Settings = { ...settings };
 
   // Migrate pre-v0.7.20 settings that lack inverterEfficiency_percent.
@@ -219,9 +267,7 @@ export function normalizeSettings(settings: Settings): Settings {
   normalized.minSoc_percent = normalizeSocPercent(normalized.minSoc_percent);
   normalized.maxSoc_percent = normalizeSocPercent(normalized.maxSoc_percent);
 
-  if (normalized.maxSoc_percent < normalized.minSoc_percent) {
-    [normalized.minSoc_percent, normalized.maxSoc_percent] = [normalized.maxSoc_percent, normalized.minSoc_percent];
-  }
+  orderPair(normalized, 'minSoc_percent', 'maxSoc_percent', options);
 
   normalized.optimizerQuickSettings = Array.isArray(normalized.optimizerQuickSettings)
     ? normalized.optimizerQuickSettings.filter((id): id is string => typeof id === 'string')
@@ -245,9 +291,7 @@ export function normalizeSettings(settings: Settings): Settings {
   normalized.evMaxChargeCurrent_A = Math.max(0, Math.round(
     Number.isFinite(normalized.evMaxChargeCurrent_A) ? normalized.evMaxChargeCurrent_A : 0,
   ));
-  if (normalized.evMaxChargeCurrent_A < normalized.evMinChargeCurrent_A) {
-    [normalized.evMinChargeCurrent_A, normalized.evMaxChargeCurrent_A] = [normalized.evMaxChargeCurrent_A, normalized.evMinChargeCurrent_A];
-  }
+  orderPair(normalized, 'evMinChargeCurrent_A', 'evMaxChargeCurrent_A', options);
   // EV charger AC phases: only 1 or 3 are meaningful. Default to 3 (the target
   // hardware is a three-phase Wall Connector); single-phase users set 1.
   normalized.evChargePhases = Number(normalized.evChargePhases) === 1 ? 1 : 3;
