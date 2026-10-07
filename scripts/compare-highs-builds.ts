@@ -7,11 +7,24 @@
  *
  * Usage:
  *   npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]
+ *       [--calibration <file>]... [--adjustments <file>]
  *
  * With no data/settings arguments the bundled defaults are used. Point it at a
  * snapshot of a real DATA_DIR (data.json + settings.json) to compare on the
  * plan that actually runs on the box. NOW=<ISO timestamp> overrides the plan
  * start (defaults to the start of the load series so the whole horizon solves).
+ *
+ * The config is built through the planner's own path (buildPlannerConfig, see
+ * scripts/solver-gate-config.ts): prediction adjustments, then the learned
+ * charge taper when adaptive learning is in auto mode. Production's calibration
+ * lives outside data.json, so pass it with --calibration: the
+ * GET /plan-accuracy/calibration response, or the DATA_DIR calibration.json /
+ * ev-calibration.json (repeat the flag for both). Without it a box in auto mode
+ * is solved UNCALIBRATED, and the gate says so. The prediction adjustments
+ * stored in data.json are used (expired ones pruned); --adjustments <file>
+ * ({ adjustments } or an array) replaces them. Do not fetch
+ * GET /predictions/adjustments from production for it: that endpoint rewrites
+ * data.json when an adjustment has expired. The local DATA_DIR is never read.
  *
  * Exit code is 1 when either build returns no usable solution (parseSolution's
  * SolverStatusError, e.g. infeasible or a time limit hit without an incumbent),
@@ -25,7 +38,8 @@
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { buildSolverConfigFromSettings } from '../api/services/config-builder.ts';
+import { parseArgs } from 'node:util';
+import { buildGateConfig, mergeCalibrationSnapshots, parseAdjustmentsSnapshot, parseCalibrationSnapshot } from './solver-gate-config.ts';
 import { buildLP } from '../lib/build-lp.ts';
 import { MIP_SOLVE_OPTIONS, solveOptionsFor } from '../lib/solve-options.ts';
 import { parseSolution, SolverStatusError, type HighsSolution } from '../lib/parse-solution.ts';
@@ -33,20 +47,43 @@ import type { Data, Settings } from '../api/types.ts';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '..');
-const [candidateArg, dataArg, settingsArg] = process.argv.slice(2);
-if (!candidateArg) {
-  console.error('usage: npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]');
+const usage = 'usage: npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json] [--calibration <file>]... [--adjustments <file>]';
+const args = (() => {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      options: {
+        calibration: { type: 'string', multiple: true },
+        adjustments: { type: 'string' },
+      },
+    });
+  } catch (err) {
+    console.error(`${(err as Error).message}\n${usage}`);
+    process.exit(2);
+  }
+})();
+const [candidateArg, dataArg, settingsArg, ...extra] = args.positionals;
+if (!candidateArg || extra.length > 0) {
+  console.error(usage);
   process.exit(2);
 }
 
+const readJson = (file: string): unknown => JSON.parse(readFileSync(path.resolve(file), 'utf8'));
 const vendoredPath = path.join(root, 'vendor/highs-build/highs.js');
 const candidatePath = path.resolve(candidateArg);
-const data = JSON.parse(readFileSync(dataArg ? path.resolve(dataArg) : path.join(root, 'api/defaults/default-data.json'), 'utf8')) as Data;
-const settings = JSON.parse(readFileSync(settingsArg ? path.resolve(settingsArg) : path.join(root, 'api/defaults/default-settings.json'), 'utf8')) as Settings;
+const data = readJson(dataArg ?? path.join(root, 'api/defaults/default-data.json')) as Data;
+const settings = readJson(settingsArg ?? path.join(root, 'api/defaults/default-settings.json')) as Settings;
+const calibration = args.values.calibration
+  ? mergeCalibrationSnapshots(args.values.calibration.map(f => parseCalibrationSnapshot(readJson(f), f)))
+  : undefined;
+const adjustments = args.values.adjustments
+  ? parseAdjustmentsSnapshot(readJson(args.values.adjustments), args.values.adjustments)
+  : undefined;
 
 const startMs = process.env.NOW ? Date.parse(process.env.NOW) : Date.parse(data.load.start);
 const timing = { startMs, stepMin: settings.stepSize_m ?? 15 };
-const cfg = buildSolverConfigFromSettings(settings, data, startMs);
+const { cfg, notes, uncalibrated } = await buildGateConfig({ settings, data, startMs, calibration, adjustments });
+for (const note of notes) (note.startsWith('WARNING') ? console.warn : console.log)(note);
 const lp = buildLP(cfg);
 // The planner's own options (lib/solve-options.ts). Every non-empty horizon is a
 // MILP; the option count no longer says so, since the time limit is always set.
@@ -116,3 +153,4 @@ if (vendored.status !== candidate.status || Math.abs(vendored.objective - candid
   process.exit(1);
 }
 console.log(differingRows ? 'OK (alternative optimum — review the differing rows)' : 'OK (identical plan)');
+if (uncalibrated) console.warn('note: solved UNCALIBRATED (no --calibration), so this did not compare the LP production solves');
