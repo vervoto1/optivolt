@@ -287,6 +287,12 @@ describe('executePvForecast', () => {
     expect(r2).toBeNull();
   });
 
+  it('returns null for the (0, 0) blank-field sentinel instead of forecasting for Null Island', async () => {
+    const result = await executePvForecast(makeConfig({ pvConfig: { latitude: 0, longitude: 0 } }), 'unit');
+    expect(result).toBeNull();
+    expect(runPvForecast).not.toHaveBeenCalled();
+  });
+
   it('runs the PV forecast for valid coordinates', async () => {
     runPvForecast.mockResolvedValue({ forecast: makeSeries() });
     const cfg = makeConfig({ pvConfig: { latitude: 51.2, longitude: 4.4 } });
@@ -424,6 +430,43 @@ describe('runCombinedPredictionForecast', () => {
     await runCombinedPredictionForecast(cfg, 'combined');
 
     expect(warnSpy).toHaveBeenCalledWith('[predict] forecast persistence failed:', 'weird');
+    warnSpy.mockRestore();
+  });
+});
+
+describe('runCombinedPredictionForecast with persist: false', () => {
+  it('returns adjusted forecasts without saving the forecast or pruning adjustments', async () => {
+    const adjustment = { id: 'a1', series: 'load' };
+    loadData.mockResolvedValue({ predictionAdjustments: [adjustment] });
+    pruneExpiredPredictionAdjustments.mockImplementation((data) => ({
+      data: { ...data, predictionAdjustments: [] },
+      adjustments: [adjustment],
+      changed: true,
+    }));
+    runLoadForecast.mockResolvedValue({ forecast: makeSeries() });
+    runPvForecast.mockResolvedValue({ forecast: makeSeries() });
+
+    const cfg = makeConfig({ pvConfig: { latitude: 51.2, longitude: 4.4 } });
+    const result = await runCombinedPredictionForecast(cfg, 'forecast', { persist: false });
+
+    expect(result.load.forecast).toBeDefined();
+    expect(result.pv.forecast).toBeDefined();
+    expect(updateData).not.toHaveBeenCalled();
+    expect(saveData).not.toHaveBeenCalled();
+    expect(applyPredictionAdjustmentsToSeries).toHaveBeenCalledWith(expect.anything(), [adjustment], 'load');
+  });
+
+  it('still returns the forecasts when reading the adjustments fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadData.mockRejectedValue(new Error('corrupt data.json'));
+    runLoadForecast.mockResolvedValue({ forecast: makeSeries() });
+    runPvForecast.mockResolvedValue(null);
+
+    const result = await runCombinedPredictionForecast(makeConfig(), 'forecast', { persist: false });
+
+    expect(result.load.forecast).toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith('[predict] forecast adjustment read failed:', 'corrupt data.json');
+    expect(saveData).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });

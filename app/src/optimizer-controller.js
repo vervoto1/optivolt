@@ -61,8 +61,13 @@ export function createOptimizerController({ els, services = {} }) {
       runBtn.disabled = true;
     }
 
+    let settingsError = null;
     try {
-      await persistConfig();
+      // A rejected save (e.g. a 400 for a blank efficiency field) does not
+      // stop the solve, which then runs on the settings already stored. The
+      // rejection must stay on screen though: the success label below would
+      // otherwise replace it, and every later edit would be dropped unseen.
+      settingsError = await savePendingConfig();
 
       const updateData = !!els.updateDataBeforeRun?.checked;
       const writeToVictron = !!els.pushToVictron?.checked;
@@ -71,11 +76,24 @@ export function createOptimizerController({ els, services = {} }) {
       const solverStatus =
         typeof result?.solverStatus === "string" ? result.solverStatus : "OK";
       updateRunStatus(solverStatus, writeToVictron);
-      renderPlanResult(result);
+      // The plan is solved (and, if asked, already written) by now: a panel
+      // that fails to draw must not turn that into an "Error" or blank the
+      // summary, so render failures are reported separately.
+      const renderFailures = renderPlanResult(result);
+      if (renderFailures.length > 0) {
+        showDisplayFailure(
+          isNonOptimal(solverStatus)
+            ? `Plan status: ${solverStatus}`
+            : writeToVictron ? "Plan calculated and sent to Victron" : "Plan calculated",
+          renderFailures,
+        );
+      }
+      if (settingsError != null) showSettingsNotSaved(settingsError);
     } catch (err) {
       console.error(err);
       if (els.status) {
-        els.status.textContent = `Error: ${err.message}`;
+        const notSaved = settingsError != null ? ` (settings not saved: ${settingsError})` : "";
+        els.status.textContent = `Error: ${err.message}${notSaved}`;
         els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
       }
       deps.updateSummaryUI(els, null);
@@ -89,19 +107,32 @@ export function createOptimizerController({ els, services = {} }) {
 
   // Render everything a solved (or cached) plan drives: plan meta, summary,
   // rebalance nudge, schedule table, overview charts, and the EV panel.
+  // Each panel renders on its own, so one that throws cannot stop the rest.
+  // Returns the failures as "panel: message" strings (empty when all drew).
   function renderPlanResult(result) {
+    const failures = [];
+    const renderGuarded = (panel, draw) => {
+      try {
+        draw();
+      } catch (err) {
+        console.error(`Failed to render ${panel}:`, err);
+        failures.push(`${panel}: ${err?.message ?? err}`);
+      }
+    };
+
     const rows = Array.isArray(result?.rows) ? result.rows : [];
 
-    deps.updatePlanMeta(els, result.initialSoc_percent, result.tsStart);
-    deps.updateSummaryUI(els, result.summary);
-    deps.updateRebalanceNudgeUI(els, result.rebalanceNudge);
+    renderGuarded("plan info", () => deps.updatePlanMeta(els, result.initialSoc_percent, result.tsStart));
+    renderGuarded("summary", () => deps.updateSummaryUI(els, result.summary));
+    renderGuarded("rebalance notice", () => deps.updateRebalanceNudgeUI(els, result.rebalanceNudge));
 
     const cfgForViz = getVizConfig();
-    const evSettings = getEvSettings();
+    let evSettings = null;
+    renderGuarded("EV settings", () => { evSettings = getEvSettings(); });
 
     lastTableRows = rows;
-    lastTableRebalanceWindow = result.rebalanceWindow ?? null;
-    renderScheduleTable();
+    lastTableRebalanceWindow = result?.rebalanceWindow ?? null;
+    renderGuarded("schedule", () => renderScheduleTable());
 
     // When the car is disconnected the real plan has no EV; the backend then
     // returns evPreview — the schedule as it would be if plugged in now. It is
@@ -109,15 +140,33 @@ export function createOptimizerController({ els, services = {} }) {
     // optimizer overview reflects only the real plan, so the overview charts are
     // NOT given the preview: the overview SoC chart shows an EV-SoC line only when
     // the car is actually in the plan (its EV SoC lives in `rows`).
-    const evPreview = result.evPreview ?? null;
-    renderAllCharts(rows, cfgForViz, result.rebalanceWindow ?? null, evSettings);
-    deps.updateEvPanel(
+    const evPreview = result?.evPreview ?? null;
+    renderAllCharts(rows, cfgForViz, result?.rebalanceWindow ?? null, evSettings, null, renderGuarded);
+    renderGuarded("EV panel", () => deps.updateEvPanel(
       els,
       evPreview?.rows ?? rows,
-      evPreview?.summary ?? result.summary,
+      evPreview?.summary ?? result?.summary,
       cfgForViz.stepSize_m,
       evPreview,
-    );
+    ));
+    return failures;
+  }
+
+  // Amber notice: the plan itself is fine, only some of its display failed.
+  function showDisplayFailure(prefix, failures) {
+    if (!els.status) return;
+    const more = failures.length > 1 ? ` (+${failures.length - 1} more)` : "";
+    els.status.textContent = `${prefix}, but display failed: ${failures[0]}${more}`;
+    els.status.className = "text-sm font-medium text-amber-600 dark:text-amber-400";
+  }
+
+  // Red notice put in front of whatever the run reported: the plan on screen
+  // was computed from the previously stored settings, not the edited form.
+  function showSettingsNotSaved(message) {
+    if (!els.status) return;
+    els.status.textContent =
+      `Settings not saved: ${message}. ${els.status.textContent} (using the previously saved settings)`;
+    els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
   }
 
   // Hydrate the UI from the server's cached plan (kept fresh by auto-calculate)
@@ -133,16 +182,25 @@ export function createOptimizerController({ els, services = {} }) {
     }
     if (!Array.isArray(result?.rows) || result.rows.length === 0) return null;
 
-    renderPlanResult(result);
+    // A render failure still returns { ageMs }: falling back to a solve would
+    // only hit the same failure on an identical payload.
+    const renderFailures = renderPlanResult(result);
 
     const ageMs = Number.isFinite(result.computedAtMs)
       ? Math.max(0, Date.now() - result.computedAtMs)
       : Infinity;
 
-    if (els.status) {
-      const solverStatus =
-        typeof result.solverStatus === "string" ? result.solverStatus : "OK";
-      if (solverStatus.toLowerCase() !== "optimal") {
+    const solverStatus =
+      typeof result.solverStatus === "string" ? result.solverStatus : "OK";
+    if (renderFailures.length > 0) {
+      showDisplayFailure(
+        isNonOptimal(solverStatus)
+          ? `Plan status: ${solverStatus}`
+          : `Plan loaded (${formatPlanAge(ageMs)})`,
+        renderFailures,
+      );
+    } else if (els.status) {
+      if (isNonOptimal(solverStatus)) {
         els.status.textContent = `Plan status: ${solverStatus}`;
         els.status.className = "text-sm font-medium text-amber-600 dark:text-amber-400";
       } else {
@@ -181,14 +239,15 @@ export function createOptimizerController({ els, services = {} }) {
     return els.flows15m?.checked ? null : 60;
   }
 
-  function renderAllCharts(rows, cfg, rebalanceWindow = null, evSettings = null, evSocRows = null) {
+  // Each chart draws inside `renderGuarded` (see renderPlanResult).
+  function renderAllCharts(rows, cfg, rebalanceWindow, evSettings, evSocRows, renderGuarded) {
     lastFlowsRenderData = { rows, cfg, rebalanceWindow, evSettings };
-    deps.drawFlowsBarStackSigned(
+    renderGuarded("energy flows chart", () => deps.drawFlowsBarStackSigned(
       els.flows, rows, cfg.stepSize_m, rebalanceWindow, evSettings, flowsAggregateMinutes(),
-    );
-    deps.drawSocChart(els.soc, rows, cfg.stepSize_m, evSettings, evSocRows);
-    deps.drawPricesStepLines(els.prices, rows, cfg.stepSize_m);
-    deps.drawLoadPvGrouped(els.loadpv, rows, cfg.stepSize_m);
+    ));
+    renderGuarded("SoC chart", () => deps.drawSocChart(els.soc, rows, cfg.stepSize_m, evSettings, evSocRows));
+    renderGuarded("prices chart", () => deps.drawPricesStepLines(els.prices, rows, cfg.stepSize_m));
+    renderGuarded("load/PV chart", () => deps.drawLoadPvGrouped(els.loadpv, rows, cfg.stepSize_m));
   }
 
   function onFlowsAggregationChange() {
@@ -199,17 +258,28 @@ export function createOptimizerController({ els, services = {} }) {
     );
   }
 
-  async function persistConfig(cfg = deps.snapshotUI(els)) {
-    // Skip the POST when nothing changed since the last successful persist —
-    // notably the unconditional persist at the start of the boot-time run.
+  // POST the snapshot unless it matches the last successful persist —
+  // notably the unconditional persist at the start of the boot-time run.
+  // Resolves to the error message when the save failed, else null. A failed
+  // save leaves the baseline alone, so the next attempt POSTs again.
+  async function savePendingConfig(cfg = deps.snapshotUI(els)) {
     const json = JSON.stringify(cfg);
-    if (json === lastPersistedConfigJson) return;
+    if (json === lastPersistedConfigJson) return null;
     try {
       await deps.saveConfig(cfg);
       lastPersistedConfigJson = json;
+      return null;
     } catch (error) {
       console.error("Failed to persist settings", error);
-      if (els.status) els.status.textContent = `Settings error: ${error.message}`;
+      return error?.message ?? String(error);
+    }
+  }
+
+  async function persistConfig(cfg = deps.snapshotUI(els)) {
+    const settingsError = await savePendingConfig(cfg);
+    if (settingsError != null && els.status) {
+      els.status.textContent = `Settings error: ${settingsError}`;
+      els.status.className = "text-sm font-medium text-red-600 dark:text-red-400";
     }
   }
 
@@ -227,9 +297,7 @@ export function createOptimizerController({ els, services = {} }) {
   function updateRunStatus(solverStatus, writeToVictron) {
     if (!els.status) return;
 
-    const nonOptimal =
-      typeof solverStatus === "string" &&
-      solverStatus.toLowerCase() !== "optimal";
+    const nonOptimal = isNonOptimal(solverStatus);
 
     let label;
     let colorClass = "text-emerald-600 dark:text-emerald-400";
@@ -272,6 +340,10 @@ export function createOptimizerController({ els, services = {} }) {
     renderScheduleTable,
     seedPersistedConfig,
   };
+}
+
+function isNonOptimal(solverStatus) {
+  return typeof solverStatus === "string" && solverStatus.toLowerCase() !== "optimal";
 }
 
 function formatPlanAge(ageMs) {

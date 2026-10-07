@@ -54,7 +54,11 @@ export async function initPredictionsTab() {
     onForecastResolutionChange: forecastChart.render,
   });
   forecastChart.wireAdjustmentPopover();
-  onForecastAll();
+  // Opening the tab is read-only: refresh the forecasts and accuracy charts
+  // from the server's stored config without posting the form back (a failed
+  // config GET leaves form defaults that would overwrite the stored PV
+  // location) and without persisting the result.
+  runForecasts({ save: false, persist: false });
   initAdaptiveLearning();
 }
 
@@ -86,13 +90,17 @@ async function hydrateForecastsFromStoredData() {
   }
 }
 
-async function onForecastAll() {
+function onForecastAll() {
+  return runForecasts({ save: true, persist: true });
+}
+
+async function runForecasts({ save, persist }) {
   updateStatus('load', 'Running load forecast…');
   updateStatus('pv', 'Running PV forecast…');
 
   try {
-    await savePredictionFormToServer();
-    const result = await runCombinedForecast();
+    if (save) await savePredictionFormToServer();
+    const result = await runCombinedForecast({ persist });
     updateForecastUI('load', result.load);
     updateForecastUI('pv', result.pv);
   } catch (err) {

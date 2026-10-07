@@ -792,7 +792,8 @@ export function buildLP({
   // ===============
   // Variables that cross AC↔DC have their physical caps rescaled by 1/η_inv when bounded
   // against the cap on the other side (e.g. an AC export cap bounding a DC source).
-  // Guard against eta_inv === 0; the schema clamps but be defensive.
+  // Guard against eta_inv === 0: POST /settings rejects it, but a value already
+  // stored on disk is not clamped on load.
   const invScale = eta_inv > 0 ? 1 / eta_inv : Number.POSITIVE_INFINITY;
   lines.push("Bounds");
   for (let t = 0; t < T; t++) {

@@ -705,6 +705,7 @@ function formatLastFullSoc(value) {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23", // 24-hour clock regardless of the browser locale
   });
 }
 

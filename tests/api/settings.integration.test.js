@@ -89,4 +89,43 @@ describe('Settings route integration', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Home Assistant websocket URL/);
   });
+
+  it('POST /settings rejects a zero efficiency with a 400 naming the field and persists nothing', async () => {
+    const stored = { dischargeEfficiency_percent: 95, chargeEfficiency_percent: 95, inverterEfficiency_percent: 95 };
+    await writeSettings(stored);
+    const before = await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8');
+
+    const res = await post(settingsRouter, '/', { dischargeEfficiency_percent: 0, maxSoc_percent: 90 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/dischargeEfficiency_percent must be a number between 1 and 100/);
+    expect(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).toBe(before);
+    expect(startAutoCalculate).not.toHaveBeenCalled();
+  });
+
+  it('POST /settings rejects string booleans and unknown enum values instead of coercing them', async () => {
+    const offRes = await post(settingsRouter, '/', { rebalanceEnabled: 'off' });
+    expect(offRes.status).toBe(400);
+    expect(offRes.body.error).toMatch(/rebalanceEnabled must be a boolean/);
+
+    const enumRes = await post(settingsRouter, '/', { terminalSocValuation: 'Avg' });
+    expect(enumRes.status).toBe(400);
+    expect(enumRes.body.error).toMatch(/terminalSocValuation must be one of/);
+
+    await expect(fs.access(path.join(tempDir, 'settings.json'))).rejects.toThrow();
+  });
+
+  it('POST /settings still saves other fields when a bad efficiency is already stored', async () => {
+    // Only the incoming patch is validated: the stored value is not clamped
+    // (it keeps failing the solve loudly) and does not block unrelated saves.
+    await writeSettings({ dischargeEfficiency_percent: 0, inverterEfficiency_percent: 95 });
+
+    const res = await post(settingsRouter, '/', { maxSoc_percent: 90, rebalanceEnabled: true });
+
+    expect(res.status).toBe(200);
+    const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8'));
+    expect(saved.maxSoc_percent).toBe(90);
+    expect(saved.rebalanceEnabled).toBe(true);
+    expect(saved.dischargeEfficiency_percent).toBe(0);
+  });
 });

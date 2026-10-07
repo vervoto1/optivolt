@@ -166,6 +166,11 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
     if (t === evDepSlot - 1) {
       fields.ev_target_shortfall_Wh = round(evTargetShortfall_Wh);
       fields.ev_target_met = evTargetShortfall_Wh <= 1; // within 1 Wh of target
+      // The target the LP actually enforced (live HA entity value or the
+      // setting, already resolved server-side), so the UI never re-derives it.
+      if (Number.isFinite(cfg.ev?.evTargetSoc_percent)) {
+        fields.ev_target_soc_percent = cfg.ev!.evTargetSoc_percent;
+      }
     }
     return fields;
   };

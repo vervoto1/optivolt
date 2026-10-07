@@ -128,6 +128,39 @@ describe('vrm-refresh logic with custom data', () => {
     }));
   });
 
+  it('preserves persisted fields the refresh does not know about', async () => {
+    // Regression guard: data.json used to be rebuilt from a hand-kept key
+    // list here, which silently wiped any field the list forgot (it once
+    // dropped rebalanceState). The rebuild must carry every stored key.
+    const stored = {
+      load: { start: '2024-01-01T00:00:00.000Z', values: [] },
+      pv: { start: '2024-01-01T00:00:00.000Z', values: [] },
+      importPrice: { start: '2024-01-01T00:00:00.000Z', values: [] },
+      exportPrice: { start: '2024-01-01T00:00:00.000Z', values: [] },
+      soc: { value: 50, timestamp: '2024-01-01T00:00:00.000Z' },
+      evLoad: { start: '2024-01-01T00:00:00.000Z', values: [7] },
+      lastFullSocAt: '2023-12-30T12:00:00.000Z',
+      rebalanceState: { startMs: 123 },
+      predictionAdjustments: [{ id: 'adj-1' }],
+      someFutureField: { keep: true },
+    };
+    loadData.mockResolvedValue(structuredClone(stored));
+    mockFetchForecasts.mockResolvedValue({ timestamps: ['2024-01-01T10:00:00.000Z'], load_W: [1], pv_W: [2] });
+    mockFetchPrices.mockResolvedValue({ timestamps: ['2024-01-01T10:00:00.000Z'], importPrice_cents_per_kwh: [3], exportPrice_cents_per_kwh: [4] });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const saved = saveData.mock.calls.at(-1)[0];
+    expect(saved.someFutureField).toEqual({ keep: true });
+    expect(saved.evLoad).toEqual(stored.evLoad);
+    expect(saved.rebalanceState).toEqual(stored.rebalanceState);
+    expect(saved.predictionAdjustments).toEqual(stored.predictionAdjustments);
+    expect(saved.lastFullSocAt).toBe(stored.lastFullSocAt);
+    // The refreshed series still override the stored ones.
+    expect(saved.load.start).toBe('2024-01-01T10:00:00.000Z');
+    expect(saved.importPrice.start).toBe('2024-01-01T10:00:00.000Z');
+  });
+
   it('passes the configured batteryInstance to the MQTT SoC reader', async () => {
     loadSettings.mockResolvedValue({
       dataSources: { prices: 'vrm', load: 'vrm', pv: 'vrm', soc: 'mqtt' },

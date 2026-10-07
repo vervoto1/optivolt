@@ -6,6 +6,7 @@
  */
 
 import { fetchHaStats } from './ha-client.ts';
+import { hasPvCoordinates, MISSING_PV_COORDINATES_MESSAGE } from './pv-coordinates.ts';
 import { postprocess, aggregateTo15Min } from '../../lib/ha-postprocess.ts';
 import { fetchArchiveIrradiance, fetchForecastIrradiance } from './open-meteo-client.ts';
 import { expandHourlyTo15Min } from '../../lib/open-meteo.ts';
@@ -57,8 +58,8 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
   const is15MinMode = pvMode === '15min';
   const forecastResolution = pvMode === 'hourly' ? 60 : 15;
 
-  if (latitude == null || Number.isNaN(latitude) || longitude == null || Number.isNaN(longitude)) {
-    throw new Error('Latitude and longitude must be configured for PV forecasting');
+  if (!hasPvCoordinates(pvConfig)) {
+    throw new Error(MISSING_PV_COORDINATES_MESSAGE);
   }
 
   const entityIds = sensors.map(s => s.id);

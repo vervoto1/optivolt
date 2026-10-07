@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { HttpError, assertCondition, toHttpError } from '../http-errors.ts';
 import { refreshSettingsFromVrmAndPersist } from '../services/vrm-refresh.ts';
+import { sanitizeSettingsResponse } from '../services/settings-schema.ts';
 
 const router = express.Router();
 
@@ -21,7 +22,13 @@ router.post('/refresh-settings', async (_req: Request, res: Response, next: Next
   try {
     validateEnvOrThrow();
     const saved = await refreshSettingsFromVrmAndPersist();
-    res.json({ message: 'System settings updated from VRM and saved.', settings: saved });
+    // Same redaction as GET/POST /settings: the stored HA token never leaves
+    // the server. isAddon keeps the client's HA-connection group hidden in the
+    // add-on after it re-hydrates from this payload.
+    res.json({
+      message: 'System settings updated from VRM and saved.',
+      settings: { ...sanitizeSettingsResponse(saved), isAddon: !!process.env.SUPERVISOR_TOKEN },
+    });
   } catch (error) {
     next(asHttp(error, 'Failed to refresh VRM system settings'));
   }

@@ -118,7 +118,7 @@ describe('Route contracts', () => {
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
     wireUpdateData({ loadData: loadDataMock, saveData: saveDataMock, updateData: updateDataMock });
-    refreshSettingsFromVrmAndPersist.mockResolvedValue({ batteryCapacity_Wh: 10000 });
+    refreshSettingsFromVrmAndPersist.mockResolvedValue({ batteryCapacity_Wh: 10000, haToken: 'secret-ha-token' });
     planAndMaybeWrite.mockResolvedValue({
       cfg: { initialSoc_percent: 20 },
       timing: { startMs: new Date('2024-01-01T00:00:00.000Z').getTime() },
@@ -314,6 +314,32 @@ describe('Route contracts', () => {
     const res = await post(routes.vrmRouter, '/refresh-settings', {});
     expect(res.status).toBe(200);
     expect(refreshSettingsFromVrmAndPersist).toHaveBeenCalled();
+    expect(res.body.settings.batteryCapacity_Wh).toBe(10000);
+  });
+
+  it('POST /vrm/refresh-settings redacts the stored HA token like GET /settings does', async () => {
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok-abc';
+
+    const res = await post(routes.vrmRouter, '/refresh-settings', {});
+    expect(res.status).toBe(200);
+    expect(res.body.settings.haToken).toBeUndefined();
+    expect(res.body.settings.hasHaToken).toBe(true);
+    expect(res.body.settings.isAddon).toBe(false);
+    expect(JSON.stringify(res.body)).not.toContain('secret-ha-token');
+  });
+
+  it('POST /vrm/refresh-settings reports isAddon when running under the supervisor', async () => {
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok-abc';
+    process.env.SUPERVISOR_TOKEN = 'sup';
+    try {
+      const res = await post(routes.vrmRouter, '/refresh-settings', {});
+      expect(res.body.settings.isAddon).toBe(true);
+      expect(res.body.settings.hasHaToken).toBe(true);
+    } finally {
+      delete process.env.SUPERVISOR_TOKEN;
+    }
   });
 
   // --- http-errors.ts coverage ---

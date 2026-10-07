@@ -54,6 +54,17 @@ describe('EV native charging — soft target', () => {
     expect(dep.ev_soc_percent).toBeGreaterThan(79.5);
     expect(dep.ev_target_met).toBe(true);
     expect(dep.ev_target_shortfall_Wh).toBeLessThan(2);
+    // The enforced target travels on exactly that row, so the UI never re-derives it.
+    expect(dep.ev_target_soc_percent).toBe(80);
+    expect(rows.filter(r => r.ev_target_soc_percent != null)).toHaveLength(1);
+  });
+
+  it('carries no pinned target when the deadline lies beyond the horizon', () => {
+    const cfg = { ...base, ev: { ...evBase, evDepartureSlot: 9 } }; // T + 1: no target constraint
+    const result = highs.solve(buildLP(cfg), GAPS);
+    expect(result.Status).toBe('Optimal');
+    const rows = parseSolution(result, cfg, OPTS);
+    expect(rows.some(r => r.ev_target_soc_percent != null)).toBe(false);
   });
 
   it('anchors the SoC trajectory to the initial SoC for a small deficit (78% -> 80%)', () => {

@@ -6,8 +6,9 @@ import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import { formatStrategy } from '../../lib/strategy-selector.ts';
 import type { ForecastRunResult } from './load-prediction-service.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
+import { hasPvCoordinates } from './pv-coordinates.ts';
 import type { PvForecastRunResult } from './pv-prediction-service.ts';
-import { updateData } from './data-store.ts';
+import { loadData, updateData } from './data-store.ts';
 import { loadSettings } from './settings-store.ts';
 import { applyPredictionAdjustmentsToSeries, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { loadActiveAdjustmentsAndPrune } from './prediction-adjustment-store.ts';
@@ -57,16 +58,33 @@ export function executeStrategyPredictions(config: PredictionRunConfig, strategy
   );
 }
 
-export async function runCombinedPredictionForecast(config: PredictionRunConfig, endpoint: string) {
+/**
+ * Run the load and PV forecasts from the stored prediction config.
+ *
+ * With `persist: false` nothing is written: the forecasts are not stored in
+ * data.json and expired adjustments are filtered out of the response without
+ * being pruned from the file. The Predictions tab uses this when it opens, so
+ * merely viewing the tab never changes what the planner reads.
+ */
+export async function runCombinedPredictionForecast(
+  config: PredictionRunConfig,
+  endpoint: string,
+  { persist = true }: { persist?: boolean } = {},
+) {
   const [loadResult, pvResult] = await Promise.all([
     executeLoadForecast(config, endpoint).catch(handleCombinedForecastError('load', endpoint)),
     executePvForecast(config, endpoint).catch(handleCombinedForecastError('pv', endpoint)),
   ]);
   let adjustments: ReturnType<typeof pruneExpiredPredictionAdjustments>['adjustments'] = [];
   try {
-    adjustments = await persistForecastAndPrune({ load: loadResult?.forecast, pv: pvResult?.forecast });
+    adjustments = persist
+      ? await persistForecastAndPrune({ load: loadResult?.forecast, pv: pvResult?.forecast })
+      : pruneExpiredPredictionAdjustments(await loadData()).adjustments;
   } catch (err) {
-    console.warn('[predict] forecast persistence failed:', err instanceof Error ? err.message : err);
+    console.warn(
+      `[predict] forecast ${persist ? 'persistence' : 'adjustment read'} failed:`,
+      err instanceof Error ? err.message : err,
+    );
   }
   return {
     load: applyForecastAdjustments(loadResult, 'load', adjustments),
@@ -100,11 +118,9 @@ export async function executeLoadForecast(config: PredictionRunConfig, logLabel:
 }
 
 export async function executePvForecast(config: PredictionRunConfig, logLabel: string): Promise<PvForecastRunResult | null> {
-  if (
-    !config.pvConfig ||
-    config.pvConfig.latitude == null || Number.isNaN(config.pvConfig.latitude) ||
-    config.pvConfig.longitude == null || Number.isNaN(config.pvConfig.longitude)
-  ) {
+  // No usable site location (blank, non-finite or the 0,0 sentinel): skip
+  // rather than forecast for the wrong place.
+  if (!hasPvCoordinates(config.pvConfig)) {
     return null;
   }
 

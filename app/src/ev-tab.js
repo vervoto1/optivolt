@@ -1,7 +1,7 @@
 import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./charts.js";
 import { formatKWh, updateStackedBarContainer } from "./state.js";
 import { fetchEvStatus, fetchEvOverride, setEvOverride } from "./api/api.js";
-import { resolveDepartureMs, effectiveTargetSoc } from "./utils.js";
+import { resolveDepartureMs, effectiveTargetSoc, findEvTargetRow } from "./utils.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
@@ -245,6 +245,30 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
     return `style="background:${toRGBA(SOLUTION_COLORS[colorKey], 0.80)}; border-radius:4px"`;
   };
 
+  // Target value and row: as pinned on the plan rows by the server when
+  // present, else the browser-side settings at the departure row.
+  const pinnedTarget = findEvTargetRow(evRows);
+  const departureMs = evSettings.departureTime ? new Date(evSettings.departureTime).getTime() : null;
+  let departureIdx = departureMs != null
+    ? (evRows.findIndex(r => r.timestampMs >= departureMs))
+    : -1;
+  // The "ready" badge marks the user's departure row. The server floors the
+  // deadline to a slot boundary and pins the target on the slot ending there,
+  // so a deadline it honoured lies within one step after the pinned row's
+  // end (on or off a boundary). Any other deadline (an elapsed "today" one
+  // the server moved to the end of the horizon) is not where the plan is
+  // ready, so its badge is dropped.
+  if (pinnedTarget && departureIdx >= 0) {
+    const step_ms = stepSize_m * 60_000;
+    const pinnedEndMs = evRows[pinnedTarget.idx].timestampMs + step_ms;
+    if (!(departureMs >= pinnedEndMs && departureMs < pinnedEndMs + step_ms)) {
+      departureIdx = -1;
+    }
+  }
+  const targetIdx = pinnedTarget ? pinnedTarget.idx : departureIdx;
+  const targetSoc_percent = pinnedTarget ? pinnedTarget.targetSoc_percent : evSettings.targetSoc_percent;
+  const hasTarget = targetSoc_percent != null && !isNaN(targetSoc_percent);
+
   const totGrid  = evRows.reduce((s, r) => s + (r.g2ev  || 0) * h / 1000, 0);
   const totBatt  = evRows.reduce((s, r) => s + (r.b2ev  || 0) * h / 1000, 0);
   const totSolar = evRows.reduce((s, r) => s + (r.pv2ev || 0) * h / 1000, 0);
@@ -266,15 +290,8 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
     <th class="${baseTh} text-right">${fmtTotalChip(totBatt,  'b2ev')}</th>
     <th class="${baseTh} text-right">${fmtTotalChip(totSolar, 'pv2ev')}</th>
     <th class="${baseTh}"></th>
-    ${evSettings.targetSoc_percent != null ? `<th class="${baseTh}"></th>` : ''}
+    ${hasTarget ? `<th class="${baseTh}"></th>` : ''}
   </tr>`;
-
-  const departureMs = evSettings.departureTime ? new Date(evSettings.departureTime).getTime() : null;
-  const departureIdx = departureMs != null
-    ? (evRows.findIndex(r => r.timestampMs >= departureMs))
-    : -1;
-
-  const hasTarget = evSettings.targetSoc_percent != null && !isNaN(evSettings.targetSoc_percent);
 
   const MODE_BADGE = {
     fixed:      `<span class="rounded px-1 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">fixed</span>`,
@@ -313,8 +330,9 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
       ? `${timeLabel}<span class="ml-1.5 inline-block rounded px-1 py-0 text-[9px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400" title="Ready by">ready</span>`
       : timeLabel;
 
+    const isTargetRow = i === targetIdx;
     const targetCell = hasTarget
-      ? `<td class="px-2 py-1 text-right font-mono tabular-nums text-[11px] ${isDeparture ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-600'}">${isDeparture ? `${evSettings.targetSoc_percent}%` : '—'}</td>`
+      ? `<td class="px-2 py-1 text-right font-mono tabular-nums text-[11px] ${isTargetRow ? 'font-semibold text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-600'}">${isTargetRow ? `${targetSoc_percent}%` : '—'}</td>`
       : '';
 
     const rowBg = isMidnight ? 'bg-slate-50/50 dark:bg-slate-800/30' : '';

@@ -36,6 +36,16 @@ export function effectiveTargetSoc(liveState, staticValue) {
   return parseFloat(staticValue) || null;
 }
 
+// The EV target as the server pinned it on the plan rows: the row index the
+// LP enforces the target on and its value. null when no row carries it (an
+// older server, no EV in the plan, or a deadline past the horizon), in which
+// case callers fall back to the browser-side departure/target settings.
+export function findEvTargetRow(rows) {
+  if (!Array.isArray(rows)) return null;
+  const idx = rows.findIndex(r => Number.isFinite(r?.ev_target_soc_percent));
+  return idx < 0 ? null : { idx, targetSoc_percent: rows[idx].ev_target_soc_percent };
+}
+
 export function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')

@@ -424,6 +424,62 @@ describe('ev-tab.js', () => {
       expect(els.evScheduleTable.innerHTML).toContain('ready');
     });
 
+    it('shows the pinned plan target on its row even with no departure time set', () => {
+      const t0 = Date.now();
+      const row = (i, extra = {}) => ({ timestampMs: t0 + i * 900_000, ev_soc_percent: 50 + i, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 3000, ic: 12, ...extra });
+      const rows = [row(0), row(1), row(2, { ev_target_soc_percent: 90 })];
+      const els = makeEls();
+      els.evTargetSoc = { value: '80' }; // stale static setting; the plan used 90
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 2 });
+
+      const html = els.evScheduleTable.innerHTML;
+      expect(html).toContain('Target');
+      expect(html).toContain('90%');
+      expect(html).not.toContain('80%');
+      expect(html).not.toContain('>ready<');
+    });
+
+    it('drops the ready badge when the departure row is nowhere near the pinned target', () => {
+      const t0 = Date.now();
+      const row = (i, extra = {}) => ({ timestampMs: t0 + i * 900_000, ev_soc_percent: 50 + i, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 3000, ic: 12, ...extra });
+      const rows = [row(0), row(1), row(2), row(3, { ev_target_soc_percent: 90 })];
+      const els = makeEls();
+      // Departure resolves to row 0 (an elapsed deadline); the server pinned the target at the end.
+      els.evDepartureTime = { value: new Date(t0 - 3_600_000).toISOString() };
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 2 });
+      expect(els.evScheduleTable.innerHTML).not.toContain('>ready<');
+
+      // A departure on the row right after the pinned one keeps its badge.
+      const rows2 = [row(0), row(1, { ev_target_soc_percent: 90 }), row(2)];
+      els.evDepartureTime = { value: new Date(t0 + 2 * 900_000).toISOString() };
+      updateEvPanel(els, rows2, { evChargeTotal_kWh: 2 });
+      expect(els.evScheduleTable.innerHTML).toContain('>ready<');
+    });
+
+    it('keeps the ready badge for an in-horizon deadline that is not on a slot boundary', () => {
+      const t0 = Math.floor(Date.now() / 900_000) * 900_000;
+      const row = (i, extra = {}) => ({ timestampMs: t0 + i * 900_000, ev_soc_percent: 50 + i, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 3000, ic: 12, ...extra });
+      // Deadline t0 + 70 min: the server floors it to slot 4 and pins row 3;
+      // the first row at or after the deadline is row 5 (t0 + 75 min).
+      const rows = [0, 1, 2, 3, 4, 5, 6].map(i => row(i, i === 3 ? { ev_target_soc_percent: 90 } : {}));
+      const els = makeEls();
+      els.evDepartureTime = { value: new Date(t0 + 70 * 60_000).toISOString() };
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 2 }, 15);
+      expect(els.evScheduleTable.innerHTML).toContain('>ready<');
+
+      // Hourly slots with a :15 deadline: pinned row 0 (ends t0 + 60), ready on row 2.
+      const hourly = (i, extra = {}) => ({ ...row(0, extra), timestampMs: t0 + i * 3_600_000 });
+      const rowsH = [hourly(0, { ev_target_soc_percent: 90 }), hourly(1), hourly(2)];
+      els.evDepartureTime = { value: new Date(t0 + 75 * 60_000).toISOString() };
+      updateEvPanel(els, rowsH, { evChargeTotal_kWh: 2 }, 60);
+      expect(els.evScheduleTable.innerHTML).toContain('>ready<');
+
+      // A deadline a full step past what the pinned row allows is not the one the plan used.
+      els.evDepartureTime = { value: new Date(t0 + 120 * 60_000).toISOString() };
+      updateEvPanel(els, rowsH, { evChargeTotal_kWh: 2 }, 60);
+      expect(els.evScheduleTable.innerHTML).not.toContain('>ready<');
+    });
+
     it('shows Target column when targetSoc_percent is set', () => {
       const rows = [
         { timestampMs: Date.now(), ev_soc_percent: 30, ev_charge: 3000, ev_charge_mode: 'solar_grid', g2ev: 1500, b2ev: 500, pv2ev: 1000, ic: 12 },

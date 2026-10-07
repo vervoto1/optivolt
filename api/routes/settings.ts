@@ -10,7 +10,7 @@ import { startEvActuator, stopEvActuator } from '../services/ev-actuator-service
 import { startBatteryChargeController, stopBatteryChargeController } from '../services/battery-charge-controller.ts';
 import { startBalanceTuner, stopBalanceTuner } from '../services/balance-tuner.ts';
 import { startPredictionAutoSelect, stopPredictionAutoSelect } from '../services/prediction-auto-select.ts';
-import { mergeSettings, normalizeSettings, sanitizeSettingsResponse } from '../services/settings-schema.ts';
+import { mergeSettings, normalizeSettings, sanitizeSettingsResponse, validateSettingsPatch } from '../services/settings-schema.ts';
 import type { SettingsPatch } from '../services/settings-schema.ts';
 
 const router = express.Router();
@@ -33,6 +33,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       400,
       'settings payload must be an object',
     );
+    // Reject bad efficiencies, non-boolean flags and unknown enum values
+    // before anything is merged or persisted.
+    validateSettingsPatch(incoming as Record<string, unknown>);
 
     // Merged onto the settings as they are at write time, under the store's
     // lock, so a VRM refresh that loaded them earlier cannot revert this save.

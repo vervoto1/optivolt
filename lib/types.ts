@@ -202,6 +202,12 @@ export interface PlanRow {
   ev_target_shortfall_Wh?: number;
   /** True when the requested EV target SoC is met by the departure slot (shortfall ≈ 0). */
   ev_target_met?: boolean;
+  /**
+   * The EV target SoC (%) the LP enforced, set only on the row it is pinned to
+   * (the slot ending at the resolved deadline, or the last slot when there is
+   * none). Absent when the deadline lies beyond the horizon (no target enforced).
+   */
+  ev_target_soc_percent?: number;
 }
 
 /**
