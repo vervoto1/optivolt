@@ -18,7 +18,7 @@ OptiVolt is a linear-programming optimizer for home energy systems (battery, PV,
 - **Run a single test file:** `npx vitest run tests/lib/build-lp.test.js`
 - **Typecheck:** `npm run typecheck`
 - **Lint:** `npm run lint`
-- **Compare HiGHS builds:** `npx tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]` — the gate for refreshing the vendored solver; procedure and policy in `vendor/highs-build/PROVENANCE.md`. `scripts/prod-solver-gate.sh <addon-host | data.json settings.json>` runs it against a production snapshot (reference build from git, `REF=<rev>`).
+- **Compare HiGHS builds:** `npx --no-install tsx scripts/compare-highs-builds.ts <candidate-highs.js> [data.json] [settings.json]` — the gate for refreshing the vendored solver; procedure and policy in `vendor/highs-build/PROVENANCE.md`. `scripts/prod-solver-gate.sh <addon-host | data.json settings.json>` runs it against a production snapshot (reference build from git, `REF=<rev>`).
 - **Rebuild Tailwind CSS:** `npm run build:css` — regenerates `app/vendor/tailwind.css` from `tailwind.source.css` (Tailwind v4, CSS-first config: theme tokens, `@source` globs, dark variant, and v3-parity preflight overrides all live in that file). Run after adding new Tailwind classes anywhere under `app/` and commit the result (CI fails if it is stale).
 
 ## Architecture
@@ -69,7 +69,7 @@ Tests use vitest with supertest for API tests. Test files mirror the source stru
 
 - ESM modules throughout (`"type": "module"` in package.json).
 - TypeScript is used in `api/` and `lib/`; browser files under `app/` remain build-free JavaScript modules. Styling uses precompiled Tailwind (`app/vendor/tailwind.css`, rebuilt with `npm run build:css`) — there is no runtime Tailwind compiler. The inline `<style>` block in `app/index.html` sits in `@layer components`, so a utility class on the same element wins over it without the `!` prefix; keep the `<link>` to `tailwind.css` before that block.
-- Node.js `^22.18.0 || >=24` required, from a build with TypeScript type stripping (`process.features.typescript`). Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) must run the server via `npx tsx api/index.ts`.
+- Node.js `^22.18.0 || >=24` required, from a build with TypeScript type stripping (`process.features.typescript`). Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) must run the server via `npx --no-install tsx api/index.ts` (tsx is a devDependency).
 - Express 5.
 - Unused variables prefixed with `_` (eslint rule).
 - ESLint also checks `.md` and `.css` files.
@@ -90,7 +90,7 @@ The version must be updated in **3 locations** when bumping, plus the changelog:
 - **origin**: `vervoto1/optivolt` (fork) — CI runs here (Tests + Builder workflows).
 - **upstream**: `bmesuere/optivolt` (original) — no CI for our pushes.
 - The **Builder** workflow (`builder.yaml` → reusable `build-addon.yaml`) produces HA add-on Docker images (aarch64 + amd64) published to GHCR, using the composable `home-assistant/builder/actions/*` (native BuildKit, aarch64 on an ARM runner — no QEMU). It only builds when `optivolt/` files change (Dockerfile, config.yaml, rootfs) or the build workflows themselves change. PRs build without pushing; a push to `main` publishes `<version>` + `latest`. A version tag that already exists is never overwritten (`skip-existing`), so bump `optivolt/config.yaml` version to publish a new image.
-- The **Tests** workflow runs lint, typecheck, and vitest on every push to main.
+- The **Tests** workflow runs lint, the Tailwind staleness check, typecheck and vitest on every push to main and every PR. Its `docker-smoke` job builds the add-on image the way the Builder stages it (amd64), boots it without a Supervisor, polls `/health` and solves one plan in it.
 
 ## Victron control modes
 

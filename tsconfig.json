@@ -7,8 +7,10 @@
     "strict": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true
   },
-  "include": ["lib/**/*.ts", "api/**/*.ts"],
+  "include": ["lib/**/*.ts", "api/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "app"]
 }

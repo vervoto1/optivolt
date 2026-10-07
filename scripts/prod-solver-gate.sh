@@ -42,13 +42,13 @@ echo "reference: $(sha256sum "$work/ref/highs.wasm" | cut -c1-16)…  ($ref)"
 cd "$root"
 rc=0
 echo; echo "== full stored horizon"
-npx tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" || rc=$?
+npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" || rc=$?
 echo; echo "== from the current slot"
 step=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stepSize_m ?? 15)' "$work/settings.json")
 now=$(node -e 'const s=Number(process.argv[1])*60000;console.log(new Date(Math.floor(Date.now()/s)*s).toISOString())' "$step")
 future=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const end=Math.min(...["load","pv","importPrice","exportPrice"].map(k=>Date.parse(d[k].start)+d[k].values.length*d[k].step*60000));console.log(end>Date.parse(process.argv[2])?"yes":"no")' "$work/data.json" "$now")
 if [[ "$future" == "yes" ]]; then
-  NOW="$now" npx tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" || rc=$?
+  NOW="$now" npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" || rc=$?
 else
   echo "skipped: the snapshot has no data after $now (stale snapshot or sample data)"
 fi

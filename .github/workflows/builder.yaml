@@ -49,7 +49,8 @@ jobs:
 
       - name: Find add-on directories
         id: addons
-        uses: home-assistant/actions/helpers/find-addons@master
+        # Pinned like helpers/info in build-addon.yaml; Dependabot moves the SHA.
+        uses: home-assistant/actions/helpers/find-addons@06749dd8c0b54f350bc69c8752456cee498808a3 # master
 
       - name: Get changed add-ons
         id: changed_addons
