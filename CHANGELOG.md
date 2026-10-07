@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.7.68 - 2026-10-07
+
+The charge taper is now enforced in slot 0 of the plan.
+
+- **The bug.** The slot-0 rows that switch the charge taper on were written with the known start SoC as a constant on the left-hand side, for example `c_cv_0_0: 28000 - 7000 cv_0_0 <= 27300`. These are the battery CV rows (`c_cv_k_0`) and the EV taper rows (`c_ev_cv_k_0`). The HiGHS LP-format reader silently drops a constant on the left-hand side. It read the row as `-7000 cv_0_0 <= 27300`, which always holds, so the taper binary was never forced on in slot 0. On the vendored build, `59340 - 1800 b <= 58200` solved with `b = 0`; with the constant on the right it forced `b = 1`. Rows for slot 1 onwards use the `soc_{t-1}` variable instead and were never affected. Neither were the discharge-phase rows (`c_dp_k_0`), which already had their constants on the right.
+- **The fix.** Both rows now keep only the binary on the left: `c_cv_k_0: - M cv_k_0 <= threshold - initialSoc`, and the same form for `c_ev_cv_k_0`. M is also widened to `initialSoc - threshold` when that is larger, so a start SoC above `maxSoc` (or an EV SoC above capacity) cannot make the row infeasible. The rest of the LP writer was checked for the same pattern and nothing else had it. That covers the objective (terminal valuation included), SoC evolution, the floor ratchet and its latch, rebalance, the discharge phases and every EV row.
+- **Impact on plans.** When the battery starts a plan at or above a charge-taper threshold and the plan charges in slot 0, slot-0 charging is now capped at the taper power. Before, it could plan up to `maxChargePower_W`. Later slots are unchanged. Production uses the calibrated thresholds, 78 % → 14 254 W and 91 % → 13 817 W, on a 16 kW cap. This was measured with the production config path (adjustments, `buildSolverConfigFromSettings`, then `applyCalibration`) on a read-only snapshot taken 2026-10-07 06:00 UTC:
+  - **The live plan (SoC 6 %) is identical.** The objective, every flow and all four DESS slots are unchanged, and slot-0 charging is 0 W in both.
+  - **The worst case.** With the same snapshot but the prices rotated so the cheapest slot comes first, a start at 78.5 % or 85 % SoC gives 14 254 W of DC charging in slot 0, down from 16 000 W. The missing ~1.7 kW (about 0.44 kWh) moves into slot 1 at the same price. The objective changes by about 0.001 c (tie-break terms only), and the four DESS slot targets change by at most 1 point (one slot 98 → 99 %).
+  - **When nothing changes.** At 88 %, 91.5 % and 95 % start SoC nothing changes, because the room left in the pack already keeps slot-0 charging below the taper.
+  - **EV.** The EV taper only applies with `evChargeCurveEnabled`, which is off in production, so EV plans in production are unchanged.
+- **Tests.** `tests/lib/lp-rhs-constants.test.js` parses the generated LP for ten representative configs: CV, discharge phases, the floor ratchet, rebalance, custom terminal valuation, and EV with taper, floor, opportunistic bands, contiguity and target-landing. It asserts that no constraint or objective row has a constant term on the left-hand side. Two tests on the vendored HiGHS check that the slot-0 taper binds, one for the battery and one for the EV. On the old writer, slot-0 charging was 3 368 W against a 600 W taper and 11 040 W against a 5 000 W EV taper, so both tests fail there.
+
+### Solver-refresh gate (previously Unreleased)
 
 Script-only (not in the add-on image); no version bump.
 
@@ -10,6 +23,7 @@ Script-only (not in the add-on image); no version bump.
   - **`scripts/prod-solver-gate.sh`.** Host mode also fetches `/plan-accuracy/calibration` (a failed fetch warns and continues). Every request it makes (`/data`, `/settings`, `/plan-accuracy/calibration`) only reads on the server. It does not call `GET /predictions/adjustments`, which rewrites `data.json` when an adjustment has expired; the adjustments come from `data.json`. File mode takes optional `calibration.json` / `ev-calibration.json` after the two files, copied into the temp dir so relative paths work. An empty snapshot list also expands safely under `set -u` on Bash before 4.4. `haToken` is stripped from the settings in both modes. The "from the current slot" pass no longer breaks when `FORCE_COLOR` is set (`console.log` coloured the step size, so the plan start was `Invalid time value`).
   - **Planner code.** `buildPlannerConfig` takes an optional calibration source (default: the DATA_DIR files, so the planner is unchanged), and the data preparation `getSolverInputs` runs under the data lock (live SoC, expired adjustments pruned, full-SoC observation) is the exported pure `preparePlanData`, which the gate reuses.
   - **Production check (2026-10-07, read-only).** The production add-on still runs a build older than 0.7.62 (its served UI files match 0.7.56–0.7.61, `Last-Modified` 2026-09-19), which has the soc=mqtt rebuild that dropped the calibration (fixed in 0.7.64). Its cached plan (06:00, objective 129.967602) is reproduced exactly by the gate without `--calibration`: same objective to full precision, 0 of 64 rows differing. With production's calibration (confidence 1, 2 charge thresholds) the gate solves 130.257989, which is what production will solve once it runs 0.7.64 or later. Vendored HiGHS 1.15.1 vs the 1.8.0 reference on that calibrated LP: both Optimal at 130.257989, 31 rows differing by at most 0.047 (alternative optimum).
+
 
 ## 0.7.67 - 2026-10-07
 
