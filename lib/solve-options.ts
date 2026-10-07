@@ -10,11 +10,24 @@
 export const MIP_SOLVE_OPTIONS = { mip_rel_gap: 0.005, mip_abs_gap: 0.01 } as const;
 
 /**
+ * Wall-clock bound on every solve, in seconds. The solve runs synchronously on
+ * the event loop that also serves HTTP, auto-calculate and the MQTT keepalive,
+ * so a runaway branch-and-bound must not hang the add-on. Production solves
+ * take well under 10 s; a hit returns "Time limit reached", which parseSolution
+ * rejects without an incumbent and the planner never caches or writes.
+ * Kept out of MIP_SOLVE_OPTIONS: the solver-refresh gate derives its objective
+ * tolerance from that constant.
+ */
+export const SOLVE_TIME_LIMIT_S = 30;
+
+/**
  * Options for the plan built from `cfg`. Every non-empty horizon is a MILP —
  * `buildLP` emits the battery-direction binaries for each slot — so the
  * `load_W.length > 0` test is the planner's binaries predicate, kept here so
- * both callers agree on it.
+ * both callers agree on it. Every solve gets the time limit.
  */
 export function solveOptionsFor(cfg: { load_W: readonly number[] }): Record<string, number> {
-  return cfg.load_W.length > 0 ? { ...MIP_SOLVE_OPTIONS } : {};
+  return cfg.load_W.length > 0
+    ? { ...MIP_SOLVE_OPTIONS, time_limit: SOLVE_TIME_LIMIT_S }
+    : { time_limit: SOLVE_TIME_LIMIT_S };
 }

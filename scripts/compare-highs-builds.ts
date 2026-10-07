@@ -13,9 +13,14 @@
  * plan that actually runs on the box. NOW=<ISO timestamp> overrides the plan
  * start (defaults to the start of the load series so the whole horizon solves).
  *
- * Exit code is 1 only when the solver statuses differ or the objectives differ
- * by more than the MIP gap the planner solves with; differing rows at an equal
- * objective are alternative optima and are reported, not failed.
+ * Exit code is 1 when either build returns no usable solution (parseSolution's
+ * SolverStatusError, e.g. infeasible or a time limit hit without an incumbent),
+ * either build stops short of Optimal (an early-stop incumbent, e.g. the time
+ * limit hit with a feasible plan, proves nothing about equivalence and the
+ * planner would never act on it), or the objectives differ by more than the
+ * MIP gap the planner solves with; differing rows at an equal objective are
+ * alternative optima and are reported, not failed. The solves use the
+ * planner's options, time limit included.
  */
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
@@ -23,7 +28,7 @@ import path from 'node:path';
 import { buildSolverConfigFromSettings } from '../api/services/config-builder.ts';
 import { buildLP } from '../lib/build-lp.ts';
 import { MIP_SOLVE_OPTIONS, solveOptionsFor } from '../lib/solve-options.ts';
-import { parseSolution, type HighsSolution } from '../lib/parse-solution.ts';
+import { parseSolution, SolverStatusError, type HighsSolution } from '../lib/parse-solution.ts';
 import type { Data, Settings } from '../api/types.ts';
 
 const require = createRequire(import.meta.url);
@@ -43,9 +48,10 @@ const startMs = process.env.NOW ? Date.parse(process.env.NOW) : Date.parse(data.
 const timing = { startMs, stepMin: settings.stepSize_m ?? 15 };
 const cfg = buildSolverConfigFromSettings(settings, data, startMs);
 const lp = buildLP(cfg);
-// The planner's own options and binaries predicate (lib/solve-options.ts).
+// The planner's own options (lib/solve-options.ts). Every non-empty horizon is a
+// MILP; the option count no longer says so, since the time limit is always set.
 const solveOptions = solveOptionsFor(cfg);
-const hasBinaries = Object.keys(solveOptions).length > 0;
+const hasBinaries = cfg.load_W.length > 0;
 
 interface HighsModule { solve(lp: string, options?: Record<string, unknown>): HighsSolution & { Status: string; ObjectiveValue: number } }
 
@@ -55,7 +61,15 @@ async function solveWith(modulePath: string) {
   const t0 = performance.now();
   const result = highs.solve(lp, solveOptions);
   const solveMs = performance.now() - t0;
-  return { status: result.Status, objective: result.ObjectiveValue, solveMs, rows: parseSolution(result, cfg, timing) };
+  let rows: ReturnType<typeof parseSolution> = [];
+  let unusable: string | null = null;
+  try {
+    rows = parseSolution(result, cfg, timing);
+  } catch (err) {
+    if (!(err instanceof SolverStatusError)) throw err;
+    unusable = err.message;
+  }
+  return { status: result.Status, objective: result.ObjectiveValue, solveMs, rows, unusable };
 }
 
 const vendored = await solveWith(vendoredPath);
@@ -64,6 +78,20 @@ const candidate = await solveWith(candidatePath);
 console.log(`LP: ${cfg.load_W.length} slots, ${lp.length} chars, ${hasBinaries ? 'MILP' : 'LP'}`);
 console.log(`vendored : ${vendored.status.padEnd(10)} objective ${vendored.objective.toFixed(6)}  ${Math.round(vendored.solveMs)} ms  (${vendoredPath})`);
 console.log(`candidate: ${candidate.status.padEnd(10)} objective ${candidate.objective.toFixed(6)}  ${Math.round(candidate.solveMs)} ms  (${candidatePath})`);
+for (const [label, run] of [['vendored', vendored], ['candidate', candidate]] as const) {
+  if (run.unusable) console.error(`${label}: ${run.unusable}`);
+}
+if (vendored.unusable || candidate.unusable) {
+  console.error('FAIL: a build returned no usable solution');
+  process.exit(1);
+}
+// The planner only acts on Optimal plans. Two builds that both stop early (for
+// example both hitting the time limit with an incumbent) can still land within
+// the MIP gap of each other, which says nothing about the candidate.
+if (vendored.status !== 'Optimal' || candidate.status !== 'Optimal') {
+  console.error('FAIL: a build did not reach an Optimal solution (the planner never acts on an early-stop incumbent)');
+  process.exit(1);
+}
 
 let differingRows = 0;
 let maxAbsDiff = 0;

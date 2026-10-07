@@ -290,6 +290,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     maxW: evCfg.evMaxChargePower_W,
   } : null;
   console.log('[calculate] solve', {
+    status: result.Status,
     slots: cfg.load_W.length,
     ev: evInfo,
     rebalance: (cfg.rebalanceRemainingSlots ?? 0) > 0,
@@ -338,7 +339,21 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const rebalanceNudge = getRebalanceNudge(data);
 
-  lastPlan = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow, rebalanceNudge, computedAtMs: Date.now() };
+  const plan: ComputePlanResult = { cfg, data, timing, result, rows: rowsWithDess, summary, rebalanceWindow, rebalanceNudge, computedAtMs: Date.now() };
+
+  // Only an Optimal solve may become the plan the hardware loops act on.
+  // parseSolution has already rejected results with no usable solution; what
+  // is left here is an early-stop incumbent (e.g. "Time limit reached" with a
+  // feasible but unproven plan). Return it for display only: keep the previous
+  // lastPlan (and its EV preview) for the EV actuator, shore optimizer and
+  // /calculate/last, skip the PV-curtailment update and the adaptive-learning
+  // snapshot. planAndMaybeWrite separately refuses to write it to Victron.
+  if (result.Status !== 'Optimal') {
+    console.warn(`[calculate] solver status "${result.Status}": returning the incumbent for display only; the previous plan stays active`);
+    return plan;
+  }
+
+  lastPlan = plan;
   updatePvCurtailmentPlan({ cfg, rows: rowsWithDess });
 
   // EV preview: when the real plan excludes the EV because the car is
@@ -356,7 +371,19 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         { pluggedIn: true, soc_percent: liveSoc, targetSoc_percent: evState.targetSoc_percent },
       );
       if (previewCfg.ev) {
-        const previewResult = highs.solve(buildLP(previewCfg), solveOptions);
+        const previewLp = buildLP(previewCfg);
+        let previewResult: ReturnType<typeof highs.solve>;
+        try {
+          previewResult = highs.solve(previewLp, solveOptions);
+        } catch (err) {
+          // Same policy as the main solve: a throwing WASM solve may leave the
+          // heap corrupted, so the next solve gets a fresh instance. A
+          // SolverStatusError from parsing the preview below is not a solver
+          // fault and leaves the instance alone.
+          highsPromise = undefined; // force re-initialisation on next call
+          throw err;
+        }
+        // Throws SolverStatusError (caught below) when the preview has no usable solution.
         const previewRows = parseSolution(previewResult, previewCfg, timing);
         lastEvPreview = {
           rows: previewRows,
@@ -432,7 +459,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     console.warn('[plan-history] Failed to save snapshot:', (err as Error).message),
   );
 
-  return lastPlan;
+  return plan;
 }
 
 let lastDessFingerprint: string | null = null;
@@ -483,9 +510,10 @@ export async function planAndMaybeWrite({
   const run = async (): Promise<ComputePlanResult> => {
     const result = await computePlan({ updateData });
     if (writeToVictron) {
-      // Never push a non-optimal solve to the hardware: an infeasible or unbounded
-      // solve yields all-zero rows that would otherwise be written as a real DESS
-      // schedule. The display path is unchanged and still surfaces the status.
+      // Never push a non-optimal solve to the hardware. Results with no usable
+      // solution (infeasible, unbounded, error, early stop without an incumbent)
+      // already throw SolverStatusError in parseSolution; this refuses an
+      // early-stop incumbent, which computePlan returns for display only.
       if (result.result.Status !== 'Optimal') {
         throw new HttpError(503, 'Refusing to write schedule to Victron: solver did not reach an optimal solution', {
           details: { solverStatus: result.result.Status ?? 'unknown' },

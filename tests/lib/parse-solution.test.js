@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSolution } from '../../lib/parse-solution.ts';
+import { parseSolution, SolverStatusError } from '../../lib/parse-solution.ts';
 
 describe('parseSolution', () => {
   // η_inv = 100 keeps the legacy lossless behavior so the numeric assertions
@@ -22,6 +22,7 @@ describe('parseSolution', () => {
 
   it('correctly parses HiGHS columns into rows', () => {
     const result = {
+      Status: 'Optimal',
       Columns: {
         'grid_to_load_0': { Primal: 400 },
         'pv_to_load_0': { Primal: 100 },
@@ -47,7 +48,7 @@ describe('parseSolution', () => {
 
   it('handles null/missing Columns gracefully (line 36: Columns ?? {})', () => {
     // Line 36: `Object.entries(result.Columns ?? {})` — null Columns → empty entries
-    const result = { Columns: null };
+    const result = { Status: 'Optimal', Columns: null };
     const rows = parseSolution(result, cfg, opts);
     expect(rows).toHaveLength(2);
     // All flows should be 0
@@ -58,6 +59,7 @@ describe('parseSolution', () => {
   it('skips columns with out-of-range index (line 40: t < 0 || t >= T)', () => {
     // Line 40: `if (t == null || t < 0 || t >= T) continue`
     const result = {
+      Status: 'Optimal',
       Columns: {
         'grid_to_load_99': { Primal: 999 }, // t=99 >= T=2 → skipped
         'grid_to_load_0': { Primal: 200 },
@@ -72,6 +74,7 @@ describe('parseSolution', () => {
   it('uses 0 when Primal is undefined (line 91: Primal ?? 0)', () => {
     // Line 91 (valueOf): `col.Primal ?? 0`
     const result = {
+      Status: 'Optimal',
       Columns: {
         'grid_to_load_0': {}, // no Primal field
       },
@@ -91,6 +94,7 @@ describe('parseSolution', () => {
     };
 
     const result = {
+      Status: 'Optimal',
       Columns: {
         'soc_0': { Primal: 500 },
         'soc_1': { Primal: 500 },
@@ -110,6 +114,7 @@ describe('parseSolution', () => {
 
   it('computes per-slot import and export costs', () => {
     const result = {
+      Status: 'Optimal',
       Columns: {
         'grid_to_load_0': { Primal: 1000 },
         'pv_to_grid_0': { Primal: 500 },
@@ -145,6 +150,7 @@ describe('parseSolution — ev_charge_A phase conversion', () => {
   const opts = { startMs: 1700000000000, stepMin: 15 };
   // grid_to_ev is AC into the charger, so ev_charge ≈ g2ev (no inverter factor).
   const result = {
+    Status: 'Optimal',
     Columns: {
       'grid_to_ev_0': { Primal: 3450 }, // 15 A single-phase, or 5 A three-phase
       'ev_soc_0':     { Primal: 30000 },
@@ -184,6 +190,7 @@ describe('parseSolution — ev_charge_mode derivation', () => {
 
   function makeResult(g2ev, pv2ev, b2ev, pv2b = 0) {
     return {
+      Status: 'Optimal',
       Columns: {
         'grid_to_ev_0':    { Primal: g2ev },
         'pv_to_ev_0':      { Primal: pv2ev },
@@ -278,5 +285,98 @@ describe('parseSolution — ev_charge_mode derivation', () => {
   it('solar_only — PV only to EV, no competing battery sink', () => {
     const [row] = parseSolution(makeResult(0, 2000, 0, 0), evCfg, opts);
     expect(row.ev_charge_mode).toBe('solar_only');
+  });
+});
+
+describe('parseSolution — solver status guard', () => {
+  const cfg = {
+    load_W: [500, 600],
+    pv_W: [100, 0],
+    importPrice: [10, 20],
+    exportPrice: [5, 5],
+    batteryCapacity_Wh: 1000,
+    inverterEfficiency_percent: 100,
+  };
+  const opts = { startMs: 1700000000000, stepMin: 60 };
+  const columns = {
+    'grid_to_load_0': { Primal: 400 },
+    'pv_to_load_0': { Primal: 100 },
+    'grid_to_load_1': { Primal: 600 },
+    'soc_0': { Primal: 200 },
+    'soc_1': { Primal: 200 },
+  };
+  // The exact shape the vendored HiGHS 1.15.1 returns for a time limit hit
+  // before any incumbent: every column present with Primal 0, objective Infinity.
+  const allZeroColumns = Object.fromEntries(Object.keys(columns).map(name => [name, { Primal: 0 }]));
+
+  it('throws a SolverStatusError naming the status for an infeasible solve', () => {
+    const result = { Status: 'Infeasible', Columns: {} };
+    expect(() => parseSolution(result, cfg, opts)).toThrow(SolverStatusError);
+    expect(() => parseSolution(result, cfg, opts)).toThrow(/no usable solution.*"Infeasible"/);
+    let caught;
+    try {
+      parseSolution(result, cfg, opts);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.status).toBe('Infeasible');
+    expect(caught.name).toBe('SolverStatusError');
+  });
+
+  it('throws for an infeasible-or-unbounded and an unbounded solve', () => {
+    expect(() => parseSolution({ Status: 'Primal infeasible or unbounded', Columns: {} }, cfg, opts))
+      .toThrow(/Primal infeasible or unbounded/);
+    expect(() => parseSolution({ Status: 'Unbounded', Columns: {} }, cfg, opts)).toThrow(SolverStatusError);
+  });
+
+  it('throws for an "Unknown" status, even with a finite objective and no primal values', () => {
+    expect(() => parseSolution({ Status: 'Unknown', Columns: columns }, cfg, opts)).toThrow(/Unknown/);
+    // mip_max_improving_sols-style stop: finite objective, columns without Primal.
+    const noPrimal = Object.fromEntries(Object.keys(columns).map(name => [name, {}]));
+    expect(() => parseSolution({ Status: 'Unknown', ObjectiveValue: 77562.9, Columns: noPrimal }, cfg, opts))
+      .toThrow(SolverStatusError);
+  });
+
+  it('throws when the status is missing entirely', () => {
+    expect(() => parseSolution({ ObjectiveValue: 1, Columns: columns }, cfg, opts)).toThrow(/"missing"/);
+  });
+
+  it('throws for "Time limit reached" with an Infinity objective and all-zero primals (no incumbent)', () => {
+    // A verbatim upstream port (soc_* finiteness only) would accept this: zeros are finite.
+    const result = { Status: 'Time limit reached', ObjectiveValue: Infinity, Columns: allZeroColumns };
+    expect(() => parseSolution(result, cfg, opts)).toThrow(SolverStatusError);
+    expect(() => parseSolution(result, cfg, opts)).toThrow(/without a feasible incumbent.*Time limit reached/);
+  });
+
+  it('throws for an early stop whose objective is missing or NaN', () => {
+    expect(() => parseSolution({ Status: 'Time limit reached', Columns: columns }, cfg, opts)).toThrow(SolverStatusError);
+    expect(() => parseSolution({ Status: 'Iteration limit reached', ObjectiveValue: NaN, Columns: columns }, cfg, opts))
+      .toThrow(SolverStatusError);
+  });
+
+  it('throws for an early stop with a finite objective but a missing or non-finite soc primal', () => {
+    const missingSoc = { ...columns };
+    delete missingSoc.soc_1;
+    expect(() => parseSolution({ Status: 'Time limit reached', ObjectiveValue: 5, Columns: missingSoc }, cfg, opts))
+      .toThrow(SolverStatusError);
+    expect(() => parseSolution({
+      Status: 'Time limit reached', ObjectiveValue: 5, Columns: { ...columns, soc_0: { Primal: Infinity } },
+    }, cfg, opts)).toThrow(SolverStatusError);
+  });
+
+  it('parses a feasible incumbent under an early-stop status (finite objective and soc primals)', () => {
+    for (const Status of ['Time limit reached', 'Iteration limit reached', 'Bound on objective reached', 'Target for objective reached']) {
+      const rows = parseSolution({ Status, ObjectiveValue: 12.5, Columns: columns }, cfg, opts);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].soc).toBe(200);
+      expect(rows[0].g2l).toBe(400);
+    }
+  });
+
+  it('parses an Optimal result unchanged, without requiring an objective value', () => {
+    const rows = parseSolution({ Status: 'Optimal', Columns: columns }, cfg, opts);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].g2l).toBe(400);
+    expect(rows[1].g2l).toBe(600);
   });
 });
