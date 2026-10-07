@@ -6,7 +6,7 @@ import { mapRowsToDessV2 } from '../../lib/dess-mapper.ts';
 import { annotatePvCurtailmentSlots } from '../../lib/pv-curtailment.ts';
 import { buildLP } from '../../lib/build-lp.ts';
 import { solveOptionsFor } from '../../lib/solve-options.ts';
-import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
+import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
 import { getSolverInputs, buildPlannerConfig } from './config-builder.ts';
@@ -252,10 +252,205 @@ async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Pr
   return { settings: { ...settings, rebalanceEnabled: false }, data: { ...data, rebalanceState } };
 }
 
-/** Post-solve: stamp the hold start once the battery has actually reached the target SoC. */
-async function recordRebalanceStartIfAtTarget(settings: Settings, data: Data, startMs: number): Promise<Data> {
+/** How the solve treated a started hold's slot-0 pin. */
+interface PinnedHoldSolve {
+  /** The config actually solved (its `rebalanceMaxStartSlot` is the cap that applied). */
+  cfg: SolverConfig;
+  result: HighsSolution;
+  /**
+   * Set only when a pinned hold could not be held from slot 0: the latest
+   * start slot the window was then allowed (T - D when the pin was released).
+   */
+  relaxedMaxStartSlot?: number;
+}
+
+// Bounds on the pin-relaxation search below. Each probe is a full solve that
+// runs synchronously on the event loop, so the search stops after this many
+// probes or this much wall-clock time, keeping the best cap found so far
+// (or, when none is feasible yet, releasing the pin). Each probe's own solver
+// time limit is cut to what is left of the budget (never below
+// PIN_RELAX_MIN_PROBE_LIMIT_S), so one probe cannot overrun it by a full
+// SOLVE_TIME_LIMIT_S.
+const PIN_RELAX_MAX_PROBES = 8;
+const PIN_RELAX_BUDGET_MS = 20_000;
+const PIN_RELAX_MIN_PROBE_LIMIT_S = 1;
+
+/**
+ * A lower bound on the latest start slot a sagged hold needs: the window
+ * starting at slot k needs SoC at target by the end of slot k, and no slot can
+ * store more than maxChargePower_W x charge efficiency (taper, idle drain and
+ * import limits only lower that). Never below `pin + 1` (the pin itself was
+ * just found infeasible).
+ */
+function pinnedHoldStartLowerBound(cfg: SolverConfig, pin: number): number {
+  const target_percent = Math.min(cfg.rebalanceTargetSoc_percent ?? cfg.maxSoc_percent, cfg.maxSoc_percent);
+  const deficit_Wh = (target_percent - cfg.initialSoc_percent) / 100 * cfg.batteryCapacity_Wh;
+  const perSlotStored_Wh = cfg.maxChargePower_W * (cfg.chargeEfficiency_percent / 100) * (cfg.stepSize_m / 60);
+  const slotsNeeded = perSlotStored_Wh > 0 ? Math.ceil(deficit_Wh / perSlotStored_Wh) : Infinity;
+  return Math.max(pin + 1, Number.isFinite(slotsNeeded) ? slotsNeeded - 1 : pin + 1);
+}
+
+function hasUsableSolution(result: HighsSolution, T: number): boolean {
+  try {
+    assertUsableSolution(result, T);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build and solve the LP for `solveCfg`. A throwing WASM solve may leave the
+ * heap corrupted, so it drops the cached instance and the next solve gets a
+ * fresh one.
+ *
+ * A started rebalance hold is pinned to slot 0 (`rebalanceMaxStartSlot = 0`).
+ * When the battery has sagged too far below the target to be back there by
+ * the end of slot 0 the pin is infeasible. Releasing it outright would let the
+ * solver export now and hold much later while the wall-clock countdown keeps
+ * running, so the pin is relaxed only as far as needed: the smallest start cap
+ * k at which the hold is feasible (feasibility only grows with k), found by a
+ * galloping search from a physical lower bound plus bisection, both bounded
+ * (PIN_RELAX_*). When the gallop reaches T - D (a cap that equals no cap) it
+ * solves the window free to move and still bisects below it, so a feasible
+ * cap under T - D is not skipped. Only a probe Status of "Optimal" counts as
+ * feasible: a time-limited incumbent would make computePlan show the plan
+ * without caching or writing it, so it never replaces an Optimal answer.
+ *
+ * The window is freed entirely (the pre-pin behaviour) rather than failing the
+ * plan and leaving a stale schedule on the GX when no cap below T - D is
+ * found, the budget runs out before any feasible cap, or a pinned or gallop
+ * solve ends with a status other than Optimal or Infeasible (e.g. a time
+ * limit).
+ *
+ * `startHint` is the main plan's relaxed cap, passed by the EV preview: the
+ * pin already failed there and the preview only adds EV charging, so the
+ * pinned solve is skipped and the search starts at the hint. `quiet`
+ * suppresses the warnings (the preview would repeat the main plan's).
+ */
+function solveWithPinnedHoldFallback(
+  highs: HighsInstance,
+  solveCfg: SolverConfig,
+  { startHint, quiet = false }: { startHint?: number; quiet?: boolean } = {},
+): PinnedHoldSolve {
+  const solveOnce = (c: SolverConfig, timeLimit_s?: number): HighsSolution => {
+    const options = solveOptionsFor(c);
+    if (timeLimit_s !== undefined) options.time_limit = Math.min(options.time_limit, timeLimit_s);
+    try {
+      return highs.solve(buildLP(c), options);
+    } catch (err) {
+      /* v8 ignore start */
+      highsPromise = undefined; // force re-initialisation on next call
+      throw err;
+      /* v8 ignore stop */
+    }
+  };
+  const pin = solveCfg.rebalanceMaxStartSlot;
+  if (pin == null) return { cfg: solveCfg, result: solveOnce(solveCfg) };
+
+  const T = solveCfg.load_W.length;
+  const D = Math.min(T, Math.max(0, Math.trunc(solveCfg.rebalanceRemainingSlots ?? 0)));
+  const maxStart = T - D; // the cap that equals no cap at all
+  const { rebalanceMaxStartSlot: _pinnedStartSlot, ...unpinnedCfg } = solveCfg;
+  const warn = (message: string) => {
+    if (!quiet) console.warn(`[calculate] rebalance hold cannot be held from slot ${pin} (${message}`);
+  };
+  const release = (reason: string): PinnedHoldSolve => {
+    warn(`${reason}); re-solving with the hold window free to move`);
+    return { cfg: unpinnedCfg, result: solveOnce(unpinnedCfg), relaxedMaxStartSlot: maxStart };
+  };
+
+  if (startHint === undefined) {
+    const result = solveOnce(solveCfg);
+    if (hasUsableSolution(result, T)) return { cfg: solveCfg, result };
+    if (result.Status !== 'Infeasible') return release(`solver status "${result.Status}"`);
+  }
+
+  const isOptimal = (r: HighsSolution) => r.Status === 'Optimal' && hasUsableSolution(r, T);
+  const capped = (k: number): SolverConfig => ({ ...solveCfg, rebalanceMaxStartSlot: k });
+  const deadlineMs = performance.now() + PIN_RELAX_BUDGET_MS;
+  const remainingBudget_s = () => (deadlineMs - performance.now()) / 1000;
+  let probes = 0;
+  const canProbe = () => probes < PIN_RELAX_MAX_PROBES && remainingBudget_s() > 0;
+  const probe = (k: number): HighsSolution => {
+    probes++;
+    return solveOnce(capped(k), Math.max(PIN_RELAX_MIN_PROBE_LIMIT_S, remainingBudget_s()));
+  };
+
+  // Gallop: lo is the largest cap known infeasible, hi the smallest known feasible.
+  // Caps below the physical lower bound are infeasible without a solve. Caps
+  // below a hint are treated as infeasible too: the EV preview's hint is the
+  // main plan's smallest feasible cap, and the preview only adds EV charging,
+  // so it is no easier (and is display-only).
+  const k0 = Math.max(pinnedHoldStartLowerBound(solveCfg, pin), startHint ?? 0);
+  let lo = k0 - 1;
+  let hi: number | undefined;
+  let best: HighsSolution | undefined;
+  let step = 1;
+  let k = k0;
+  while (hi === undefined) {
+    if (k >= maxStart) {
+      // A cap of T - D is no cap: this is the release solve (full time limit,
+      // not a probe). Keep it as the fallback and bisect below it.
+      const r = solveOnce(unpinnedCfg);
+      if (!isOptimal(r)) {
+        warn(`infeasible; free window solved with status "${r.Status}"); hold window free to move`);
+        return { cfg: unpinnedCfg, result: r, relaxedMaxStartSlot: maxStart };
+      }
+      hi = maxStart;
+      best = r;
+      break;
+    }
+    if (!canProbe()) return release('infeasible; relaxation search budget exhausted');
+    const r = probe(k);
+    if (isOptimal(r)) {
+      hi = k;
+      best = r;
+    } else if (r.Status === 'Infeasible') {
+      lo = k;
+      k = Math.min(maxStart, k + step);
+      step *= 2;
+    } else {
+      return release(`infeasible; relaxed probe ended with solver status "${r.Status}"`);
+    }
+  }
+  // Bisect (lo, hi] down to the smallest feasible cap while the budget lasts.
+  while (hi - lo > 1 && canProbe()) {
+    const mid = Math.floor((lo + hi) / 2);
+    const r = probe(mid);
+    if (isOptimal(r)) {
+      hi = mid;
+      best = r;
+    } else if (r.Status === 'Infeasible') {
+      lo = mid;
+    } else {
+      break; // keep the Optimal cap already found
+    }
+  }
+  if (hi >= maxStart) {
+    warn(`infeasible; no start cap below slot ${maxStart} found, ${probes} relaxed solves); hold window free to move`);
+    return { cfg: unpinnedCfg, result: best!, relaxedMaxStartSlot: maxStart };
+  }
+  warn(`infeasible); hold window allowed to start up to slot ${hi} (${probes} relaxed solves)`);
+  return { cfg: capped(hi), result: best!, relaxedMaxStartSlot: hi };
+}
+
+/**
+ * Post-solve: stamp the hold start once the battery has actually reached the
+ * target SoC and this plan holds it from slot 0. A plan whose own window
+ * starts later (e.g. it exports at a high price first) is not a hold yet;
+ * stamping it would start the wall-clock countdown while the written schedule
+ * drains the battery.
+ */
+async function recordRebalanceStartIfAtTarget(
+  settings: Settings,
+  data: Data,
+  startMs: number,
+  rebalanceWindow: RebalanceWindow | undefined,
+): Promise<Data> {
   if (data.rebalanceState?.startMs != null) return data;
   if (data.soc.value < settings.maxSoc_percent) return data;
+  if (rebalanceWindow?.startIdx !== 0) return data;
   const rebalanceState = { startMs };
   await updateStoredData(d => ({ ...d, rebalanceState }));
   return { ...data, rebalanceState };
@@ -278,27 +473,19 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   // calibration. Rebuilding it here used to drop the last two on every
   // soc=mqtt plan.
   const solverInputs = await getSolverInputs({ readLiveSoc: readMqttSocForPlan });
-  const { cfg, timing, evState } = solverInputs;
-  let { data, settings } = solverInputs;
+  const { timing, evState } = solverInputs;
+  let { cfg, data, settings } = solverInputs;
 
   // A just-completed hold cycle solves like any rebalance-free plan
   // (remainingSlots = 0 builds no rebalance variables or constraints); the
   // actual switch-off happens in post-solve bookkeeping.
   const rebalanceCycleComplete = settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0;
 
-  const lpText = buildLP(cfg);
   const highs = await getHighsInstance();
-  const solveOptions = solveOptionsFor(cfg);
-  let result: ReturnType<typeof highs.solve>;
   const t0 = performance.now();
-  try {
-    result = highs.solve(lpText, solveOptions);
-  } catch (err) {
-    /* v8 ignore start */
-    highsPromise = undefined; // force re-initialisation on next call
-    throw err;
-    /* v8 ignore stop */
-  }
+  let result: HighsSolution;
+  let relaxedMaxStartSlot: number | undefined;
+  ({ cfg, result, relaxedMaxStartSlot } = solveWithPinnedHoldFallback(highs, cfg));
   const solveMs = performance.now() - t0;
   const evCfg = cfg.ev;
   const evInfo = evCfg ? {
@@ -317,8 +504,16 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const rows = attachOriginalPredictionValues(parseSolution(result, cfg, timing), data);
 
+  // The hold window the solver chose; the mapper turns its slots into a DESS
+  // hold (proBattery, grid charging allowed, target = rebalance target).
+  const rebalanceWindow = extractRebalanceWindow(
+    result.Columns ?? {},
+    cfg.rebalanceRemainingSlots ?? 0,
+  );
+
   const { perSlot, diagnostics } = mapRowsToDessV2(rows, cfg, {
     blockFeedInOnNegativePrices: settings.blockFeedInOnNegativePrices !== false,
+    rebalanceWindow,
   });
 
   const pvControl = annotatePvCurtailmentSlots(rows, cfg, settings.pvCurtailment);
@@ -330,7 +525,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     ({ settings, data } = await finishCompletedRebalanceCycle(settings, data));
   }
   if (settings.rebalanceEnabled) {
-    data = await recordRebalanceStartIfAtTarget(settings, data, timing.startMs);
+    data = await recordRebalanceStartIfAtTarget(settings, data, timing.startMs, rebalanceWindow);
   }
 
   /* v8 ignore next 4 — rebalanceCtx undefined branch (tests cover enabled=true;
@@ -342,6 +537,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   } : undefined;
 
   const summary = buildPlanSummary(rowsWithDess, cfg, diagnostics, rebalanceCtx);
+  if (relaxedMaxStartSlot !== undefined) summary.rebalanceHoldMaxStartSlot = relaxedMaxStartSlot;
 
   const horizonWarnings = computeHorizonWarnings(data, timing.startMs);
   if (horizonWarnings.length > 0) {
@@ -350,11 +546,6 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
       console.error(`[calculate] STALE DATA: ${w}`);
     }
   }
-
-  const rebalanceWindow = extractRebalanceWindow(
-    result.Columns ?? {},
-    cfg.rebalanceRemainingSlots ?? 0,
-  );
 
   const rebalanceNudge = getRebalanceNudge(data);
 
@@ -391,20 +582,12 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         { pluggedIn: true, soc_percent: liveSoc, targetSoc_percent: evState.targetSoc_percent },
       );
       if (previewCfg.ev) {
-        const previewLp = buildLP(previewCfg);
-        let previewResult: ReturnType<typeof highs.solve>;
-        try {
-          previewResult = highs.solve(previewLp, solveOptions);
-        } catch (err) {
-          // Same policy as the main solve: a throwing WASM solve may leave the
-          // heap corrupted, so the next solve gets a fresh instance. A
-          // SolverStatusError from parsing the preview below is not a solver
-          // fault and leaves the instance alone.
-          highsPromise = undefined; // force re-initialisation on next call
-          throw err;
-        }
+        // Same solve policy as the main plan (pinned-hold fallback; a throwing
+        // WASM solve drops the instance). A SolverStatusError from parsing the
+        // preview below is not a solver fault and leaves the instance alone.
+        const preview = solveWithPinnedHoldFallback(highs, previewCfg, { startHint: relaxedMaxStartSlot, quiet: true });
         // Throws SolverStatusError (caught below) when the preview has no usable solution.
-        const previewRows = parseSolution(previewResult, previewCfg, timing);
+        const previewRows = parseSolution(preview.result, preview.cfg, timing);
         lastEvPreview = {
           rows: previewRows,
           timing,

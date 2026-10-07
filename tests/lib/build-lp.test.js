@@ -421,6 +421,46 @@ describe('buildLP — MILP rebalancing', () => {
     expect(lp).toContain('c_balance_start: start_balance_0 = 1');
   });
 
+  it('pins a started hold to slot 0 when rebalanceMaxStartSlot is 0', () => {
+    const lp = buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: 0 });
+    expect(lp).toContain('c_balance_start: start_balance_0 = 1');
+    expect(lp).not.toContain('start_balance_1');
+    // Binaries list only start_balance_0
+    const binaries = lp.slice(lp.indexOf('Binaries'));
+    expect(binaries.match(/start_balance_\d+/g)).toEqual(['start_balance_0']);
+    // SoC forcing covers exactly the first D slots
+    for (let t = 0; t < D; t++) {
+      expect(lp).toContain(`c_rebalance_${t}: soc_${t} - 10000 start_balance_0 >= 0`);
+    }
+    expect(lp).not.toContain(`c_rebalance_${D}:`);
+    // Only one tiebreak term (k=0)
+    expect(lp.match(/start_balance_\d+/g).filter(n => n !== 'start_balance_0')).toEqual([]);
+  });
+
+  it('caps window start positions at rebalanceMaxStartSlot', () => {
+    // T=8, D=3 → starts would be 0..5; cap at 2 → only 0..2
+    const lp = buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: 2 });
+    expect(lp).toContain('c_balance_start: start_balance_0 + start_balance_1 + start_balance_2 = 1');
+    expect(lp).not.toContain('start_balance_3');
+    // Slots past the last reachable window slot (cap + D - 1 = 4) get no forcing constraint
+    expect(lp).toContain('c_rebalance_4:');
+    expect(lp).not.toContain('c_rebalance_5:');
+  });
+
+  it('ignores a rebalanceMaxStartSlot beyond T - D', () => {
+    const lp = buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: 99 });
+    expect(lp).toBe(buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100 }));
+  });
+
+  it('clamps a negative rebalanceMaxStartSlot so k=0 always exists', () => {
+    const lp = buildLP({ ...mockData, rebalanceRemainingSlots: D, rebalanceTargetSoc_percent: 100, rebalanceMaxStartSlot: -5 });
+    expect(lp).toContain('c_balance_start: start_balance_0 = 1');
+  });
+
+  it('emits nothing rebalance-related for a start cap without remaining slots', () => {
+    expect(buildLP({ ...mockData, rebalanceRemainingSlots: 0, rebalanceMaxStartSlot: 0 })).toBe(buildLP(mockData));
+  });
+
   it('truncates fractional rebalanceRemainingSlots to integer', () => {
     // 2.9 should be treated as 2, not 3
     const lp = buildLP({ ...mockData, rebalanceRemainingSlots: 2.9, rebalanceTargetSoc_percent: 100 });

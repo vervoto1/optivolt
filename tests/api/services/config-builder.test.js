@@ -86,6 +86,7 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     expect(cfg.rebalanceHoldSlots).toBeUndefined();
     expect(cfg.rebalanceRemainingSlots).toBeUndefined();
     expect(cfg.rebalanceTargetSoc_percent).toBeUndefined();
+    expect(cfg.rebalanceMaxStartSlot).toBeUndefined();
   });
 
   it('sets rebalanceRemainingSlots = holdSlots when startMs is null (not started)', () => {
@@ -95,6 +96,8 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     expect(cfg.rebalanceHoldSlots).toBe(12);
     expect(cfg.rebalanceRemainingSlots).toBe(12);
     expect(cfg.rebalanceTargetSoc_percent).toBe(100);
+    // Not started yet: the solver is free to place the window
+    expect(cfg.rebalanceMaxStartSlot).toBeUndefined();
   });
 
   it('counts down correctly when startMs is set (mid-cycle)', () => {
@@ -106,12 +109,21 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
     expect(cfg.rebalanceRemainingSlots).toBe(10);
   });
 
+  it('pins a started hold to slot 0 (rebalanceMaxStartSlot = 0)', () => {
+    const settings = { ...mockSettings, rebalanceEnabled: true, rebalanceHoldHours: 3 };
+    const startMs = NOW_MS - 2 * 15 * 60_000;
+    const cfg = buildSolverConfigFromSettings(settings, makeData({ startMs }), NOW_MS);
+    expect(cfg.rebalanceMaxStartSlot).toBe(0);
+  });
+
   it('returns rebalanceRemainingSlots = 0 when cycle is complete', () => {
     const settings = { ...mockSettings, rebalanceEnabled: true, rebalanceHoldHours: 3 };
     // Started 12 slots (3h) ago — cycle is done
     const startMs = NOW_MS - 12 * 15 * 60_000;
     const cfg = buildSolverConfigFromSettings(settings, makeData({ startMs }), NOW_MS);
     expect(cfg.rebalanceRemainingSlots).toBe(0);
+    // Nothing left to hold: no start cap either
+    expect(cfg.rebalanceMaxStartSlot).toBeUndefined();
   });
 
   it('uses Math.ceil so the hold is never shorter than requested (fractional hours)', () => {
