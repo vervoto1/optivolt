@@ -437,6 +437,20 @@ export function applyEvCalibration(cfg: SolverConfig, evCal: EvCalibrationResult
 }
 
 /**
+ * Where `buildPlannerConfig` reads the adaptive-learning calibration from. The
+ * planner always uses the persisted files under DATA_DIR (the default); the
+ * solver-refresh gate (scripts/compare-highs-builds.ts) passes a production
+ * snapshot instead, so it solves the LP production solves without touching the
+ * local DATA_DIR.
+ */
+export interface CalibrationSources {
+  loadCalibration: () => Promise<CalibrationResult | null>;
+  loadEvCalibration: () => Promise<EvCalibrationResult | null>;
+}
+
+const STORED_CALIBRATION: CalibrationSources = { loadCalibration, loadEvCalibration };
+
+/**
  * The single place a planner `SolverConfig` is assembled from persisted state:
  * prediction adjustments → `buildSolverConfigFromSettings` → (adaptive learning
  * in 'auto' mode) the learned charge/CV taper → the learned EV charge taper.
@@ -451,6 +465,7 @@ export async function buildPlannerConfig(
   data: Data,
   startMs: number,
   evState?: EvLiveState,
+  calibrationSources: CalibrationSources = STORED_CALIBRATION,
 ): Promise<SolverConfig> {
   const adjustedData = applyPredictionAdjustmentsToData(data);
   let cfg = buildSolverConfigFromSettings(settings, adjustedData, startMs, evState);
@@ -458,7 +473,7 @@ export async function buildPlannerConfig(
   // Apply calibration when adaptive learning is in 'auto' mode
   if (settings.adaptiveLearning?.enabled && settings.adaptiveLearning.mode === 'auto') {
     try {
-      const cal = await loadCalibration();
+      const cal = await calibrationSources.loadCalibration();
       if (cal) {
         cfg = applyCalibration(cfg, cal);
       }
@@ -471,7 +486,7 @@ export async function buildPlannerConfig(
     // not yet confident.
     if (settings.evChargeCurveEnabled && cfg.ev) {
       try {
-        const evCal = await loadEvCalibration();
+        const evCal = await calibrationSources.loadEvCalibration();
         if (evCal) {
           cfg = applyEvCalibration(cfg, evCal);
         }
@@ -482,6 +497,20 @@ export async function buildPlannerConfig(
   }
 
   return cfg;
+}
+
+/**
+ * The data a plan is built from, derived from the stored `data.json`: the live
+ * SoC reading (when there is one), expired prediction adjustments pruned and a
+ * full-SoC observation recorded. Returns `current` itself when nothing changed.
+ * Pure: `getSolverInputs` applies it under the data-store lock, and the
+ * solver-refresh gate applies it to a production snapshot.
+ */
+export function preparePlanData(current: Data, startMs: number, liveSoc?: SocData): Data {
+  let next = liveSoc ? { ...current, soc: liveSoc } : current;
+  next = pruneExpiredPredictionAdjustments(next, startMs).data;
+  next = recordFullSocObservation(next);
+  return next;
 }
 
 export interface SolverInputsOptions {
@@ -512,9 +541,7 @@ export async function getSolverInputs(
   // snapshot loaded before the awaits, which reverted any data.json write
   // (a prediction adjustment, POST /data) that landed in between.
   const data = await updateData(current => {
-    let next = liveSoc ? { ...current, soc: liveSoc } : current;
-    next = pruneExpiredPredictionAdjustments(next, startMs).data;
-    next = recordFullSocObservation(next);
+    const next = preparePlanData(current, startMs, liveSoc);
     return next === current ? null : next;
   });
 

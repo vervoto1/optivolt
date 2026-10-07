@@ -51,6 +51,16 @@ toolchain** — copy the release artifacts instead.
    compares against the build of a given commit (`REF=`), so it also works
    after the swap. Status or objective differences fail the gate;
    differing rows at an equal objective are alternative optima — review them.
+   The gate builds the config through the planner's own `buildPlannerConfig`
+   (prediction adjustments, then the learned charge taper in adaptive-learning
+   auto mode). The calibration is not in `data.json`, so host mode also fetches
+   `GET /plan-accuracy/calibration` (the persisted calibration, verbatim) and
+   `GET /predictions/adjustments`; with files, pass the add-on's
+   `calibration.json` (and `ev-calibration.json`) after the two files
+   (`compare-highs-builds.ts --calibration <file>`). Without a calibration
+   snapshot a box in auto mode is solved **uncalibrated** and the gate prints a
+   warning. It never reads the local `DATA_DIR`, and it has no live EV state,
+   so EV charging is not planned.
 4. Copy the two files over `highs.js` / `highs.wasm` and `package/LICENSE` over
    `LICENSE` (keep `package.json`), run
    the full suite (`npm run test:run` — the `tests/lib/` solver tests exercise
