@@ -35,6 +35,37 @@ export function parseStrictPrice(raw: unknown): number | null {
   return Number.isFinite(value) ? value : null; // '1e999' overflows to Infinity
 }
 
+/**
+ * Instants (ms) already warned about for conflicting duplicate prices. The feed
+ * is re-read on every refresh and a GE-Spot style today/tomorrow overlap
+ * repeats the same conflict each time, so it is reported once per instant per
+ * process. Entries older than DUPLICATE_WARNING_RETENTION_MS (relative to the
+ * caller's `nowMs`) are pruned, and the set never exceeds
+ * DUPLICATE_WARNING_MAX_ENTRIES.
+ */
+const warnedDuplicateInstants = new Set<number>();
+const DUPLICATE_WARNING_RETENTION_MS = 2 * 86_400_000;
+const DUPLICATE_WARNING_MAX_ENTRIES = 1000;
+
+/** True the first time `ms` is seen (and remembers it). */
+function firstDuplicateWarning(ms: number, nowMs: number): boolean {
+  for (const seen of warnedDuplicateInstants) {
+    if (seen < nowMs - DUPLICATE_WARNING_RETENTION_MS) warnedDuplicateInstants.delete(seen);
+  }
+  if (warnedDuplicateInstants.has(ms)) return false;
+  if (warnedDuplicateInstants.size >= DUPLICATE_WARNING_MAX_ENTRIES) {
+    // Insertion order: drop the oldest entry.
+    warnedDuplicateInstants.delete(warnedDuplicateInstants.values().next().value!);
+  }
+  warnedDuplicateInstants.add(ms);
+  return true;
+}
+
+/** Test hook: forget which duplicate instants were already reported. */
+export function resetDuplicatePriceWarnings(): void {
+  warnedDuplicateInstants.clear();
+}
+
 interface InstantCandidate {
   ms: number;
   /** UTC offset of the timestamp's wall-clock reading at this instant (ms). */
@@ -230,7 +261,9 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
       // Same instant as the previous point: keep the first one, skip this one.
       const timestamp = new Date(chosen.ms).toISOString();
       repeated.push(timestamp);
-      if (price !== lastPrice) {
+      // A kept null (a placed point without a usable price) is already a
+      // defect that ends the run there; the skipped value does not change that.
+      if (price !== lastPrice && lastPrice !== null && firstDuplicateWarning(chosen.ms, opts.nowMs)) {
         console.warn('[ha-price] Price feed has two different prices for the same instant; keeping the first', {
           timestamp, kept: lastPrice, skipped: price,
         });

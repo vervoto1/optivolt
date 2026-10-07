@@ -167,6 +167,17 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
       expect(started.rebalanceHoldSoc_percent).toBe(99);
     });
 
+    it('a started hold keeps the relaxed level when the live SoC dips below the tolerance', () => {
+      // Pinned to slot 0: restoring the full target at 98.9 % would make the pin
+      // infeasible and push the window later while the countdown runs.
+      for (const value of [98.9, 95]) {
+        const started = buildSolverConfigFromSettings(on, atSoc(value, { startMs: NOW_MS - 15 * 60_000 }), NOW_MS);
+        expect(started.rebalanceMaxStartSlot).toBe(0);
+        expect(started.rebalanceHoldSoc_percent).toBe(99);
+        expect(started.rebalanceTargetSoc_percent).toBe(100);
+      }
+    });
+
     it('keeps the full target below the tolerance and with nothing left to hold', () => {
       expect(buildSolverConfigFromSettings(on, atSoc(98.9), NOW_MS).rebalanceHoldSoc_percent).toBeUndefined();
       const completed = buildSolverConfigFromSettings(on, atSoc(100, { startMs: NOW_MS - 12 * 15 * 60_000 }), NOW_MS);

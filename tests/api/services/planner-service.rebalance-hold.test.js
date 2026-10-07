@@ -308,6 +308,30 @@ describe('computePlan — hold start tolerance and the pending give-up', () => {
     expect(result.summary.rebalanceStatus).toBe('scheduled');
   });
 
+  it('a started hold at 98.9 % keeps the relaxed level and stays pinned to slot 0', async () => {
+    // 100 W charge on a 10 kWh pack: 1 point per slot. From 98.9 % the full
+    // 100 % target is out of reach within slot 0 (the pin would be infeasible
+    // and the window moved later); the relaxed 99 % level is not.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true, maxChargePower_W: 100 });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 98.9 },
+      rebalanceState: { startMs: NOW_MS - 30 * 60_000 },
+    });
+
+    const result = await computePlan();
+
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceHoldSoc_percent).toBe(99);
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 1 });
+    expect(result.rows[0].dess).toMatchObject(HOLD);
+    expect(result.rows[1].dess).toMatchObject(HOLD);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('keeps an existing pending marker instead of restamping it', async () => {
     const pendingSinceMs = NOW_MS - 24 * 3_600_000;
     loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });

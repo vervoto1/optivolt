@@ -213,7 +213,13 @@ export function buildSolverConfigFromSettings(
     // Only the LP's hold level drops: the DESS-mapped target stays at
     // rebalanceTargetSoc_percent, so Victron still tops the pack up
     // (proBattery at >= 100 % is its keep-battery-charged path).
-    if (remainingSlots > 0 && data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT) {
+    // A started hold keeps the relaxed level regardless of the live SoC: its
+    // start is pinned to slot 0 below, so a reading that dips just under the
+    // tolerance band (e.g. 98.9 % on a 100 % target) would otherwise restore
+    // the full target, make the pin infeasible and push the window to k > 0
+    // while the wall-clock countdown keeps running.
+    if (remainingSlots > 0
+      && (startMs_ != null || data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT)) {
       base.rebalanceHoldSoc_percent = settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
     }
     // Once the hold has started its wall-clock countdown is running, so the

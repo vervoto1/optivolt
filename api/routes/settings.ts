@@ -47,10 +47,13 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       return next;
     }))!;
 
-    // Switching rebalancing on or off starts a fresh give-up period: drop a
-    // pending marker left from before, so a disable→re-enable between two
-    // plans cannot give up on the new hold at once (config-builder).
-    if (rebalanceToggled) await clearRebalancePending();
+    // Switching rebalancing on or off starts a fresh cycle: drop the hold
+    // start and the pending marker left from before. A kept pending marker
+    // could make config-builder give up on the new hold at once; a kept hold
+    // start (disabled mid-hold) would let the countdown run on while
+    // rebalancing is off, so re-enabling later found the cycle "complete" and
+    // switched rebalancing off again without holding.
+    if (rebalanceToggled) await resetRebalanceCycle();
 
     // Restart timers with new settings
     stopAutoCalculate();
@@ -77,18 +80,21 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 /**
- * Drop `rebalanceState.pendingSinceMs` (a locked patch of the current data
- * file; nothing is written when there is none). Best effort: the settings are
- * already saved, and the planner also drops the marker on its next plan with
- * rebalancing off.
+ * Reset the rebalance cycle progress: clear `rebalanceState.startMs` and
+ * `rebalanceState.pendingSinceMs` (a locked patch of the current data file;
+ * other fields are kept, and nothing is written when both are already
+ * clear). Best effort: the settings are already saved.
  */
-async function clearRebalancePending(): Promise<void> {
+async function resetRebalanceCycle(): Promise<void> {
   try {
-    await updateData(d => (d.rebalanceState?.pendingSinceMs == null
-      ? null
-      : { ...d, rebalanceState: { startMs: d.rebalanceState.startMs ?? null } }));
+    await updateData(d => {
+      const state = d.rebalanceState;
+      if (!state || (state.startMs == null && state.pendingSinceMs == null)) return null;
+      const { pendingSinceMs: _pendingSinceMs, ...rest } = state;
+      return { ...d, rebalanceState: { ...rest, startMs: null } };
+    });
   } catch (err) {
-    console.warn('[settings] could not clear the pending rebalance marker:', (err as Error).message);
+    console.warn('[settings] could not reset the rebalance cycle progress:', (err as Error).message);
   }
 }
 

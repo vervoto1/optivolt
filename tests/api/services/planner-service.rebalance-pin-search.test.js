@@ -500,17 +500,32 @@ describe('computePlan — a hold within the start tolerance is reachable from sl
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held'));
   });
 
-  it('control: at the full target the same pin is infeasible (what the hold level fixes)', async () => {
-    // Below the tolerance the LP keeps the full target; the same physics at
-    // 98.9 % needs the relaxation search.
+  it('a started hold at 98.9 % keeps the relaxed level: the pin stays feasible at slot 0', async () => {
+    // Once started, a reading just below the tolerance must not restore the
+    // full target: from 98.9 % the 100 % level is out of reach within slot 0,
+    // so the pin would turn infeasible and the window move later while the
+    // hold clock runs.
     loadData.mockResolvedValue({ ...largePackData({ startMs: NOW_MS }), soc: { timestamp: NOW_STRING, value: 98.9 } });
 
     const result = await computePlan();
 
+    expect(result.cfg.rebalanceHoldSoc_percent).toBe(99);
+    expect(solverCtl.caps).toEqual([0]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 3 });
+    for (let i = 0; i <= 3; i++) expect(result.rows[i].dess).toMatchObject(HOLD);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held'));
+  });
+
+  it('control: before the hold starts, 98.9 % keeps the full target and the window starts later', async () => {
+    loadData.mockResolvedValue({ ...largePackData({ startMs: null }), soc: { timestamp: NOW_STRING, value: 98.9 } });
+
+    const result = await computePlan();
+
     expect(result.cfg.rebalanceHoldSoc_percent).toBeUndefined();
-    expect(solverCtl.caps[0]).toBe(0);
-    expect(solverCtl.caps.length).toBeGreaterThan(1);
-    expect(result.summary.rebalanceHoldMaxStartSlot).toBeGreaterThan(0);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rebalance hold cannot be held from slot 0'));
+    expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+    expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
   });
 });

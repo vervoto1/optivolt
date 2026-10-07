@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchPricesFromHA, parseStrictPrice, pricePointsToSeries } from '../../../api/services/ha-price-service.ts';
+import { fetchPricesFromHA, parseStrictPrice, pricePointsToSeries, resetDuplicatePriceWarnings } from '../../../api/services/ha-price-service.ts';
 
 const makeSettings = (overrides = {}) => ({
   haUrl: 'ws://homeassistant.local:8123/api/websocket',
@@ -451,6 +451,7 @@ describe('pricePointsToSeries', () => {
   });
 
   beforeEach(() => {
+    resetDuplicatePriceWarnings();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -664,6 +665,52 @@ describe('pricePointsToSeries', () => {
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('two different prices for the same instant; keeping the first'),
       { timestamp: '2026-10-05T23:00:00.000Z', kept: expect.closeTo(20), skipped: expect.closeTo(90) },
+    );
+  });
+
+  it('reports a conflicting duplicate instant once per process, not on every refresh', () => {
+    const duplicateWarnings = () => console.warn.mock.calls
+      .filter(([msg]) => msg.includes('two different prices for the same instant'))
+      .map(([, details]) => details.timestamp);
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.2 },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.9 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    const nowMs = Date.parse('2026-10-06T00:30:00+02:00');
+    const first = pricePointsToSeries(points, opts({ nowMs }));
+    const second = pricePointsToSeries(points, opts({ nowMs }));
+    expect(second).toEqual(first);
+    expect(duplicateWarnings()).toEqual(['2026-10-05T23:00:00.000Z']);
+
+    // Another instant still warns; the remembered one stays quiet.
+    const later = points.map(p => ({ ...p, time: p.time.replace('2026-10-06', '2026-10-07') }));
+    pricePointsToSeries(later, opts({ nowMs: nowMs + 86_400_000 }));
+    pricePointsToSeries(points, opts({ nowMs }));
+    expect(duplicateWarnings()).toEqual(['2026-10-05T23:00:00.000Z', '2026-10-06T23:00:00.000Z']);
+
+    // Both pruned once more than two days old relative to the caller's now:
+    // each warns again.
+    pricePointsToSeries(later, opts({ nowMs: nowMs + 4 * 86_400_000 }));
+    pricePointsToSeries(points, opts({ nowMs }));
+    expect(duplicateWarnings()).toEqual([
+      '2026-10-05T23:00:00.000Z', '2026-10-06T23:00:00.000Z',
+      '2026-10-06T23:00:00.000Z', '2026-10-05T23:00:00.000Z',
+    ]);
+  });
+
+  it('does not warn about a duplicate instant whose kept value is null', () => {
+    const points = [
+      { time: '2026-10-06T00:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T01:00:00+02:00', value: null },
+      { time: '2026-10-06T01:00:00+02:00', value: 0.9 },
+      { time: '2026-10-06T02:00:00+02:00', value: 0.3 },
+    ];
+    pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T00:30:00+02:00') }));
+    expect(console.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('two different prices for the same instant'),
+      expect.anything(),
     );
   });
 
