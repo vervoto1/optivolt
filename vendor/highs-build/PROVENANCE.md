@@ -54,8 +54,10 @@ toolchain** — copy the release artifacts instead.
    The gate builds the config through the planner's own `buildPlannerConfig`
    (prediction adjustments, then the learned charge taper in adaptive-learning
    auto mode). The calibration is not in `data.json`, so host mode also fetches
-   `GET /plan-accuracy/calibration` (the persisted calibration, verbatim) and
-   `GET /predictions/adjustments`; with files, pass the add-on's
+   `GET /plan-accuracy/calibration` (the persisted calibration, verbatim). The
+   adjustments come from `data.json` (the gate prunes expired ones itself);
+   `GET /predictions/adjustments` is not used because it rewrites `data.json` on
+   the server when an adjustment has expired. With files, pass the add-on's
    `calibration.json` (and `ev-calibration.json`) after the two files
    (`compare-highs-builds.ts --calibration <file>`). Without a calibration
    snapshot a box in auto mode is solved **uncalibrated** and the gate prints a

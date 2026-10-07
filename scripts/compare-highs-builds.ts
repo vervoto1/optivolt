@@ -20,9 +20,11 @@
  * lives outside data.json, so pass it with --calibration: the
  * GET /plan-accuracy/calibration response, or the DATA_DIR calibration.json /
  * ev-calibration.json (repeat the flag for both). Without it a box in auto mode
- * is solved UNCALIBRATED, and the gate says so. --adjustments takes the
- * GET /predictions/adjustments response and replaces the adjustments stored in
- * data.json (which are used otherwise). The local DATA_DIR is never read.
+ * is solved UNCALIBRATED, and the gate says so. The prediction adjustments
+ * stored in data.json are used (expired ones pruned); --adjustments <file>
+ * ({ adjustments } or an array) replaces them. Do not fetch
+ * GET /predictions/adjustments from production for it: that endpoint rewrites
+ * data.json when an adjustment has expired. The local DATA_DIR is never read.
  *
  * Exit code is 1 when either build returns no usable solution (parseSolution's
  * SolverStatusError, e.g. infeasible or a time limit hit without an incumbent),

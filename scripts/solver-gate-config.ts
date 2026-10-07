@@ -13,8 +13,11 @@
  *   (`{ calibration, evCalibration }`, which is the persisted CalibrationResult /
  *   EvCalibrationResult verbatim — exactly what applyCalibration consumes), or
  *   the DATA_DIR files calibration.json / ev-calibration.json.
- * - optional prediction adjustments: the GET /predictions/adjustments response
- *   (`{ adjustments }`) or a bare array; replaces data.json's own list.
+ * - optional prediction adjustments (`{ adjustments }`, the shape of the
+ *   GET /predictions/adjustments response, or a bare array); replaces
+ *   data.json's own list. Do not fetch that endpoint from production for a
+ *   snapshot: it rewrites data.json when an adjustment has expired. data.json's
+ *   list, pruned here by `preparePlanData`, is the same input.
  *
  * The local DATA_DIR calibration is never read: without a calibration snapshot
  * the gate solves uncalibrated and says so.

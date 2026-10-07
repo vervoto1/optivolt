@@ -5,10 +5,14 @@
 # builds (prediction adjustments + the adaptive-learning calibration).
 #
 #   scripts/prod-solver-gate.sh <addon-host[:port]>
-#       fetches GET /data, /settings, /plan-accuracy/calibration and
-#       /predictions/adjustments (port 3070; read-only GETs)
+#       fetches GET /data, /settings and /plan-accuracy/calibration (port 3070;
+#       all three only read on the server)
 #   scripts/prod-solver-gate.sh <data.json> <settings.json> [calibration.json [ev-calibration.json]]
-#       uses files copied from the add-on's /data (adjustments live in data.json)
+#       uses files copied from the add-on's /data
+#
+# The prediction adjustments come from data.json in both modes (the gate prunes
+# expired ones itself). GET /predictions/adjustments is deliberately not used:
+# it rewrites data.json on the server when an adjustment has expired.
 #
 # Without a calibration snapshot a box in adaptive-learning auto mode is solved
 # UNCALIBRATED, and compare-highs-builds.ts says so. REF=<git rev> picks the
@@ -35,17 +39,18 @@ if [[ $# -eq 1 ]]; then
   else
     echo "warning: could not fetch /plan-accuracy/calibration; the gate runs uncalibrated" >&2
   fi
-  if curl -fsS -m 15 "http://$host/predictions/adjustments" -o "$work/adjustments.json"; then
-    snapshot+=(--adjustments "$work/adjustments.json")
-  else
-    echo "warning: could not fetch /predictions/adjustments; using the adjustments stored in data.json" >&2
-  fi
 elif [[ $# -ge 2 && $# -le 4 ]]; then
   cp "$1" "$work/data.json"
   node -e "$strip_token" < "$2" > "$work/settings.json"
-  for f in "${@:3}"; do snapshot+=(--calibration "$f"); done
+  # Copied, not passed through: the solves below run after a cd to the repo root.
+  i=0
+  for f in "${@:3}"; do
+    i=$((i + 1))
+    cp "$f" "$work/calibration-$i.json"
+    snapshot+=(--calibration "$work/calibration-$i.json")
+  done
 else
-  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 2
 fi
 
@@ -61,14 +66,14 @@ echo "reference: $(sha256sum "$work/ref/highs.wasm" | cut -c1-16)…  ($ref)"
 cd "$root"
 rc=0
 echo; echo "== full stored horizon"
-npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" "${snapshot[@]}" || rc=$?
+npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" ${snapshot[@]+"${snapshot[@]}"} || rc=$?
 echo; echo "== from the current slot"
 # String(): console.log colours a bare number when FORCE_COLOR is set.
 step=$(node -e 'console.log(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stepSize_m ?? 15))' "$work/settings.json")
 now=$(node -e 'const s=Number(process.argv[1])*60000;console.log(new Date(Math.floor(Date.now()/s)*s).toISOString())' "$step")
 future=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const end=Math.min(...["load","pv","importPrice","exportPrice"].map(k=>Date.parse(d[k].start)+d[k].values.length*d[k].step*60000));console.log(end>Date.parse(process.argv[2])?"yes":"no")' "$work/data.json" "$now")
 if [[ "$future" == "yes" ]]; then
-  NOW="$now" npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" "${snapshot[@]}" || rc=$?
+  NOW="$now" npx --no-install tsx scripts/compare-highs-builds.ts "$work/ref/highs.js" "$work/data.json" "$work/settings.json" ${snapshot[@]+"${snapshot[@]}"} || rc=$?
 else
   echo "skipped: the snapshot has no data after $now (stale snapshot or sample data)"
 fi

@@ -247,6 +247,33 @@ describe('compare-highs-builds.ts CLI', () => {
     }
   });
 
+  it('prod-solver-gate.sh file mode takes relative snapshot paths from any working directory', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-sh-'));
+    try {
+      const defaults = JSON.parse(readFileSync(path.join(root, 'api/defaults/default-settings.json'), 'utf8'));
+      const auto = { ...defaults, adaptiveLearning: { enabled: true, mode: 'auto', minDataDays: 7 }, haToken: 'secret' };
+      writeFileSync(path.join(dir, 'data.json'), readFileSync(path.join(root, 'api/defaults/default-data.json')));
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(auto));
+      writeFileSync(path.join(dir, 'calibration.json'), JSON.stringify(makeCalibration()));
+      // REF=HEAD: the default reference commit may be missing from a shallow CI clone.
+      const gate = (...args) => spawnSync('bash', [path.join(root, 'scripts/prod-solver-gate.sh'), ...args], {
+        cwd: dir, encoding: 'utf8', env: { ...process.env, REF: 'HEAD', FORCE_COLOR: '0' },
+      });
+
+      const calibrated = gate('data.json', 'settings.json', 'calibration.json');
+      expect(calibrated.status, calibrated.stderr).toBe(0);
+      expect(calibrated.stdout).toMatch(/calibration: applied/);
+      expect(calibrated.stdout).toMatch(/OK \(identical plan\)/);
+
+      // No calibration file: the empty snapshot list must still expand under set -u.
+      const bare = gate('data.json', 'settings.json');
+      expect(bare.status, bare.stderr).toBe(0);
+      expect(bare.stderr).toMatch(/WARNING: running UNCALIBRATED/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('exits 2 with the usage on a bad invocation', () => {
     expect(run().status).toBe(2);
     const unknown = run('vendor/highs-build/highs.js', '--bogus');
