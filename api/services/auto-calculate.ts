@@ -8,6 +8,8 @@ import { loadSettings } from './settings-store.ts';
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 let calculating = false;
+let calculatingSinceMs: number | null = null;
+let activeIntervalMs: number | null = null;
 
 const MIN_INTERVAL_MINUTES = 1;
 
@@ -23,6 +25,7 @@ export function startAutoCalculate(settings: Settings): void {
 
   const minutes = Math.max(MIN_INTERVAL_MINUTES, config.intervalMinutes ?? 15);
   const intervalMs = minutes * 60_000;
+  activeIntervalMs = intervalMs;
   const initialDelayMs = getDelayToNextBoundary(Date.now(), intervalMs);
 
   console.log(`[auto-calculate] started (every ${minutes} min, first run in ${Math.round(initialDelayMs / 1000)}s)`);
@@ -48,6 +51,7 @@ export function stopAutoCalculate(): void {
     clearInterval(intervalHandle);
     intervalHandle = null;
   }
+  activeIntervalMs = null;
   console.log('[auto-calculate] stopped');
 }
 
@@ -58,6 +62,7 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
   }
 
   calculating = true;
+  calculatingSinceMs = Date.now();
   try {
     // Sample actual SoC before computing the new plan
     try {
@@ -101,7 +106,26 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
     console.error('[auto-calculate] calculation failed:', (err as Error).message);
   } finally {
     calculating = false;
+    calculatingSinceMs = null;
   }
+}
+
+export interface AutoCalculateHealth {
+  /** True when one tick has been running for more than twice the interval (a wedged await). */
+  stuck: boolean;
+  calculatingForMs: number | null;
+  intervalMs: number | null;
+}
+
+/**
+ * Liveness of the auto-calculate loop for /health. A tick only counts as stuck when it has
+ * been in progress for more than two intervals: every later tick is skipped while it runs,
+ * so the plan silently stops being refreshed. Slow or failing ticks are not stuck.
+ */
+export function getAutoCalculateHealth(nowMs: number = Date.now()): AutoCalculateHealth {
+  const calculatingForMs = calculating && calculatingSinceMs !== null ? nowMs - calculatingSinceMs : null;
+  const stuck = calculatingForMs !== null && activeIntervalMs !== null && calculatingForMs > 2 * activeIntervalMs;
+  return { stuck, calculatingForMs, intervalMs: activeIntervalMs };
 }
 
 /**

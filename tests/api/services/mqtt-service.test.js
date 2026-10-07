@@ -7,6 +7,7 @@ const mockWriteSetting = vi.fn().mockResolvedValue(undefined);
 const mockRequestSetting = vi.fn().mockResolvedValue(undefined);
 const mockWriteScheduleSlot = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
+const mockForceClose = vi.fn();
 const mockReadSocPercent = vi.fn().mockResolvedValue({ soc_percent: 75 });
 const mockReadSocLimitsPercent = vi.fn().mockResolvedValue({ minSoc_percent: 20, maxSoc_percent: 95 });
 const mockSubscribeJson = vi.fn().mockResolvedValue(vi.fn());
@@ -20,6 +21,7 @@ vi.mock('../../../lib/victron-mqtt.ts', () => ({
     requestSetting = mockRequestSetting;
     writeScheduleSlot = mockWriteScheduleSlot;
     close = mockClose;
+    forceClose = mockForceClose;
     readSocPercent = mockReadSocPercent;
     readSocLimitsPercent = mockReadSocLimitsPercent;
     subscribeJson = mockSubscribeJson;
@@ -364,6 +366,12 @@ describe('mqtt-service — thin wrapper functions', () => {
     expect(result).toEqual({ value: 42 });
   });
 
+  it('readVictronSetting passes an explicit serial through', async () => {
+    await readVictronSetting('acsystem/0/Pv/Disable', { serial: 'c0619ab6bd28', timeoutMs: 3000 });
+
+    expect(mockReadSetting).toHaveBeenCalledWith('acsystem/0/Pv/Disable', { serial: 'c0619ab6bd28', timeoutMs: 3000 });
+  });
+
   it('readVictronSetting works without options', async () => {
     const result = await readVictronSetting('Settings/DynamicEss/Mode');
 
@@ -410,5 +418,62 @@ describe('mqtt-service — thin wrapper functions', () => {
     await readVictronSocLimits({ timeoutMs: 3000 });
 
     expect(mockReadSocLimitsPercent).toHaveBeenCalledWith({ timeoutMs: 3000 });
+  });
+});
+
+describe('mqtt-service — shutdownVictronClient', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockClose.mockResolvedValue(undefined);
+    mockGetSerial.mockResolvedValue('test-serial-123');
+    await shutdownVictronClient();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('is a no-op when no client was ever created', async () => {
+    await shutdownVictronClient();
+    expect(mockClose).not.toHaveBeenCalled();
+    expect(mockForceClose).not.toHaveBeenCalled();
+  });
+
+  it('closes the client gracefully (flushing queued writes) when it finishes in time', async () => {
+    await getVictronSerial();
+    await shutdownVictronClient({ timeoutMs: 100 });
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(mockForceClose).not.toHaveBeenCalled();
+  });
+
+  it('force-ends the client when the graceful close hangs past the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      await getVictronSerial();
+      mockClose.mockReturnValueOnce(new Promise(() => {}));
+      const done = shutdownVictronClient({ timeoutMs: 50 });
+      await vi.advanceTimersByTimeAsync(60);
+      await done;
+      expect(mockForceClose).toHaveBeenCalledTimes(1);
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('did not finish within 50ms'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('force-ends the client when the graceful close rejects, without throwing', async () => {
+    await getVictronSerial();
+    mockClose.mockRejectedValueOnce(new Error('socket gone'));
+    await expect(shutdownVictronClient({ timeoutMs: 100 })).resolves.toBeUndefined();
+    expect(mockForceClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the cached client so the next call builds a fresh one', async () => {
+    await getVictronSerial();
+    await shutdownVictronClient();
+    await shutdownVictronClient();
+    expect(mockClose).toHaveBeenCalledTimes(1);
   });
 });

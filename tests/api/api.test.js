@@ -24,11 +24,11 @@ import { loadPlanHistory, clearPlanHistory } from '../../api/services/plan-histo
 import { getRecentSamples, clearSocSamples } from '../../api/services/soc-tracker.ts';
 import { loadCalibration, calibrate, resetCalibration } from '../../api/services/efficiency-calibrator.ts';
 import { evaluateRecentPlans } from '../../api/services/plan-accuracy-service.ts';
-import { startAutoCalculate, stopAutoCalculate } from '../../api/services/auto-calculate.ts';
+import { startAutoCalculate, stopAutoCalculate, getAutoCalculateHealth } from '../../api/services/auto-calculate.ts';
 import { startDessPriceRefresh, stopDessPriceRefresh } from '../../api/services/dess-price-refresh.ts';
 import { startPvCurtailment, stopPvCurtailment } from '../../api/services/pv-curtailment.ts';
 import { startShoreOptimizer, stopShoreOptimizer } from '../../api/services/shore-optimizer.ts';
-import { planAndMaybeWrite, getLastPlan, getLastEvPreview } from '../../api/services/planner-service.ts';
+import { planAndMaybeWrite, getLastPlan, getLastEvPreview, getPlanWriteChainHealth } from '../../api/services/planner-service.ts';
 import { startPredictionAutoSelect, stopPredictionAutoSelect } from '../../api/services/prediction-auto-select.ts';
 
 async function importRoutes() {
@@ -126,6 +126,8 @@ describe('Route contracts', () => {
     });
     startAutoCalculate.mockReturnValue();
     stopAutoCalculate.mockReturnValue();
+    getAutoCalculateHealth.mockReturnValue({ stuck: false, calculatingForMs: null, intervalMs: 300_000 });
+    getPlanWriteChainHealth.mockReturnValue({ pending: 0, oldestPendingMs: null });
     startDessPriceRefresh.mockReturnValue();
     stopDessPriceRefresh.mockReturnValue();
     startPvCurtailment.mockReturnValue();
@@ -535,6 +537,30 @@ describe('Route contracts', () => {
     const res = await inject(app, { method: 'GET', url: '/health' });
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Optivolt API is running.');
+  });
+
+  it('app.ts health stays 200 while work is merely busy', async () => {
+    getAutoCalculateHealth.mockReturnValue({ stuck: false, calculatingForMs: 400_000, intervalMs: 300_000 });
+    getPlanWriteChainHealth.mockReturnValue({ pending: 2, oldestPendingMs: 9 * 60_000 });
+    const { default: app } = await import('../../api/app.ts');
+    const res = await inject(app, { method: 'GET', url: '/health' });
+    expect(res.status).toBe(200);
+  });
+
+  it('app.ts health returns 503 when an auto-calculate tick is wedged', async () => {
+    getAutoCalculateHealth.mockReturnValue({ stuck: true, calculatingForMs: 700_000, intervalMs: 300_000 });
+    const { default: app } = await import('../../api/app.ts');
+    const res = await inject(app, { method: 'GET', url: '/health' });
+    expect(res.status).toBe(503);
+    expect(res.body.reasons).toEqual(['auto-calculate tick running for 700s']);
+  });
+
+  it('app.ts health returns 503 when the plan/write chain is pending over 10 minutes', async () => {
+    getPlanWriteChainHealth.mockReturnValue({ pending: 1, oldestPendingMs: 10 * 60_000 + 1000 });
+    const { default: app } = await import('../../api/app.ts');
+    const res = await inject(app, { method: 'GET', url: '/health' });
+    expect(res.status).toBe(503);
+    expect(res.body.reasons).toEqual(['plan/write run pending for 601s']);
   });
 
   it('app.ts 404 handler for unknown routes', async () => {

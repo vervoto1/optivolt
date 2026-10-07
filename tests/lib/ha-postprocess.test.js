@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { postprocess, getSensorNames, aggregateTo15Min } from '../../lib/ha-postprocess.ts';
+import { describe, it, expect, vi } from 'vitest';
+import { postprocess, getSensorNames, aggregateTo15Min, whPerUnit } from '../../lib/ha-postprocess.ts';
 
 const sensors = [
   { id: 'sensor.grid_import_1', name: 'Grid Import', unit: 'kWh' },
@@ -170,10 +170,13 @@ describe('postprocess — branch coverage', () => {
     const rawDataWithUnknown = {
       'sensor.unknown_sensor': [{ start: t1, change: 5 }],
     };
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const data = postprocess(rawDataWithUnknown, sensors, []);
     const rec = data.find(d => d.sensor === 'sensor.unknown_sensor');
     expect(rec).toBeDefined();
-    expect(rec.value).toBe(5); // Wh (unit unknown → multiplier 1)
+    expect(rec.value).toBe(5); // Wh (unit unknown → multiplier 1, with a warning)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('treating its values as Wh'));
+    warnSpy.mockRestore();
   });
 
   it('treats null change as 0 (line 90: d.change ?? 0)', () => {
@@ -208,5 +211,61 @@ describe('getSensorNames', () => {
     expect(names).toContain('Net');
     // No duplicates
     expect(names.length).toBe(new Set(names).size);
+  });
+});
+
+describe('postprocess — declared energy units', () => {
+  const t = Date.UTC(2026, 9, 5, 10, 0, 0);
+
+  it('scales Wh, kWh and MWh changes to Wh', () => {
+    const unitSensors = [
+      { id: 'sensor.victron_pv', name: 'Victron Solar', unit: 'kWh' },
+      { id: 'sensor.envoy_lifetime', name: 'Enphase Solar', unit: 'MWh' },
+      { id: 'sensor.meter_wh', name: 'Meter', unit: 'Wh' },
+    ];
+    const data = postprocess({
+      'sensor.victron_pv': [{ start: t, change: 2.0 }],
+      'sensor.envoy_lifetime': [{ start: t, change: 0.0015 }],
+      'sensor.meter_wh': [{ start: t, change: 300 }],
+    }, unitSensors, [{ name: 'Solar Generation', formula: ['+Victron Solar', '+Enphase Solar'] }]);
+    const valueOf = name => data.find(d => d.sensor === name).value;
+    expect(valueOf('Victron Solar')).toBe(2000);
+    expect(valueOf('Enphase Solar')).toBeCloseTo(1500, 6);
+    expect(valueOf('Meter')).toBe(300);
+    expect(valueOf('Solar Generation')).toBeCloseTo(3500, 6);
+  });
+
+  it('still drops an MWh counter reset via the per-slot cap after scaling', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const data = postprocess(
+      { 'sensor.envoy_lifetime': [{ start: t, change: -0.776 }] },
+      [{ id: 'sensor.envoy_lifetime', name: 'Enphase Solar', unit: 'MWh' }],
+      [],
+    );
+    expect(data).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dropping implausible Enphase Solar sample'));
+    warnSpy.mockRestore();
+  });
+
+  it('warns once per sensor for a non-energy unit and treats the value as Wh', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const data = postprocess(
+      { 'sensor.odd': [{ start: t, change: 7 }, { start: t + 3_600_000, change: 8 }] },
+      [{ id: 'sensor.odd', name: 'Odd', unit: 'W' }],
+      [],
+    );
+    expect(data.map(d => d.value)).toEqual([7, 8]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('Odd (sensor.odd) has unit "W"');
+    warnSpy.mockRestore();
+  });
+
+  it('whPerUnit maps known units and rejects others', () => {
+    expect(whPerUnit('Wh')).toBe(1);
+    expect(whPerUnit(' kWh ')).toBe(1000);
+    expect(whPerUnit('MWh')).toBe(1_000_000);
+    expect(whPerUnit('mwh')).toBeNull();
+    expect(whPerUnit('toString')).toBeNull();
+    expect(whPerUnit(undefined)).toBeNull();
   });
 });

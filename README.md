@@ -57,6 +57,8 @@ npm install
 npm run api       # or: npm run dev  (loads .env.local via dotenv-cli + nodemon)
 ```
 
+Requires Node.js `^22.18.0 || >=24` from an official build: the server is TypeScript run by Node's built-in type stripping. Distro packages built without it (Debian/Ubuntu `nodejs+dfsg`) cannot parse `api/index.ts`; run `npx tsx api/index.ts` there instead.
+
 By default the server listens on `http://localhost:3000`.
 
 The web UI ships a precompiled Tailwind stylesheet (`app/vendor/tailwind.css`). If you change Tailwind classes anywhere under `app/`, rebuild it with `npm run build:css` and commit the result — CI fails when it is stale.

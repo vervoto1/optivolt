@@ -15,7 +15,7 @@ import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refres
 import { readVictronSocPercent, setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { fetchHaEntityState } from '../../../api/services/ha-client.ts';
-import { computePlan, planAndMaybeWrite, getLastEvPreview } from '../../../api/services/planner-service.ts';
+import { computePlan, planAndMaybeWrite, getLastEvPreview, getPlanWriteChainHealth } from '../../../api/services/planner-service.ts';
 import { FeedIn } from '../../../lib/dess-mapper.ts';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
@@ -781,5 +781,52 @@ describe('computePlan — savePlanSnapshot fire-and-forget', () => {
     );
 
     warnSpy.mockRestore();
+  });
+});
+
+describe('planAndMaybeWrite — chain health for /health', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW_STRING));
+    vi.resetAllMocks();
+    refreshSeriesFromVrmAndPersist.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    saveData.mockResolvedValue();
+    savePlanSnapshot.mockResolvedValue();
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...baseData });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reports nothing pending once runs settle, including rejected writes', async () => {
+    setDynamicEssSchedule.mockRejectedValueOnce(new Error('Timeout after 10000ms waiting for publish'));
+    await expect(planAndMaybeWrite({ writeToVictron: true, forceWrite: true })).rejects.toThrow('Timeout');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getPlanWriteChainHealth()).toEqual({ pending: 0, oldestPendingMs: null });
+
+    // The chain moved on: the next run is not stuck behind the failed one.
+    setDynamicEssSchedule.mockResolvedValueOnce();
+    await expect(planAndMaybeWrite({ writeToVictron: true, forceWrite: true })).resolves.toBeDefined();
+  });
+
+  it('reports how long a hung run has been pending, then clears once it settles', async () => {
+    let release;
+    setDynamicEssSchedule.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const first = planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
+    const second = planAndMaybeWrite({ writeToVictron: false });
+
+    const startMs = Date.now();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getPlanWriteChainHealth(startMs + 11 * 60_000)).toEqual({ pending: 2, oldestPendingMs: 11 * 60_000 });
+
+    release();
+    await first;
+    await second;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getPlanWriteChainHealth()).toEqual({ pending: 0, oldestPendingMs: null });
   });
 });

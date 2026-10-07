@@ -11,6 +11,7 @@ const { mockMqttClient } = vi.hoisted(() => {
     subscribeAsync: vi.fn().mockResolvedValue(undefined),
     unsubscribeAsync: vi.fn().mockResolvedValue(undefined),
     endAsync: vi.fn().mockResolvedValue(undefined),
+    end: vi.fn(),
     on: vi.fn().mockImplementation((event, handler) => {
       if (!handlers[event]) handlers[event] = [];
       handlers[event].push(handler);
@@ -35,7 +36,7 @@ vi.mock('mqtt', () => ({
 }));
 
 import mqtt from 'mqtt';
-import { VictronMqttClient, withVictronMqtt } from '../../lib/victron-mqtt.ts';
+import { VictronMqttClient, withVictronMqtt, OP_TIMEOUT_MS } from '../../lib/victron-mqtt.ts';
 
 // ---------------------------------------------------------------------------
 // Helper: emit a simulated MQTT message after a microtask delay
@@ -826,5 +827,284 @@ describe('withVictronMqtt', () => {
     ).rejects.toThrow('fail');
     expect(closeSpy).toHaveBeenCalledOnce();
     closeSpy.mockRestore();
+  });
+});
+
+describe('VictronMqttClient — stalled transport (refused CONNACK / offline queue)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mqtt.connectAsync.mockResolvedValue(mockMqttClient);
+    mockMqttClient.publishAsync.mockResolvedValue(undefined);
+    mockMqttClient.subscribeAsync.mockResolvedValue(undefined);
+    mockMqttClient.unsubscribeAsync.mockResolvedValue(undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('asks mqtt.js to keep reconnecting after a refused CONNACK', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('some/path', 1, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ reconnectOnConnackError: true, reconnectPeriod: 5000 }),
+    );
+  });
+
+  it('defaults the per-op deadline to OP_TIMEOUT_MS and accepts an override', () => {
+    expect(new VictronMqttClient().opTimeoutMs).toBe(OP_TIMEOUT_MS);
+    expect(new VictronMqttClient({ opTimeoutMs: 50 }).opTimeoutMs).toBe(50);
+  });
+
+  it('rejects readJsonOnce at timeoutMs when the subscribe never settles, with no unhandled rejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      mockMqttClient.subscribeAsync.mockReturnValueOnce(new Promise(() => {}));
+      const client = new VictronMqttClient({ serial: 'ser1', opTimeoutMs: 10_000 });
+      const started = Date.now();
+      await expect(client.readSetting('system/0/Dc/Battery/Soc', { serial: 'ser1', timeoutMs: 40 }))
+        .rejects.toThrow('Timeout after 40ms waiting for N/ser1/system/0/Dc/Battery/Soc');
+      expect(Date.now() - started).toBeLessThan(1000);
+      // The unsubscribe is fire-and-forget, not awaited.
+      expect(mockMqttClient.unsubscribeAsync).toHaveBeenCalledWith('N/ser1/system/0/Dc/Battery/Soc');
+      await new Promise(r => setTimeout(r, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('settles readJsonOnce even when the unsubscribe never settles', async () => {
+    mockMqttClient.unsubscribeAsync.mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const path = 'settings/0/Settings/DynamicEss/Mode';
+    scheduleMessage(`N/ser1/${path}`, { value: 4 });
+    await expect(client.readSetting(path, { serial: 'ser1', timeoutMs: 500 })).resolves.toEqual({ value: 4 });
+  });
+
+  it('rejects getSerial at timeoutMs when the subscribe never settles', async () => {
+    mockMqttClient.subscribeAsync.mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient();
+    await expect(client.getSerial({ timeoutMs: 30 })).rejects.toThrow('Timeout after 30ms');
+  });
+
+  it('rejects a write at the op deadline, force-ends the client, and reconnects on the next call', async () => {
+    mockMqttClient.publishAsync.mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+
+    await expect(client.writeSetting('settings/0/Settings/DynamicEss/Mode', 4, { serial: 'ser1' }))
+      .rejects.toThrow('Timeout after 30ms waiting for publish W/ser1/settings/0/Settings/DynamicEss/Mode');
+    expect(mockMqttClient.end).toHaveBeenCalledWith(true);
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(1);
+
+    await client.writeSetting('settings/0/Settings/DynamicEss/Mode', 4, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects subscribeJson at the op deadline and removes its message handler', async () => {
+    mockMqttClient.subscribeAsync.mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1', opTimeoutMs: 30 });
+    await expect(client.subscribeJson('N/ser1/x', () => {})).rejects.toThrow('Timeout after 30ms waiting for subscribe N/ser1/x');
+    expect(mockMqttClient.off).toHaveBeenCalledWith('message', expect.any(Function));
+  });
+
+  it('forceClose ends the client without flushing and the next call reconnects', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    client.forceClose();
+    expect(mockMqttClient.end).toHaveBeenCalledWith(true);
+    expect(mockMqttClient.endAsync).not.toHaveBeenCalled();
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('moves live subscribeJson subscriptions onto the client that replaces an evicted one', async () => {
+    const listeners = [];
+    const second = {
+      publishAsync: vi.fn().mockResolvedValue(undefined),
+      subscribeAsync: vi.fn().mockResolvedValue(undefined),
+      unsubscribeAsync: vi.fn().mockResolvedValue(undefined),
+      endAsync: vi.fn().mockResolvedValue(undefined),
+      end: vi.fn(),
+      on: vi.fn((event, fn) => { if (event === 'message') listeners.push(fn); }),
+      off: vi.fn(),
+    };
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+    const handler = vi.fn();
+    const unsubscribe = await client.subscribeJson('N/ser1/battery/0/Dc/0/Power', handler, {
+      requestTopic: 'R/ser1/battery/0/Dc/0/Power',
+    });
+
+    // A stalled write evicts the first client...
+    mockMqttClient.publishAsync.mockReturnValueOnce(new Promise(() => {}));
+    await expect(client.writeSetting('a', 1, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    // ...and the next call connects a new one, which takes the subscription over.
+    mqtt.connectAsync.mockResolvedValueOnce(second);
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(mockMqttClient.off).toHaveBeenCalledWith('message', expect.any(Function));
+    expect(second.subscribeAsync).toHaveBeenCalledWith('N/ser1/battery/0/Dc/0/Power');
+    expect(second.publishAsync).toHaveBeenCalledWith('R/ser1/battery/0/Dc/0/Power', '');
+    listeners.forEach(fn => fn('N/ser1/battery/0/Dc/0/Power', Buffer.from('{"value":-1200}')));
+    expect(handler).toHaveBeenCalledWith('N/ser1/battery/0/Dc/0/Power', { value: -1200 });
+
+    // Unsubscribing detaches from the client it now lives on, and it is not re-attached again.
+    await unsubscribe();
+    expect(second.unsubscribeAsync).toHaveBeenCalledWith('N/ser1/battery/0/Dc/0/Power');
+  });
+
+  function makeSecondClient() {
+    return {
+      publishAsync: vi.fn().mockResolvedValue(undefined),
+      subscribeAsync: vi.fn().mockResolvedValue(undefined),
+      unsubscribeAsync: vi.fn().mockResolvedValue(undefined),
+      endAsync: vi.fn().mockResolvedValue(undefined),
+      end: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+  }
+
+  it('logs (and does not throw) when re-subscribing on the replacement client fails', async () => {
+    const second = makeSecondClient();
+    second.subscribeAsync.mockRejectedValueOnce(new Error('suback refused'));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+    await client.subscribeJson('N/ser1/x', () => {});
+    await client.subscribeJson('N/ser1/z', () => {});
+
+    mockMqttClient.publishAsync.mockReturnValueOnce(new Promise(() => {}));
+    await expect(client.writeSetting('a', 1, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    mqtt.connectAsync.mockResolvedValueOnce(second);
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(second.subscribeAsync).toHaveBeenCalledWith('N/ser1/x');
+    expect(second.subscribeAsync).toHaveBeenCalledWith('N/ser1/z');
+    // No requestTopic: nothing is requested after either re-subscribe.
+    expect(second.publishAsync).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith('[victron-mqtt] re-subscribing N/ser1/x failed:', 'suback refused');
+  });
+
+  it('rejects every stalled operation on an evicted client and reconnects on the next call', async () => {
+    mockMqttClient.publishAsync
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+    const results = await Promise.allSettled([
+      client.writeSetting('a', 1, { serial: 'ser1' }),
+      client.writeSetting('b', 2, { serial: 'ser1' }),
+    ]);
+    expect(results.map(r => r.status)).toEqual(['rejected', 'rejected']);
+    // One stall: the client is ended and the eviction logged once, not once per op.
+    expect(mockMqttClient.end).toHaveBeenCalledTimes(1);
+    const evictionLogs = console.error.mock.calls.filter(c => String(c[0]).includes('not acknowledged'));
+    expect(evictionLogs).toHaveLength(1);
+    await client.writeSetting('c', 3, { serial: 'ser1' });
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts (and logs) again when a later connection stalls too', async () => {
+    mockMqttClient.publishAsync
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000, opTimeoutMs: 30 });
+    await expect(client.writeSetting('a', 1, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    // The mock hands back the same object on reconnect; it counts as a fresh client.
+    await expect(client.writeSetting('b', 2, { serial: 'ser1' })).rejects.toThrow('Timeout after 30ms');
+    expect(mqtt.connectAsync).toHaveBeenCalledTimes(2);
+    expect(mockMqttClient.end).toHaveBeenCalledTimes(2);
+    const evictionLogs = console.error.mock.calls.filter(c => String(c[0]).includes('not acknowledged'));
+    expect(evictionLogs).toHaveLength(2);
+  });
+
+  it('forceClose while still connecting ends the client once the connect resolves', async () => {
+    let resolveConnect;
+    mqtt.connectAsync.mockReturnValueOnce(new Promise((resolve) => { resolveConnect = resolve; }));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    const write = client.writeSetting('a', 1, { serial: 'ser1' });
+    client.forceClose();
+    resolveConnect(mockMqttClient);
+    await write;
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockMqttClient.end).toHaveBeenCalledWith(true);
+  });
+
+  it('forceClose while still connecting swallows a failed connect', async () => {
+    let rejectConnect;
+    mqtt.connectAsync.mockReturnValueOnce(new Promise((_, reject) => { rejectConnect = reject; }));
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    const write = client.writeSetting('a', 1, { serial: 'ser1' });
+    client.forceClose();
+    rejectConnect(new Error('ECONNREFUSED'));
+    await expect(write).rejects.toThrow('ECONNREFUSED');
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockMqttClient.end).not.toHaveBeenCalled();
+  });
+
+  it('a subscribeJson unsubscribe never throws, even when the unsubscribe is refused', async () => {
+    const client = new VictronMqttClient({ serial: 'ser1' });
+    const unsubscribe = await client.subscribeJson('N/ser1/y', () => {});
+    mockMqttClient.unsubscribeAsync.mockRejectedValueOnce(new Error('offline'));
+    await expect(unsubscribe()).resolves.toBeUndefined();
+    await new Promise(r => setTimeout(r, 0));
+  });
+
+  it('forceClose cuts short a graceful close() that hangs, destroying the disconnecting socket', async () => {
+    let finishEnd;
+    const hanging = {
+      ...makeSecondClient(),
+      disconnecting: false,
+      stream: { destroy: vi.fn(() => finishEnd()) },
+    };
+    // Like mqtt.js: endAsync() marks the client disconnecting, after which end(true) is a no-op.
+    hanging.endAsync = vi.fn(() => {
+      hanging.disconnecting = true;
+      return new Promise((resolve) => { finishEnd = resolve; });
+    });
+    mqtt.connectAsync.mockResolvedValueOnce(hanging);
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+
+    const closing = client.close();
+    await new Promise(r => setTimeout(r, 0));
+    expect(hanging.endAsync).toHaveBeenCalledTimes(1);
+    client.forceClose();
+    expect(hanging.stream.destroy).toHaveBeenCalledTimes(1);
+    expect(hanging.end).not.toHaveBeenCalled();
+    await expect(closing).resolves.toBeUndefined();
+    // Nothing is left to end a second time.
+    client.forceClose();
+    expect(hanging.stream.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('forceClose ends a closing client with end(true) when it is not disconnecting yet', async () => {
+    const pending = { ...makeSecondClient(), disconnecting: false, stream: { destroy: vi.fn() } };
+    pending.endAsync = vi.fn(() => new Promise(() => {}));
+    mqtt.connectAsync.mockResolvedValueOnce(pending);
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    void client.close();
+    await new Promise(r => setTimeout(r, 0));
+    client.forceClose();
+    expect(pending.end).toHaveBeenCalledWith(true);
+    expect(pending.stream.destroy).not.toHaveBeenCalled();
+  });
+
+  it('forceClose logs instead of throwing when ending the client fails', async () => {
+    const broken = { ...makeSecondClient(), disconnecting: false };
+    broken.end = vi.fn(() => { throw new Error('socket gone'); });
+    mqtt.connectAsync.mockResolvedValueOnce(broken);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = new VictronMqttClient({ serial: 'ser1', reconnectPeriod: 5000 });
+    await client.writeSetting('a', 1, { serial: 'ser1' });
+    expect(() => client.forceClose()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('[victron-mqtt] force-ending the client failed:', 'socket gone');
+    warn.mockRestore();
+  });
+
+  it('forceClose is a no-op before any connection', () => {
+    const client = new VictronMqttClient();
+    expect(() => client.forceClose()).not.toThrow();
+    expect(mockMqttClient.end).not.toHaveBeenCalled();
   });
 });

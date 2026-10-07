@@ -1,3 +1,14 @@
-#!/usr/bin/execlineb -S0
-# Allow s6 to restart the service on exit/crash
-s6-svscanctl -t /var/run/s6/services
+#!/usr/bin/env bashio
+# s6-overlay v3 finish script: log why the service stopped, nothing else.
+# s6-supervise then restarts it in place, which is the policy we want for a
+# hardware controller: config.yaml has no watchdog, so halting the container
+# on a crash (/run/s6/basedir/bin/halt) would leave the schedule unmanaged.
+# $1 is the exit code (256 when killed by a signal), $2 the signal number.
+if [[ "${1:-0}" -eq 256 ]]; then
+  bashio::log.warning "OptiVolt stopped by signal ${2:-?}"
+elif [[ "${1:-0}" -ne 0 ]]; then
+  bashio::log.warning "OptiVolt exited with code ${1}; restarting"
+else
+  bashio::log.info "OptiVolt exited cleanly"
+fi
+exit 0

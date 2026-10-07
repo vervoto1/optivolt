@@ -449,3 +449,138 @@ describe('battery-charge-controller — control loop lifecycle', () => {
     expect(isBatteryChargeControllerRunning()).toBe(false);
   });
 });
+
+describe('battery-charge-controller — releasing the limit when disabled', () => {
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    // Start from a disabled controller so no earlier test's enabled state leaks in.
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    vi.clearAllMocks();
+    resetBatteryChargeState();
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    stopBatteryChargeController();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  async function enableAtReducedRung(ctrlOver = {}) {
+    mockStates({ 'sensor.v0': '3.30', 'sensor.v1': '3.30', 'number.cc': '50' });
+    startBatteryChargeController(settings({}, ctrlOver)); // seeds 50
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getBatteryChargeStatus().commandedLevel).toBe(50);
+    callHaService.mockClear();
+  }
+
+  it('writes the top rung once on an enabled → disabled edge', async () => {
+    await enableAtReducedRung();
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(callHaService).toHaveBeenCalledTimes(1);
+    expect(callHaService).toHaveBeenCalledWith(expect.objectContaining({
+      domain: 'number', service: 'set_value',
+      target: { entity_id: 'number.cc' }, data: { value: 400 },
+    }));
+
+    // A further save while still disabled does not write again.
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes the top rung once when a live controller is switched to dry-run (still enabled)', async () => {
+    await enableAtReducedRung();
+    startBatteryChargeController(settings({}, { dryRun: true }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calledValues()).toEqual([400]);
+    expect(console.info).toHaveBeenCalledWith(expect.stringContaining('dry-run: charge current restored 50A → 400A'));
+
+    // The dry-run loop keeps running but never writes; a further dry-run save does not release again.
+    mockStates({ 'sensor.v0': '3.70', 'sensor.v1': '3.70', 'number.cc': '400' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    startBatteryChargeController(settings({}, { dryRun: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calledValues()).toEqual([400]);
+  });
+
+  it('does not write blind when the controller never got a reading (no seed, no command)', async () => {
+    mockStates({ 'sensor.v0': 'unavailable', 'sensor.v1': 'unavailable', 'number.cc': '50' });
+    startBatteryChargeController(settings());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getBatteryChargeStatus().status).toBe('no_voltage');
+    expect(getBatteryChargeStatus().commandedLevel).toBeNull();
+
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('does not write when the controller was in dry-run', async () => {
+    await enableAtReducedRung({ dryRun: true });
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('does not write when the last command already is the top rung', async () => {
+    mockStates({ 'sensor.v0': '3.30', 'sensor.v1': '3.30', 'number.cc': '400' });
+    startBatteryChargeController(settings());
+    await vi.advanceTimersByTimeAsync(0);
+    callHaService.mockClear();
+
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('does not write when the previous config has no rungs', async () => {
+    await enableAtReducedRung();
+    // A settings save that loses the ladder, then the disable: nothing to restore to.
+    const noLevels = settings();
+    delete noLevels.batteryChargeControl.currentLevels;
+    startBatteryChargeController(noLevels);
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('does not write on a plain stop (shutdown or settings save keeps the register)', async () => {
+    await enableAtReducedRung();
+    stopBatteryChargeController();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+  });
+
+  it('warns without throwing when the release write fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await enableAtReducedRung();
+    callHaService.mockRejectedValueOnce(new Error('HA 500'));
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('restoring the top rung (400A) failed: HA 500'));
+  });
+
+  it('waits for a tick still running on the old settings before releasing', async () => {
+    await enableAtReducedRung({ controlIntervalSeconds: 5 });
+    const pending = [];
+    fetchHaEntityState.mockImplementation(({ entityId }) => new Promise((res) => {
+      pending.push(() => res({ state: entityId === 'number.cc' ? '50' : '3.30' }));
+    }));
+    await vi.advanceTimersByTimeAsync(5_000); // a tick starts and hangs in its voltage reads
+    startBatteryChargeController(settings({}, { enabled: false }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callHaService).not.toHaveBeenCalled();
+
+    mockStates({ 'sensor.v0': '3.30', 'sensor.v1': '3.30', 'number.cc': '50' });
+    for (const release of pending) release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calledValues().at(-1)).toBe(400);
+  });
+});
