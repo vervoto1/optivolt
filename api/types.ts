@@ -346,8 +346,10 @@ export interface SocData {
 export interface RebalanceState {
   startMs: number | null;
   /**
-   * When rebalancing first became pending (enabled, hold not started). Cleared
-   * when the hold starts, the cycle ends or rebalancing is switched off.
+   * When rebalancing first became pending (enabled, hold not started). Stamped
+   * when the settings route switches rebalancing on (the first Optimal plan
+   * stamps it as a fallback). Cleared when the hold starts, the cycle ends or
+   * rebalancing is switched off.
    */
   pendingSinceMs?: number | null;
 }

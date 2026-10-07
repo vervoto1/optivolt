@@ -214,20 +214,28 @@ export function buildSolverConfigFromSettings(
     // rebalanceTargetSoc_percent, so Victron still tops the pack up
     // (proBattery at >= 100 % is its keep-battery-charged path).
     // A started hold keeps the relaxed level regardless of the live SoC: its
-    // start is pinned to slot 0 below, so a reading that dips just under the
+    // start is pinned to slot 0, so a reading that dips just under the
     // tolerance band (e.g. 98.9 % on a 100 % target) would otherwise restore
     // the full target, make the pin infeasible and push the window to k > 0
     // while the wall-clock countdown keeps running.
-    if (remainingSlots > 0
-      && (startMs_ != null || data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT)) {
-      base.rebalanceHoldSoc_percent = settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
-    }
+    //
     // Once the hold has started its wall-clock countdown is running, so the
     // remaining slots must be held from now on. Without this cap the solver
     // may re-place them later in the horizon (e.g. export now, recharge at a
     // cheaper hour, re-enter the hold), and the cycle then completes on the
     // clock after far less real hold time than requested.
-    if (startMs_ != null && remainingSlots > 0) {
+    // A hold that has not started yet gets the same slot-0 cap once the live
+    // SoC is within the start tolerance (the relaxed hold level above makes
+    // slot 0 reachable). Left free, the window's start is decided by a
+    // 1e-6-per-slot tie-break that is far below the MIP gap, so an "Optimal"
+    // plan may place it at any near-equal-cost k > 0 on every cycle: the
+    // planner only stamps a plan that holds from slot 0, so the clock would
+    // never start and the pending give-up would switch rebalancing off
+    // without a hold. With the cap the plan holds from slot 0 and stamps; a
+    // cap that is infeasible goes through the planner's relaxation search.
+    const withinStartTolerance = data.soc.value >= settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
+    if (remainingSlots > 0 && (startMs_ != null || withinStartTolerance)) {
+      base.rebalanceHoldSoc_percent = settings.maxSoc_percent - REBALANCE_START_TOLERANCE_PERCENT;
       base.rebalanceMaxStartSlot = 0;
     }
   }

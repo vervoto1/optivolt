@@ -66,6 +66,15 @@ export const AUTO_SELECT_LIMITS = {
 export const DESS_PRICE_REFRESH_LIMITS = {
   durationMinutes: { min: 1, max: 24 * 60 - 1 },
 } as const;
+/**
+ * Bounds for `rebalanceHoldHours`. A rebalance hold keeps the pack at the
+ * target with battery-to-grid export blocked for the whole window, so a typo
+ * (e.g. 30 instead of 3) would block discharge for more than a day; 12 h is
+ * well above any balancing hold a BMS needs. The settings form's `max`
+ * attribute mirrors the ceiling. A POST outside the range is rejected; a
+ * stored value is clamped on load (as the floor already was).
+ */
+export const REBALANCE_HOLD_HOURS_LIMITS = { min: 0, max: 12 } as const;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 const MAX_SAFE_SHORE_A = 25;
 
@@ -202,7 +211,8 @@ export function normalizeSettings(settings: Settings): Settings {
   normalized.maxGridExport_W = Math.max(0, Math.round(normalized.maxGridExport_W));
   normalized.batteryCost_cent_per_kWh = Math.max(0, normalized.batteryCost_cent_per_kWh);
   normalized.idleDrain_W = Math.max(0, normalized.idleDrain_W);
-  normalized.rebalanceHoldHours = Math.max(0, normalized.rebalanceHoldHours);
+  normalized.rebalanceHoldHours = Math.max(REBALANCE_HOLD_HOURS_LIMITS.min,
+    Math.min(REBALANCE_HOLD_HOURS_LIMITS.max, normalized.rebalanceHoldHours));
   normalized.chargeEfficiency_percent = normalizeSocPercent(normalized.chargeEfficiency_percent);
   normalized.dischargeEfficiency_percent = normalizeSocPercent(normalized.dischargeEfficiency_percent);
   normalized.inverterEfficiency_percent = normalizeSocPercent(normalized.inverterEfficiency_percent);
@@ -784,6 +794,13 @@ export function validateSettingsPatch(patch: Record<string, unknown>): void {
 
   for (const [field, allowed] of Object.entries(STRICT_ENUM_FIELDS)) {
     if (has(field)) expectEnum(patch[field], allowed, field);
+  }
+
+  // A non-number is left to normalizeSettings, which rejects it as before.
+  const holdHours = patch.rebalanceHoldHours;
+  const { min, max } = REBALANCE_HOLD_HOURS_LIMITS;
+  if (typeof holdHours === 'number' && Number.isFinite(holdHours) && (holdHours < min || holdHours > max)) {
+    throw new HttpError(400, `rebalanceHoldHours must be a number between ${min} and ${max}`);
   }
 }
 

@@ -52,8 +52,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     // could make config-builder give up on the new hold at once; a kept hold
     // start (disabled mid-hold) would let the countdown run on while
     // rebalancing is off, so re-enabling later found the cycle "complete" and
-    // switched rebalancing off again without holding.
-    if (rebalanceToggled) await resetRebalanceCycle();
+    // switched rebalancing off again without holding. Switching it on also
+    // starts the give-up period now (see resetRebalanceCycle).
+    if (rebalanceToggled) await resetRebalanceCycle(mergedSettings.rebalanceEnabled);
 
     // Restart timers with new settings
     stopAutoCalculate();
@@ -80,15 +81,24 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 /**
- * Reset the rebalance cycle progress: clear `rebalanceState.startMs` and
- * `rebalanceState.pendingSinceMs` (a locked patch of the current data file;
- * other fields are kept, and nothing is written when both are already
- * clear). Best effort: the settings are already saved.
+ * Reset the rebalance cycle progress (a locked patch of the current data file;
+ * other fields are kept). Best effort: the settings are already saved.
+ *
+ * - Switched on: clear `rebalanceState.startMs` and stamp
+ *   `rebalanceState.pendingSinceMs` with now. The planner also stamps it, but
+ *   only from an Optimal plan, so with solves that keep failing (time limit,
+ *   an infeasible hold) the REBALANCE_PENDING_GIVE_UP_MS give-up would never
+ *   run and the hold would stay mapped indefinitely.
+ * - Switched off: clear `startMs` and `pendingSinceMs`; nothing is written
+ *   when both are already clear.
  */
-async function resetRebalanceCycle(): Promise<void> {
+async function resetRebalanceCycle(enabled: boolean): Promise<void> {
   try {
     await updateData(d => {
       const state = d.rebalanceState;
+      if (enabled) {
+        return { ...d, rebalanceState: { ...state, startMs: null, pendingSinceMs: Date.now() } };
+      }
       if (!state || (state.startMs == null && state.pendingSinceMs == null)) return null;
       const { pendingSinceMs: _pendingSinceMs, ...rest } = state;
       return { ...d, rebalanceState: { ...rest, startMs: null } };

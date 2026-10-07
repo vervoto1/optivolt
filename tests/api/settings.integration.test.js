@@ -129,6 +129,22 @@ describe('Settings route integration', () => {
     expect(saved.dischargeEfficiency_percent).toBe(0);
   });
 
+  it('POST /settings rejects a rebalanceHoldHours above 12 h and accepts the bound', async () => {
+    await writeSettings({ rebalanceHoldHours: 3 });
+    const before = await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8');
+
+    for (const bad of [12.25, 30, -1]) {
+      const res = await post(settingsRouter, '/', { rebalanceHoldHours: bad });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/rebalanceHoldHours must be a number between 0 and 12/);
+    }
+    expect(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).toBe(before);
+
+    const ok = await post(settingsRouter, '/', { rebalanceHoldHours: 12 });
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).rebalanceHoldHours).toBe(12);
+  });
+
   describe('rebalance cycle reset on toggle', () => {
     const PENDING_SINCE_MS = Date.parse('2024-01-01T00:00:00Z');
     const dataPath = () => path.join(tempDir, 'data.json');
@@ -139,15 +155,39 @@ describe('Settings route integration', () => {
     }
     const readRebalanceState = async () => JSON.parse(await fs.readFile(dataPath(), 'utf8')).rebalanceState;
 
-    it('POST /settings clears a stale pendingSinceMs when rebalancing is switched on again', async () => {
+    // Switching rebalancing on stamps the pending marker with the save time.
+    async function postAndReadPendingStamp(patch) {
+      const beforeMs = Date.now();
+      const res = await post(settingsRouter, '/', patch);
+      const afterMs = Date.now();
+      const state = await readRebalanceState();
+      expect(state.pendingSinceMs).toBeGreaterThanOrEqual(beforeMs);
+      expect(state.pendingSinceMs).toBeLessThanOrEqual(afterMs);
+      return { res, state };
+    }
+
+    it('POST /settings replaces a stale pendingSinceMs when rebalancing is switched on again', async () => {
       // Disabled, then re-enabled before any plan ran with rebalancing off.
       await writeSettings({ rebalanceEnabled: false });
       await writeDataWithRebalanceState({ startMs: null, pendingSinceMs: PENDING_SINCE_MS });
 
-      const res = await post(settingsRouter, '/', { rebalanceEnabled: true });
+      const { res, state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
 
       expect(res.status).toBe(200);
-      expect(await readRebalanceState()).toEqual({ startMs: null });
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
+      expect(state.pendingSinceMs).not.toBe(PENDING_SINCE_MS);
+    });
+
+    it('POST /settings starts the give-up period when rebalancing is switched on with no cycle state', async () => {
+      // Stamped here rather than only from an Optimal plan, so solves that keep
+      // failing cannot keep the hold pending forever.
+      await writeSettings({ rebalanceEnabled: false });
+      await writeDataWithRebalanceState(undefined);
+
+      const { res, state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
+
+      expect(res.status).toBe(200);
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
     });
 
     it('POST /settings resets a started hold when rebalancing is switched off mid-hold', async () => {
@@ -165,9 +205,9 @@ describe('Settings route integration', () => {
       await writeSettings({ rebalanceEnabled: false });
       await writeDataWithRebalanceState({ startMs: PENDING_SINCE_MS });
 
-      await post(settingsRouter, '/', { rebalanceEnabled: true });
+      const { state } = await postAndReadPendingStamp({ rebalanceEnabled: true });
 
-      expect(await readRebalanceState()).toEqual({ startMs: null });
+      expect(state).toEqual({ startMs: null, pendingSinceMs: expect.any(Number) });
     });
 
     it('POST /settings keeps the rest of the data file when it resets the cycle', async () => {

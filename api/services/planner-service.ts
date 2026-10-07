@@ -16,7 +16,7 @@ import { updateSettings, loadSettings } from './settings-store.ts';
 import { updateData as updateStoredData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
-import { getRebalanceNudge, type RebalanceNudge } from './rebalance-nudge.ts';
+import { getRebalanceNudge, recordCompletedRebalanceHold, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
 import { getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
@@ -242,9 +242,21 @@ async function readMqttSocForPlan(settings: Settings): Promise<number> {
  * start marker. Deliberately not pre-solve — a failed solve (or a failure
  * mapping its result) must never mutate user settings. Both writes are locked
  * patches of the current files, never the snapshots loaded for this plan.
+ *
+ * A cycle that ran its hold to completion also records the hold's end as
+ * `lastFullSocAt` (in the same data patch): a pack whose system SoC tops out
+ * at 99 % never reads 100 %, so the 10-day rebalance nudge would otherwise
+ * never reset after a successful cycle. The give-up path (a hold that never
+ * started) leaves it alone.
  */
-async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Promise<{ settings: Settings; data: Data }> {
-  if (data.rebalanceState?.startMs == null) {
+async function finishCompletedRebalanceCycle(
+  settings: Settings,
+  cfg: SolverConfig,
+  data: Data,
+): Promise<{ settings: Settings; data: Data }> {
+  const holdStartMs = data.rebalanceState?.startMs;
+  let completedAtMs: number | null = null;
+  if (holdStartMs == null) {
     // remainingSlots is 0 without a started hold only when config-builder gave
     // up on a hold that never started (REBALANCE_PENDING_GIVE_UP_MS).
     const pendingSinceMs = data.rebalanceState?.pendingSinceMs;
@@ -255,13 +267,20 @@ async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Pr
     );
   } else {
     console.log('[calculate] rebalance hold cycle complete; switching rebalancing off');
+    // The hold ended once its slots had elapsed on the wall clock (never later than now).
+    const holdEndMs = holdStartMs + (cfg.rebalanceHoldSlots ?? 0) * cfg.stepSize_m * 60_000;
+    completedAtMs = Math.min(holdEndMs, Date.now());
   }
   const rebalanceState = { startMs: null };
+  const finish = (d: Data): Data => {
+    const next = { ...d, rebalanceState };
+    return completedAtMs == null ? next : recordCompletedRebalanceHold(next, completedAtMs);
+  };
   await Promise.all([
     updateSettings(s => ({ ...s, rebalanceEnabled: false })),
-    updateStoredData(d => ({ ...d, rebalanceState })),
+    updateStoredData(finish),
   ]);
-  return { settings: { ...settings, rebalanceEnabled: false }, data: { ...data, rebalanceState } };
+  return { settings: { ...settings, rebalanceEnabled: false }, data: finish(data) };
 }
 
 /** How the solve treated a started hold's slot-0 pin. */
@@ -480,11 +499,12 @@ export { REBALANCE_START_TOLERANCE_PERCENT };
  *
  * - With rebalancing on and no hold started yet: stamp the hold start once the
  *   live SoC is within REBALANCE_START_TOLERANCE_PERCENT of the target and this
- *   plan holds from slot 0 (within that tolerance the LP holds at target −
- *   tolerance, so a slot-0 window is reachable; see config-builder). A plan
- *   whose own window starts later (e.g. it exports at a high price first) is
- *   not a hold yet; stamping it would start the wall-clock countdown while the
- *   written schedule drains the battery.
+ *   plan holds from slot 0. Within that tolerance config-builder caps the
+ *   window start at slot 0 and lowers the LP's hold level to target −
+ *   tolerance, so the plan holds from slot 0 unless even that is infeasible.
+ *   A plan whose window starts later (the cap relaxed by the search in
+ *   solveWithPinnedHoldFallback) is not a hold yet; stamping it would start
+ *   the wall-clock countdown while the written schedule is not holding.
  *   Otherwise record when the hold first became pending (`pendingSinceMs`), so
  *   config-builder can give up on a hold that never starts.
  * - With rebalancing off: drop a leftover `pendingSinceMs`, so re-enabling
@@ -546,7 +566,16 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const t0 = performance.now();
   let result: HighsSolution;
   let relaxedMaxStartSlot: number | undefined;
+  const pinnedStartSlot = cfg.rebalanceMaxStartSlot;
   ({ cfg, result, relaxedMaxStartSlot } = solveWithPinnedHoldFallback(highs, cfg));
+  if (data.rebalanceState?.startMs != null && pinnedStartSlot != null && cfg.rebalanceMaxStartSlot == null) {
+    // The pinned solve fell back to the free solve (e.g. it ended without an
+    // Optimal result): this plan no longer keeps the running hold at slot 0.
+    console.warn(
+      '[calculate] the started rebalance hold lost its slot-0 pin (fallback to the free solve, see the warning above): '
+      + 'the running hold window may move later in the horizon while its countdown keeps running',
+    );
+  }
   const solveMs = performance.now() - t0;
   const evCfg = cfg.ev;
   const evInfo = evCfg ? {
@@ -585,7 +614,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   // The hold start (and its pending marker) is recorded only from an Optimal
   // plan: a non-Optimal incumbent is display-only (see below).
   if (rebalanceCycleComplete) {
-    ({ settings, data } = await finishCompletedRebalanceCycle(settings, data));
+    ({ settings, data } = await finishCompletedRebalanceCycle(settings, cfg, data));
   } else if (result.Status === 'Optimal') {
     data = await recordRebalanceProgress(settings, cfg, data, timing.startMs, rebalanceWindow);
   }

@@ -21,6 +21,9 @@ import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
 import { computePlan, planAndMaybeWrite, getLastPlan, REBALANCE_START_TOLERANCE_PERCENT } from '../../../api/services/planner-service.ts';
 import { REBALANCE_PENDING_GIVE_UP_MS } from '../../../api/services/config-builder.ts';
 import { Strategy, Restrictions } from '../../../lib/dess-mapper.ts';
+import { buildLP } from '../../../lib/build-lp.ts';
+import { MIP_SOLVE_OPTIONS, solveOptionsFor } from '../../../lib/solve-options.ts';
+import highsFactory from '../../../vendor/highs-build/highs.js';
 
 const NOW_STRING = '2024-01-01T00:00:00Z';
 const NOW_MS = new Date(NOW_STRING).getTime();
@@ -113,6 +116,30 @@ describe('computePlan — rebalance hold DESS mapping', () => {
     expect(completed.rebalanceWindow).toBeUndefined();
     expect(completed.rows.map(r => r.dess)).toEqual(off.rows.map(r => r.dess));
   });
+
+  it('a completed hold records its end as lastFullSocAt, resetting the nudge on a 99 % pack', async () => {
+    // Hold of 2 h started 5 h ago: it ended 3 h ago. The pack tops out at
+    // 99 %, so no live reading ever records a full SoC.
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const staleFull = new Date(NOW_MS - 20 * 86_400_000).toISOString();
+    loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
+    loadData.mockResolvedValue({
+      ...baseData,
+      soc: { timestamp: NOW_STRING, value: 99 },
+      lastFullSocAt: staleFull,
+      rebalanceState: { startMs: NOW_MS - 5 * 3_600_000 },
+    });
+
+    const result = await computePlan();
+
+    const holdEnd = new Date(NOW_MS - 3 * 3_600_000).toISOString();
+    expect(result.cfg.rebalanceRemainingSlots).toBe(0);
+    expect(result.data.lastFullSocAt).toBe(holdEnd);
+    expect(result.data.rebalanceState).toEqual({ startMs: null });
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ lastFullSocAt: holdEnd, rebalanceState: { startMs: null } }));
+    expect(result.rebalanceNudge).toMatchObject({ lastFullSocAt: holdEnd, daysSinceLastFullSoc: 0, rebalanceRecommended: false });
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ rebalanceEnabled: false }));
+  });
 });
 
 describe('computePlan — a started hold cannot drift later in the horizon', () => {
@@ -133,15 +160,16 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
     exportPrice: { start: NOW_STRING, step: 60, values: [100, 5, 0, 0, 0] },
   };
 
-  it('control: before the hold starts the window is free to move', async () => {
+  it('control: before the hold starts, outside the start tolerance, the window is free to move', async () => {
     loadSettings.mockResolvedValue({ ...driftSettings });
-    loadData.mockResolvedValue({ ...driftData, rebalanceState: { startMs: null } });
+    loadData.mockResolvedValue({ ...driftData, soc: { timestamp: NOW_STRING, value: 90 }, rebalanceState: { startMs: null } });
 
     const result = await computePlan();
 
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
-    expect(result.rows[0].b2g).toBeGreaterThan(0); // drains the full battery to grid first
+    expect(result.rows[0].b2g).toBeGreaterThan(0); // drains the battery to grid first
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
   });
 
   it('once started the hold stays at slot 0 and slot 0 is not proGrid', async () => {
@@ -157,25 +185,22 @@ describe('computePlan — a started hold cannot drift later in the horizon', () 
     expect(result.rows[1].dess).toMatchObject(HOLD);
   });
 
-  it('first cycle at target: does not start the hold clock on a plan that exports first', async () => {
-    // SoC reaches 100 % in a lucrative export slot. Left free, the solver
-    // exports now and holds later; the countdown must not start on that plan
-    // (it would run while the written schedule drains the battery), and slot 0
-    // must not be pinned by a clock that this very plan stamped.
+  it('first cycle at target: holds from slot 0 and starts the clock even when exporting first pays', async () => {
+    // SoC reaches 100 % in a lucrative export slot. Within the start
+    // tolerance the not-yet-started hold is capped at slot 0 like a started
+    // one, so the plan holds now (no export first) and the clock stamps.
     loadSettings.mockResolvedValue({ ...driftSettings });
     loadData.mockResolvedValue({ ...driftData, rebalanceState: { startMs: null } });
 
     const result = await planAndMaybeWrite({ writeToVictron: true, forceWrite: true });
 
-    expect(result.rebalanceWindow.startIdx).toBeGreaterThan(0);
-    expect(result.rows[0].b2g).toBeGreaterThan(0);
-    // Not started; the pending marker that bounds a never-starting hold is set.
-    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
-    // (saveData does run: the full-SoC observation is recorded pre-solve.)
-    for (const [saved] of saveData.mock.calls) {
-      expect(saved.rebalanceState?.startMs ?? null).toBeNull();
-    }
-    expect(result.summary.rebalanceStatus).toBe('scheduled');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
+    expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 1 });
+    // Slot 0 is a DESS hold (battery-to-grid blocked) instead of a drain.
+    expect(result.rows[0].dess).toMatchObject(HOLD);
+    expect(result.rows[1].dess).toMatchObject(HOLD);
+    expect(result.data.rebalanceState).toEqual({ startMs: NOW_MS });
+    expect(result.summary.rebalanceStatus).toBe('active');
     expect(setDynamicEssSchedule).toHaveBeenCalledTimes(1);
   });
 
@@ -294,6 +319,63 @@ describe('computePlan — hold start tolerance and the pending give-up', () => {
     expect(result.summary.rebalanceStatus).toBe('active');
   });
 
+  describe('a near-tie later window cannot keep a hold within tolerance from starting', () => {
+    // Battery at 99 %, no load: exporting 1 kWh at 1.01 c in slot 0 and
+    // buying it back at 1 c in slot 2 makes a window at slots 3-4 cheaper than
+    // one at slots 0-1 by 0.005 c, well inside the 0.01 c MIP gap, so either
+    // is an acceptable "Optimal" answer and the tie-break cannot decide it.
+    const nearTieData = (value) => ({
+      ...baseData,
+      load: { start: NOW_STRING, step: 60, values: [0, 0, 0, 0, 0] },
+      importPrice: { start: NOW_STRING, step: 60, values: [30, 30, 1, 1, 1] },
+      exportPrice: { start: NOW_STRING, step: 60, values: [1.01, 0, 0, 0, 0] },
+      soc: { timestamp: NOW_STRING, value },
+      rebalanceState: { startMs: null },
+    });
+    // Lossless round trip, so the export/buy-back margin is the only difference.
+    const nearTieSettings = { ...baseSettings, rebalanceEnabled: true, inverterEfficiency_percent: 100 };
+    const windowStart = (columns) => Object.entries(columns)
+      .filter(([name, col]) => name.startsWith('start_balance_') && Math.round(col.Primal) === 1)
+      .map(([name]) => Number(name.slice('start_balance_'.length)))[0];
+
+    it('within tolerance, not started: the window is capped at slot 0 and the hold clock stamps', async () => {
+      loadSettings.mockResolvedValue({ ...nearTieSettings });
+      loadData.mockResolvedValue(nearTieData(99));
+
+      const result = await computePlan();
+
+      expect(result.result.Status).toBe('Optimal');
+      expect(result.cfg.rebalanceMaxStartSlot).toBe(0);
+      expect(result.cfg.rebalanceHoldSoc_percent).toBe(99);
+      expect(result.summary.rebalanceHoldMaxStartSlot).toBeUndefined();
+      expect(result.rebalanceWindow).toEqual({ startIdx: 0, endIdx: 1 });
+      expect(result.data.rebalanceState).toEqual({ startMs: NOW_MS });
+      expect(savedStates()).toContainEqual({ startMs: NOW_MS });
+      expect(result.summary.rebalanceStatus).toBe('active');
+
+      // The same LP without the cap moves the window later, for less than the MIP gap.
+      const highs = await highsFactory({});
+      const { rebalanceMaxStartSlot: _cap, ...freeCfg } = result.cfg;
+      const free = highs.solve(buildLP(freeCfg), solveOptionsFor(freeCfg));
+      expect(free.Status).toBe('Optimal');
+      expect(windowStart(free.Columns)).toBeGreaterThan(0);
+      expect(result.result.ObjectiveValue - free.ObjectiveValue).toBeGreaterThan(0);
+      expect(result.result.ObjectiveValue - free.ObjectiveValue).toBeLessThan(MIP_SOLVE_OPTIONS.mip_abs_gap);
+    });
+
+    it('outside tolerance, not started: unchanged, the window stays free and nothing stamps', async () => {
+      loadSettings.mockResolvedValue({ ...nearTieSettings });
+      loadData.mockResolvedValue(nearTieData(98.9));
+
+      const result = await computePlan();
+
+      expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
+      expect(result.cfg.rebalanceHoldSoc_percent).toBeUndefined();
+      expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
+      expect(result.summary.rebalanceStatus).toBe('scheduled');
+    });
+  });
+
   it('does not start the hold clock more than the tolerance below the target', async () => {
     loadSettings.mockResolvedValue({ ...baseSettings, rebalanceEnabled: true });
     loadData.mockResolvedValue({
@@ -385,6 +467,10 @@ describe('computePlan — hold start tolerance and the pending give-up', () => {
     expect(result.data.rebalanceState).toEqual({ startMs: null });
     expect(result.summary.rebalanceStatus).toBe('disabled');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('rebalance hold did not start within 3 days of being enabled'));
+    // No hold ran, so the full-SoC record (and the nudge) is left alone.
+    expect(result.data.lastFullSocAt).toBeUndefined();
+    for (const [saved] of saveData.mock.calls) expect(saved.lastFullSocAt).toBeUndefined();
+    expect(result.rebalanceNudge.lastFullSocAt).toBeNull();
   });
 
   it('drops a leftover pending marker once rebalancing is switched off', async () => {

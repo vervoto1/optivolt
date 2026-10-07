@@ -178,6 +178,27 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
       }
     });
 
+    it('caps a not-yet-started hold at slot 0 within the tolerance, like a started one', () => {
+      // Left free, the start is decided by a tie-break far below the MIP gap,
+      // so the window could land at any near-equal-cost k > 0 every cycle and
+      // the hold clock (stamped only from a slot-0 plan) would never start.
+      for (const value of [99, 99.5, 100]) {
+        expect(buildSolverConfigFromSettings(on, atSoc(value), NOW_MS).rebalanceMaxStartSlot).toBe(0);
+        const pending = atSoc(value, { startMs: null, pendingSinceMs: NOW_MS - 3_600_000 });
+        expect(buildSolverConfigFromSettings(on, pending, NOW_MS).rebalanceMaxStartSlot).toBe(0);
+      }
+      // Outside the tolerance the window stays free (it may need to charge first).
+      for (const value of [98.9, 50]) {
+        expect(buildSolverConfigFromSettings(on, atSoc(value), NOW_MS).rebalanceMaxStartSlot).toBeUndefined();
+      }
+      // A given-up hold has nothing left to hold: no cap.
+      const givenUp = buildSolverConfigFromSettings(
+        on, atSoc(100, { startMs: null, pendingSinceMs: NOW_MS - REBALANCE_PENDING_GIVE_UP_MS }), NOW_MS,
+      );
+      expect(givenUp.rebalanceRemainingSlots).toBe(0);
+      expect(givenUp.rebalanceMaxStartSlot).toBeUndefined();
+    });
+
     it('keeps the full target below the tolerance and with nothing left to hold', () => {
       expect(buildSolverConfigFromSettings(on, atSoc(98.9), NOW_MS).rebalanceHoldSoc_percent).toBeUndefined();
       const completed = buildSolverConfigFromSettings(on, atSoc(100, { startMs: NOW_MS - 12 * 15 * 60_000 }), NOW_MS);
@@ -190,6 +211,17 @@ describe('buildSolverConfigFromSettings — rebalancing', () => {
       expect(Object.keys(cfg).filter(k => k.startsWith('rebalance'))).toEqual([]);
       const { rebalanceHoldSoc_percent: _unused, ...withoutField } = cfg;
       expect(buildLP(cfg)).toBe(buildLP(withoutField));
+    });
+
+    it('rebalancing off within the tolerance: no start cap, whatever rebalance state is left over', () => {
+      const noState = { ...makeData(), soc: { timestamp: NOW_STRING, value: 100 } };
+      expect(noState.rebalanceState).toBeUndefined();
+      const plain = buildLP(buildSolverConfigFromSettings(mockSettings, noState, NOW_MS));
+      for (const state of [{ startMs: null }, { startMs: null, pendingSinceMs: NOW_MS - 3_600_000 }]) {
+        const cfg = buildSolverConfigFromSettings(mockSettings, atSoc(100, state), NOW_MS);
+        expect(Object.keys(cfg).filter(k => k.startsWith('rebalance'))).toEqual([]);
+        expect(buildLP(cfg)).toBe(plain);
+      }
     });
   });
 

@@ -63,18 +63,18 @@ describe('rebalance toggled off mid-hold and on again', () => {
     expect((await post(settingsRouter, '/', { rebalanceEnabled: false })).status).toBe(200);
     vi.setSystemTime(NOW_MS);
     expect((await post(settingsRouter, '/', { rebalanceEnabled: true })).status).toBe(200);
-    expect((await readJson('data.json')).rebalanceState).toEqual({ startMs: null });
+    // Switching on resets the cycle and starts its give-up period now.
+    expect((await readJson('data.json')).rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
 
     const plan = await computePlan();
 
     // A full fresh 1 h hold (4 slots) is planned, not a completed cycle.
     expect(plan.cfg.rebalanceRemainingSlots).toBe(4);
     expect(plan.rebalanceWindow.endIdx - plan.rebalanceWindow.startIdx).toBe(3);
-    expect(plan.summary.rebalanceStatus).toBeOneOf(['scheduled', 'active']);
+    expect(plan.summary.rebalanceStatus).toBe('active');
     expect((await readJson('settings.json')).rebalanceEnabled).toBe(true);
-    // Either stamped now (held from slot 0) or pending since now; never the old start.
-    const state = (await readJson('data.json')).rebalanceState;
-    expect(state.startMs).toBeOneOf([null, NOW_MS]);
-    if (state.startMs == null) expect(state.pendingSinceMs).toBe(NOW_MS);
+    // At 100 % the fresh hold is capped at slot 0 and stamped now; never the old start.
+    expect(plan.rebalanceWindow.startIdx).toBe(0);
+    expect((await readJson('data.json')).rebalanceState).toEqual({ startMs: NOW_MS });
   });
 });

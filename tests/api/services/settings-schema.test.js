@@ -5,6 +5,7 @@ import {
   mergeSettings,
   normalizeSettings,
   validateSettingsPatch,
+  REBALANCE_HOLD_HOURS_LIMITS,
   sanitizeSettingsResponse, DESS_PRICE_REFRESH_LIMITS } from '../../../api/services/settings-schema.ts';
 
 const defaultSettings = JSON.parse(fs.readFileSync(new URL('../../../api/defaults/default-settings.json', import.meta.url), 'utf8'));
@@ -826,6 +827,21 @@ describe('validateSettingsPatch — strict checks on POST /settings', () => {
     for (const good of [1, 50, 94.5, 100]) {
       expect(() => validateSettingsPatch({ [field]: good })).not.toThrow();
     }
+  });
+
+  it('bounds rebalanceHoldHours to 0-12 h on save and clamps a stored value on load', () => {
+    expect(REBALANCE_HOLD_HOURS_LIMITS).toEqual({ min: 0, max: 12 });
+    for (const bad of [12.01, 24, 30, -0.25]) {
+      expect(() => validateSettingsPatch({ rebalanceHoldHours: bad })).toThrow('rebalanceHoldHours must be a number between 0 and 12');
+    }
+    for (const good of [0, 0.25, 3, 12]) {
+      expect(() => validateSettingsPatch({ rebalanceHoldHours: good })).not.toThrow();
+    }
+    // The shipped default and the production value (3 h) are in range.
+    expect(defaultSettings.rebalanceHoldHours).toBeLessThanOrEqual(REBALANCE_HOLD_HOURS_LIMITS.max);
+    expect(productionShaped.rebalanceHoldHours).toBe(3);
+    expect(normalizeSettings({ ...validSettings(), rebalanceHoldHours: 48 }).rebalanceHoldHours).toBe(12);
+    expect(normalizeSettings({ ...validSettings(), rebalanceHoldHours: 3 }).rebalanceHoldHours).toBe(3);
   });
 
   it('rejects with a 400 status so the route reports a validation error', () => {

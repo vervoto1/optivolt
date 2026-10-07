@@ -217,6 +217,18 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
     expect(result.cfg.rebalanceMaxStartSlot).toBeUndefined();
     expect(result.summary.rebalanceHoldMaxStartSlot).toBe(SLOTS - 1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('solver status "Time limit reached"); re-solving with the hold window free to move'));
+    // The hold is running, so the operator is told its window may now move.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('started rebalance hold lost its slot-0 pin'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the running hold window may move'));
+  });
+
+  it('does not warn about a running hold when the pin holds or is only relaxed', async () => {
+    solverCtl.hook = (cap) => (cap != null && cap < 3 ? INFEASIBLE : undefined);
+
+    const relaxed = await computePlan();
+
+    expect(relaxed.cfg.rebalanceMaxStartSlot).toBe(3);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('lost its slot-0 pin'));
   });
 
   it('does not re-solve the same LP when the hold covers the whole horizon (T - D = 0)', async () => {
@@ -264,10 +276,39 @@ describe('computePlan — relaxing an infeasible slot-0 pin', () => {
       expect(saved.rebalanceState).toEqual({ startMs: null });
     }
 
+    // A hold that has not started has no running window to warn about.
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('lost its slot-0 pin'));
+
     // The same plan, Optimal, does stamp it.
     solverCtl.post = null;
     const optimal = await computePlan();
     expect(optimal.data.rebalanceState).toEqual({ startMs: NOW_MS });
+  });
+
+  it('a not-started hold whose slot-0 cap is infeasible is relaxed and does not stamp the clock', async () => {
+    // Within the start tolerance (99 %) the not-started hold is capped at
+    // slot 0. Pretend that cap is infeasible: the search relaxes it, and the
+    // plan then exports at 100 c in slot 0 and holds from slot 1, which is
+    // not a hold from now, so only the pending marker is recorded.
+    const prices = (first, rest) => ({ start: NOW_STRING, step: 60, values: [first, ...new Array(SLOTS - 1).fill(rest)] });
+    loadData.mockResolvedValue({
+      ...structuredClone(data),
+      soc: { timestamp: NOW_STRING, value: 99 },
+      exportPrice: prices(100, 0),
+      importPrice: prices(30, 1),
+      rebalanceState: { startMs: null },
+    });
+    solverCtl.hook = (cap) => (cap === 0 ? INFEASIBLE : undefined);
+
+    const result = await computePlan();
+
+    expect(solverCtl.caps).toEqual([0, 1]);
+    expect(result.result.Status).toBe('Optimal');
+    expect(result.cfg.rebalanceMaxStartSlot).toBe(1);
+    expect(result.rebalanceWindow.startIdx).toBe(1);
+    expect(result.data.rebalanceState).toEqual({ startMs: null, pendingSinceMs: NOW_MS });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('allowed to start up to slot 1'));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('lost its slot-0 pin'));
   });
 
   it('a relaxed probe that stops without an incumbent releases the pin', async () => {
