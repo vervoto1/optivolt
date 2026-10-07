@@ -142,11 +142,23 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
   });
 }
 
-// Aggregate plan rows into larger time buckets (e.g. 15-min slots → 1-hour bars).
-// Power flows (W) are averaged across the bucket so kWh = avg_W * hours stays correct.
-// Prices and SoC are averaged / taken end-of-bucket so the tooltip still reflects the slot.
-function aggregateRows(rows, inputStep_m, targetStep_m) {
+// Aggregate plan rows into larger time buckets (e.g. 15-min slots -> 1-hour bars).
+// Power flows (W) are summed and divided by the number of slots a full bucket
+// holds, so kWh = avg_W * hours stays correct even for a partial bucket (the
+// first hour of a plan that starts at :15/:30/:45): absent slots count as zero
+// energy. Prices are averaged over the slots actually present, and SoC is taken
+// from the last slot of the bucket.
+const ENERGY_KEYS = [
+  'g2l', 'g2b', 'g2ev',
+  'pv2l', 'pv2b', 'pv2g', 'pv2ev', 'pvCurtail',
+  'b2l', 'b2g', 'b2ev',
+  'load', 'pv', 'imp', 'exp', 'evLoad',
+];
+const PRICE_KEYS = ['ic', 'ec'];
+
+export function aggregateRows(rows, inputStep_m, targetStep_m) {
   const targetStepMs = targetStep_m * 60_000;
+  const slotsPerBucket = Math.max(1, Math.round(targetStep_m / inputStep_m));
   const buckets = new Map();
 
   for (const r of rows) {
@@ -155,21 +167,14 @@ function aggregateRows(rows, inputStep_m, targetStep_m) {
     buckets.get(bucketTs).push(r);
   }
 
-  const avgKeys = [
-    'g2l', 'g2b', 'g2ev',
-    'pv2l', 'pv2b', 'pv2g', 'pv2ev', 'pvCurtail',
-    'b2l', 'b2g', 'b2ev',
-    'load', 'pv', 'imp', 'exp', 'evLoad',
-    'ic', 'ec',
-  ];
+  const sumKey = (group, k) => group.reduce((sum, r) => sum + (r[k] ?? 0), 0);
 
   return [...buckets.entries()]
     .sort(([a], [b]) => a - b)
     .map(([ts, group]) => {
       const agg = { timestampMs: ts };
-      for (const k of avgKeys) {
-        agg[k] = group.reduce((sum, r) => sum + (r[k] ?? 0), 0) / group.length;
-      }
+      for (const k of ENERGY_KEYS) agg[k] = sumKey(group, k) / slotsPerBucket;
+      for (const k of PRICE_KEYS) agg[k] = sumKey(group, k) / group.length;
       const last = group[group.length - 1];
       agg.soc = last.soc;
       agg.soc_percent = last.soc_percent;
@@ -351,13 +356,14 @@ export function aggregateLoadPvBuckets(rows, stepSize_m = 15) {
   const hourMap = new Map();
 
   for (const row of rows) {
-    const dt = new Date(row.timestampMs);
-    dt.setMinutes(0, 0, 0);
-    const hourMs = dt.getTime();
+    // Bucket by absolute (epoch) hour, like aggregateRows: flooring the local
+    // wall clock would merge the repeated hour of the autumn DST change into a
+    // single double-height bar and drop an hour from the axis.
+    const hourMs = Math.floor(row.timestampMs / 3_600_000) * 3_600_000;
 
     if (!hourMap.has(hourMs)) {
       hourMap.set(hourMs, {
-        dtHour: dt,
+        dtHour: new Date(hourMs),
         loadKWh: 0,
         pvKWh: 0,
         originalLoadKWh: 0,

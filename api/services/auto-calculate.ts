@@ -14,6 +14,16 @@ let activeIntervalMs: number | null = null;
 const MIN_INTERVAL_MINUTES = 1;
 
 /**
+ * Data-coverage errors from config-builder that a data refresh can cure: the
+ * stored series end too early, or the load/a price series starts after the
+ * plan window begins.
+ */
+function isRefreshableDataError(err: HttpError): boolean {
+  return err.message === 'Insufficient future data'
+    || /^Series '\w+' starts after the plan window begins$/.test(err.message);
+}
+
+/**
  * Start the auto-calculate timer. If already running, stops the previous
  * timer first to avoid duplicates.
  */
@@ -74,7 +84,7 @@ async function runTick(updateData: boolean, writeToVictron: boolean): Promise<vo
     try {
       await planAndMaybeWrite({ updateData, writeToVictron });
     } catch (err) {
-      if (err instanceof HttpError && err.message === 'Insufficient future data' && !updateData) {
+      if (err instanceof HttpError && isRefreshableDataError(err) && !updateData) {
         console.warn('[auto-calculate] data exhausted, retrying with VRM refresh');
         await planAndMaybeWrite({ updateData: true, writeToVictron });
       } else {

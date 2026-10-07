@@ -396,6 +396,42 @@ describe('auto-calculate', () => {
     errorSpy.mockRestore();
   });
 
+  it('retries with a refresh when a series starts after the plan window and updateData is false', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    planAndMaybeWrite
+      .mockRejectedValueOnce(new HttpError(422, "Series 'importPrice' starts after the plan window begins"))
+      .mockResolvedValueOnce({});
+
+    startAutoCalculate(makeSettings({ enabled: true, intervalMinutes: 5, updateData: false, writeToVictron: true }));
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(2);
+    expect(planAndMaybeWrite).toHaveBeenNthCalledWith(2, { updateData: true, writeToVictron: true });
+
+    warnSpy.mockRestore();
+  });
+
+  it('logs a late-starting series and skips the cycle when updateData is already true', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    planAndMaybeWrite.mockRejectedValueOnce(new HttpError(422, "Series 'load' starts after the plan window begins"));
+
+    startAutoCalculate(makeSettings({ enabled: true, intervalMinutes: 5, updateData: true, writeToVictron: true }));
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(planAndMaybeWrite).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[auto-calculate] calculation failed:',
+      "Series 'load' starts after the plan window begins",
+    );
+    expect(isAutoCalculateRunning()).toBe(true);
+
+    errorSpy.mockRestore();
+  });
+
   it('does not retry on non-Insufficient future data errors', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 

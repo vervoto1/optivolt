@@ -12,6 +12,7 @@ import {
 } from '../../../app/src/charts/overlays.js';
 import { getBuyPriceColor, SOLUTION_COLORS, toRGBA } from '../../../app/src/charts/colors.js';
 import { fmtHHMM } from '../../../app/src/charts/core.js';
+import { aggregateRows } from '../../../app/src/charts/solution-charts.js';
 
 // ---------------------------------------------------------------------------
 // Test fakes
@@ -446,6 +447,31 @@ describe('makeNegativePriceInjectionPlugin', () => {
     expect(tt.querySelector('.ov-icon-tt-table')).toBeTruthy();
     // Two slots → two body rows.
     expect(tt.querySelectorAll('.ov-icon-tt-table tbody tr')).toHaveLength(2);
+  });
+
+  it('reports true kWh and cost for a partial hourly bucket (hourly flows view)', () => {
+    // Plan starts at 10:30: the 10:00 hourly bucket holds two 15-min slots that
+    // export 4000 W at -10 c/kWh = 2 x 1 kWh = 2 kWh, costing 20 c. The hourly
+    // rows come from the flows chart aggregator, rendered with h = 1 h.
+    const t1030 = Date.parse('2026-06-18T10:30:00+02:00');
+    const slots = [
+      negRow(t1030, { ec: -10, pv2g: 4000 }),
+      negRow(t1030 + step, { ec: -10, pv2g: 4000 }),
+      posRow(t1030 + 2 * step),
+      posRow(t1030 + 3 * step),
+      posRow(t1030 + 4 * step),
+      posRow(t1030 + 5 * step),
+    ];
+    const hourlyRows = aggregateRows(slots, 15, 60);
+    const plugin = makeNegativePriceInjectionPlugin(hourlyRows, 1);
+    const { chart, ctx } = buildLiveChart({ labels: ['a', 'b'] });
+    plugin.beforeDraw(chart);
+    const arc = ctx.find('arc');
+    plugin.afterEvent(chart, { event: { type: 'mousemove', x: arc[1], y: arc[2] } });
+
+    const summary = chart.canvas.parentNode.querySelector('.ov-icon-tt-summary').textContent;
+    expect(summary).toContain('2.00 kWh');
+    expect(summary).toContain('20.0¢');
   });
 
   it('reuses the same tooltip element on subsequent hovers', () => {
