@@ -92,6 +92,33 @@ describe('Data route integration', () => {
     expect(saved.lastFullSocAt).toBe('2024-02-01T12:00:00.000Z');
   });
 
+  it('POST /data and a concurrent prediction-adjustment write both survive (locked patches)', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+    await writeData({
+      load: { start: '2024-01-01T00:00:00Z', step: 15, values: [500, 500] },
+      pv: { start: '2024-01-01T00:00:00Z', step: 15, values: [0, 0] },
+      importPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [10, 10] },
+      exportPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [5, 5] },
+      soc: { value: 50, timestamp: '2024-01-01T00:00:00Z' },
+    });
+    const { createStoredPredictionAdjustment } = await import('../../api/services/prediction-adjustment-store.ts');
+
+    const [res] = await Promise.all([
+      post(dataRouter, '/', { importPrice: { start: '2024-02-01T00:00:00Z', step: 60, values: [99, 99, 99] } }),
+      createStoredPredictionAdjustment({
+        series: 'load', mode: 'add', value_W: 100,
+        start: '2099-01-01T00:00:00.000Z', end: '2099-01-02T00:00:00.000Z',
+      }),
+    ]);
+
+    const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'data.json'), 'utf8'));
+    expect(res.status).toBe(200);
+    expect(saved.importPrice.values).toEqual([99, 99, 99]);
+    expect(saved.predictionAdjustments).toHaveLength(1);
+  });
+
   it('POST /data rejects keys whose source is not api', async () => {
     await writeSettings({
       dataSources: { prices: 'vrm', load: 'api', pv: 'api', soc: 'api' },

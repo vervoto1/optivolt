@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7.64 - 2026-10-06
+
+The planner now builds the solver config once. Since 2026-04-30 (a848f1b), every production plan (`dataSources.soc = 'mqtt'`) silently dropped the adaptive-learning charge taper, the EV charge taper and the manual prediction adjustments. **This changes live plans: read the deploy gate below before deploying.**
+
+- **Calibration, EV taper and prediction adjustments reach the LP again.**
+  - **What was wrong.** With `soc = 'mqtt'`, `computePlan` read the live SoC and then rebuilt the config from raw `data.json`. That threw away what `getSolverInputs` had just applied: the prediction adjustments, `applyCalibration` (learned charge/CV thresholds) and `applyEvCalibration` (learned EV taper). The log still printed `Applying calibration: N charge thresholds` on every cycle, and the UI showed adjustments as applied while the plan ignored them.
+  - **Why the 2026-06-18 analysis was affected.** Because of this rebuild, the learned discharge taper blamed in that analysis never reached the LP. The dess-mapper change was the part of that fix that actually worked.
+  - **The fix.** The config is now built once, by `buildPlannerConfig(settings, data, startMs, evState)` (adjustments → build → `applyCalibration` → `applyEvCalibration`). `getSolverInputs({ readLiveSoc })` reads the live MQTT SoC before that build, stores it as a patch of `soc` only, and records the full-SoC observation from it. The planner no longer rebuilds anything. The EV preview (car unplugged) uses `buildPlannerConfig` too, so it gets the same calibration and adjustments.
+  - **Failure handling.** A failed or empty MQTT read still answers 503 with the same messages, and now writes nothing at all.
+- **Rebalance auto-disable happens after the solve** (from upstream 97c203b, adapted). A completed hold cycle (`remainingSlots = 0`) adds no rebalance variables or constraints, so it is now solved with its config as built, calibration included. Previously the config was rebuilt without calibration.
+  - `rebalanceEnabled: false` and the cleared `rebalanceState` are written only after the solve, parse and DESS mapping succeed, so a failure in any of them changes nothing.
+  - The hold-start stamp follows the same rule.
+  - The fork's locked `updateSettings` is kept. Upstream's full-snapshot `saveSettings` is not ported, because it would bring back the clobber fixed in 0.7.56.
+- **`data.json` writers patch the file under a lock instead of writing back old snapshots.** `data-store` gains `updateData(mutate)`, a read-modify-write under `withJsonLock` like `updateSettings`; `saveData` now queues behind the same lock.
+  - **What was wrong.** The planner wrote back the whole `data.json` it had loaded before the HA EV reads and the MQTT SoC read (several seconds). The VRM/forecast refresh did the same around the forecast and HA-price fetches. A prediction adjustment, `POST /data` or forecast persist that landed in that window was silently reverted on disk.
+  - **Who now patches.** These writers now patch only their own fields on the current file:
+    - the planner (`soc`, `rebalanceState`, pruned adjustments, `lastFullSocAt`);
+    - the series refresh (only the series it actually refreshed, so a failed fetch keeps what is on disk);
+    - prediction-adjustment CRUD;
+    - forecast persists;
+    - `POST /data`.
+  - **Not ported.** Upstream's inputs-version guard (ade24f7) is not ported: our solve is synchronous, so the lock is the fix.
+- **The DESS saturation boost knows about the charge taper.**
+  - **The boost.** The +5 % target boost for a grid-charge slot fired only when the plan charged at the flat `maxChargePower_W` (or the grid import cap). Now that the learned taper reaches the LP, a slot capped by the taper also counts as saturated. The cap is the one in force at the slot's start SoC, mirroring `c_charge_cap_t`. The boost is still capped at the next CV threshold. Without it, DESS gets no boost in taper-capped slots and under-delivers, and the calibrator (actual ÷ planned) then learns an even lower curve. That is the same feedback loop as the 2026-06-18 discharge incident.
+  - **The PV export tipping point.** The same effective cap is used there, so PV the tapered battery could not absorb is not read as a voluntary export.
+  - **No change without a taper.** With no thresholds, both checks behave exactly as before.
+- **Deploy gate.** For the first time since 2026-04-30, the learned charge taper (production calibration, confidence 1: 78 % → 14 232 W, 91 % → 13 805 W) shapes the plan and the DESS targets. Any prediction adjustment will now change the plan.
+  - **Measured on a read-only production snapshot (2026-10-06 20:30Z).**
+    - At the live state (SoC 6 %, overnight), all 48 written DESS slots are identical and the objective moves by +0.3 c. Six later slots differ (the 11:00–12:00 charge block on 2026-10-07 lands at about 89 % instead of 90.5 %).
+    - Injected morning states:
+      - SoC 40 % at 09:00: 9 of 48 DESS targets differ by 1–5 points, with +0.3 c.
+      - SoC 70 % at 11:00: identical.
+      - EV plugged in at 50 → 90 % with the EV curve off: same plan, but 2 boosted targets are capped at the next CV threshold (78 % and 91 % instead of 80 % and 95 %).
+    - Solve times are unchanged (34–122 ms).
+  - **Keep `evChargeCurveEnabled` off** (production has it off since 2026-10-06) until the EV taper and target-landing interaction is fixed.
+    - The learned EV taper caps planned EV power at about 7.5 kW from 52 % EV SoC. That is below the fixed 16 A minimum, and `build-lp` turns off target-landing whenever the taper is active.
+    - With the curve on and the car plugged in at 30 %, the snapshot solve hits the 30 s time limit (`Time limit reached`). No schedule would then be written to Victron for that cycle, and the event loop blocks for 30 s.
+    - With the curve on, the display-only EV preview (car unplugged) runs the same taper and can block for up to 30 s each cycle.
+
 ## 0.7.63 - 2026-10-06
 
 Solver-status hardening: a solve that does not finish Optimal no longer replaces the plan the EV charger, PV curtailment, the shore optimizer and adaptive learning act on, and every solve is bounded in time.

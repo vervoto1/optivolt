@@ -367,6 +367,17 @@ describe('buildLP — MILP rebalancing', () => {
     expect(lp).not.toContain('start_balance_');
   });
 
+  it('a completed cycle (remainingSlots = 0) builds exactly the LP of rebalancing switched off', () => {
+    // The planner solves a just-completed hold cycle with its config as built
+    // (no pre-solve rebuild) and only switches rebalancing off afterwards; that
+    // is only safe because D = 0 emits nothing rebalance-related.
+    const off = buildLP(mockData);
+    expect(buildLP({ ...mockData, rebalanceRemainingSlots: 0, rebalanceHoldSlots: 8, rebalanceTargetSoc_percent: 100 })).toBe(off);
+    const withTaper = { ...mockData, cvPhaseThresholds: [{ soc_percent: 80, maxChargePower_W: 1500 }] };
+    expect(buildLP({ ...withTaper, rebalanceRemainingSlots: 0, rebalanceHoldSlots: 8, rebalanceTargetSoc_percent: 100 }))
+      .toBe(buildLP(withTaper));
+  });
+
   it('does NOT include rebalance binaries when rebalanceRemainingSlots is undefined', () => {
     const lp = buildLP(mockData);
     expect(lp).toContain('Binaries');

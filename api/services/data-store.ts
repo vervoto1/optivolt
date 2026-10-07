@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveDataDir, readJson, writeJson } from './json-store.ts';
+import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.ts';
 import type { Data, TimeSeries } from '../types.ts';
 import { validatePredictionAdjustment } from './prediction-adjustments.ts';
 
@@ -83,10 +83,42 @@ export async function loadData(): Promise<Data> {
 
 /**
  * Persist data to DATA_DIR/data.json (pretty-printed).
+ *
+ * Prefer `updateData`: a plain save writes back whatever snapshot the caller
+ * loaded, so anything another writer persisted in between is lost. The save
+ * still queues behind the store's lock so it never interleaves with an
+ * in-flight `updateData`.
  */
 export async function saveData(data: Data): Promise<void> {
   validateData(data);
-  await writeJson(DATA_PATH, data);
+  await withJsonLock(DATA_PATH, () => writeJson(DATA_PATH, data));
+}
+
+/**
+ * Read-modify-write data.json under the store's lock.
+ *
+ * Several writers share this file: the planner (live SoC, rebalance state,
+ * pruned adjustments), the VRM/forecast refresh, prediction-adjustment CRUD,
+ * forecast persists and `POST /data`. Some of them load the file, await
+ * multi-second HA/MQTT/forecast round-trips, then used to save the whole
+ * object back — silently reverting any write that landed in between (e.g. a
+ * prediction adjustment created mid-plan). `mutate` receives the freshly
+ * loaded data and returns what to persist, or `null` to leave the file
+ * untouched. It must be synchronous and must not call back into this store
+ * (that would wait on the lock it is running under). Returns the data as it
+ * stands afterwards: the persisted value, or the loaded one when `mutate`
+ * returned `null`. A throwing `mutate` or a failed validation rejects without
+ * writing.
+ */
+export async function updateData(mutate: (current: Data) => Data | null): Promise<Data> {
+  return withJsonLock(DATA_PATH, async () => {
+    const current = await loadData();
+    const next = mutate(current);
+    if (!next) return current;
+    validateData(next);
+    await writeJson(DATA_PATH, next);
+    return next;
+  });
 }
 
 /**

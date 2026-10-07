@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
 import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import * as mqttService from '../../../api/services/mqtt-service.ts';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ describe('refreshSeriesFromVrmAndPersist — MQTT SoC', () => {
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
@@ -156,6 +158,7 @@ describe('refreshSeriesFromVrmAndPersist — VRM data fetch', () => {
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
   });
 
@@ -271,6 +274,7 @@ describe('refreshSeriesFromVrmAndPersist — VRM data fetch', () => {
 
     vi.clearAllMocks();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     loadSettings.mockResolvedValue({ ...baseSettings });
     mockFetchForecasts.mockResolvedValue({ ...forecasts, step_minutes: baseSettings.stepSize_m });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -303,6 +307,7 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -356,6 +361,7 @@ describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null'
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
@@ -404,6 +410,7 @@ describe('refreshSettingsFromVrmAndPersist', () => {
     loadSettings.mockResolvedValue({ ...baseSettings });
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mqttService.readVictronSocLimits.mockResolvedValue({
       minSoc_percent: 15,
       maxSoc_percent: 95,
@@ -480,6 +487,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -613,6 +621,7 @@ describe('refreshSeriesFromVrmAndPersist — API data sources failure paths', ()
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mqttService.readVictronSocPercent.mockResolvedValue(50);
     mockFetchForecasts.mockResolvedValue({ ...forecasts });
     mockFetchPrices.mockResolvedValue({ ...prices });
@@ -708,6 +717,7 @@ describe('refreshSeriesFromVrmAndPersist — empty timestamps', () => {
     saveData.mockResolvedValue();
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     mockFetchPrices.mockResolvedValue({ ...prices });
   });
 
@@ -720,5 +730,87 @@ describe('refreshSeriesFromVrmAndPersist — empty timestamps', () => {
     });
 
     await expect(refreshSeriesFromVrmAndPersist()).rejects.toThrow('VRM returned no timestamps');
+  });
+});
+
+describe('refreshSeriesFromVrmAndPersist — patches data.json at write time', () => {
+  let runForecast, loadPredictionConfig, fetchPricesFromHA;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+    ({ runForecast } = await import('../../../api/services/load-prediction-service.ts'));
+    ({ loadPredictionConfig } = await import('../../../api/services/prediction-config-store.ts'));
+    ({ fetchPricesFromHA } = await import('../../../api/services/ha-price-service.ts'));
+    saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
+    loadPredictionConfig.mockResolvedValue({ sensors: [] });
+    fetchPricesFromHA.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  it('keeps a prediction adjustment and an evLoad written while the forecast was running', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'api' },
+    });
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+    let disk = structuredClone(baseData);
+    loadData.mockImplementation(async () => structuredClone(disk));
+    saveData.mockImplementation(async (d) => { disk = structuredClone(d); });
+    const adjustment = {
+      id: 'adj-1', series: 'load', mode: 'add', value_W: 100,
+      start: '2024-01-01T10:00:00.000Z', end: '2099-01-01T00:00:00.000Z',
+      createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+    const evLoad = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [3000] };
+    const apiForecast = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [777] };
+    runForecast.mockImplementation(async () => {
+      // Other writers land during the multi-second forecast run.
+      disk = { ...disk, predictionAdjustments: [adjustment], evLoad };
+      return { forecast: apiForecast };
+    });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(disk.predictionAdjustments).toEqual([adjustment]);
+    expect(disk.evLoad).toEqual(evLoad);
+    expect(disk.load).toEqual(apiForecast);
+    expect(disk.pv.values).toEqual(forecasts.pv_W);
+    expect(disk.importPrice.values).toEqual(prices.importPrice_cents_per_kwh);
+    expect(disk.soc).toEqual(baseData.soc);
+  });
+
+  it('a failed fetch keeps the series as it is on disk at write time, not the early snapshot', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'ha', soc: 'api' },
+    });
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    let disk = structuredClone(baseData);
+    loadData.mockImplementation(async () => structuredClone(disk));
+    saveData.mockImplementation(async (d) => { disk = structuredClone(d); });
+    const postedPrices = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [42] };
+    runForecast.mockRejectedValue(new Error('HA down'));
+    fetchPricesFromHA.mockImplementation(async () => {
+      disk = { ...disk, importPrice: postedPrices };
+      throw new Error('price sensor unavailable');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(disk.importPrice).toEqual(postedPrices);
+    expect(disk.load).toEqual(baseData.load);
+    expect(disk.pv.values).toEqual(forecasts.pv_W);
   });
 });

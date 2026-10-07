@@ -9,11 +9,11 @@ import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
 import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
-import { getSolverInputs, buildSolverConfigFromSettings } from './config-builder.ts';
+import { getSolverInputs, buildPlannerConfig } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
-import { saveData } from './data-store.ts';
-import { applyPredictionAdjustmentsToData } from './prediction-adjustments.ts';
+// Aliased: computePlan's `updateData` option means "refresh the series first".
+import { updateData as updateStoredData } from './data-store.ts';
 import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
 import { getRebalanceNudge, type RebalanceNudge } from './rebalance-nudge.ts';
@@ -21,7 +21,7 @@ import { HttpError } from '../http-errors.ts';
 import { getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
-import type { PlanRowWithDess, PlanSnapshot, Data } from '../types.ts';
+import type { PlanRowWithDess, PlanSnapshot, Data, Settings } from '../types.ts';
 import type { ShoreOptimizerSlotMode } from '../../lib/shore-optimizer.ts';
 
 function computeHorizonWarnings(data: Data, nowMs: number): string[] {
@@ -209,7 +209,13 @@ export function getCurrentSlotMode(nowMs = Date.now()): ShoreOptimizerSlotMode {
   return 'idle';
 }
 
-async function refreshMqttSocForPlan(data: Data, batteryInstance?: number): Promise<Data> {
+/**
+ * Live battery SoC for a soc=mqtt plan, handed to getSolverInputs so the
+ * config is built once from it. Throws a 503 rather than planning from a
+ * stale SoC.
+ */
+async function readMqttSocForPlan(settings: Settings): Promise<number> {
+  const batteryInstance = settings.shoreOptimizer?.batteryInstance;
   let socPercent: number | null;
   try {
     const options: { timeoutMs: number; batteryInstance?: number } = { timeoutMs: 5000 };
@@ -227,16 +233,32 @@ async function refreshMqttSocForPlan(data: Data, batteryInstance?: number): Prom
     throw new HttpError(503, 'Victron MQTT returned no battery SoC');
   }
 
-  const nextData: Data = {
-    ...data,
-    soc: {
-      timestamp: new Date().toISOString(),
-      value: socPercent,
-    },
-  };
-  await saveData(nextData);
   console.log(`[calculate] MQTT SoC refreshed: ${socPercent}%`);
-  return nextData;
+  return socPercent;
+}
+
+/**
+ * Post-solve: a completed hold cycle switches rebalancing off and clears its
+ * start marker. Deliberately not pre-solve — a failed solve (or a failure
+ * mapping its result) must never mutate user settings. Both writes are locked
+ * patches of the current files, never the snapshots loaded for this plan.
+ */
+async function finishCompletedRebalanceCycle(settings: Settings, data: Data): Promise<{ settings: Settings; data: Data }> {
+  const rebalanceState = { startMs: null };
+  await Promise.all([
+    updateSettings(s => ({ ...s, rebalanceEnabled: false })),
+    updateStoredData(d => ({ ...d, rebalanceState })),
+  ]);
+  return { settings: { ...settings, rebalanceEnabled: false }, data: { ...data, rebalanceState } };
+}
+
+/** Post-solve: stamp the hold start once the battery has actually reached the target SoC. */
+async function recordRebalanceStartIfAtTarget(settings: Settings, data: Data, startMs: number): Promise<Data> {
+  if (data.rebalanceState?.startMs != null) return data;
+  if (data.soc.value < settings.maxSoc_percent) return data;
+  const rebalanceState = { startMs };
+  await updateStoredData(d => ({ ...d, rebalanceState }));
+  return { ...data, rebalanceState };
 }
 
 export async function computePlan({ updateData = false } = {}): Promise<ComputePlanResult> {
@@ -251,22 +273,18 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     }
   }
 
-  let { cfg, timing, data, settings, evState } = await getSolverInputs();
+  // The config is built exactly once, inside getSolverInputs, from the live
+  // SoC (soc=mqtt), the prediction adjustments and the adaptive-learning
+  // calibration. Rebuilding it here used to drop the last two on every
+  // soc=mqtt plan.
+  const solverInputs = await getSolverInputs({ readLiveSoc: readMqttSocForPlan });
+  const { cfg, timing, evState } = solverInputs;
+  let { data, settings } = solverInputs;
 
-  if (settings.dataSources.soc === 'mqtt') {
-    data = await refreshMqttSocForPlan(data, settings.shoreOptimizer?.batteryInstance);
-    // Pass evState through — without it the rebuilt cfg drops the EV entirely.
-    cfg = buildSolverConfigFromSettings(settings, data, timing.startMs, evState);
-  }
-
-  // Pre-solve bookkeeping: if a rebalance cycle just completed, auto-disable
-  if (settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0) {
-    data = { ...data, rebalanceState: { startMs: null } };
-    settings = { ...settings, rebalanceEnabled: false };
-    await Promise.all([updateSettings(s => ({ ...s, rebalanceEnabled: false })), saveData(data)]);
-    // Rebuild cfg without rebalance constraints (still preserving the EV).
-    cfg = buildSolverConfigFromSettings(settings, applyPredictionAdjustmentsToData(data), timing.startMs, evState);
-  }
+  // A just-completed hold cycle solves like any rebalance-free plan
+  // (remainingSlots = 0 builds no rebalance variables or constraints); the
+  // actual switch-off happens in post-solve bookkeeping.
+  const rebalanceCycleComplete = settings.rebalanceEnabled && (cfg.rebalanceRemainingSlots ?? Infinity) === 0;
 
   const lpText = buildLP(cfg);
   const highs = await getHighsInstance();
@@ -306,12 +324,13 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const pvControl = annotatePvCurtailmentSlots(rows, cfg, settings.pvCurtailment);
   const rowsWithDess: PlanRowWithDess[] = rows.map((row, i) => ({ ...row, dess: perSlot[i], pvControl: pvControl[i] }));
 
-  // Post-solve bookkeeping: if rebalancing is enabled but hasn't started, check actual SoC
-  if (settings.rebalanceEnabled && (data.rebalanceState?.startMs == null)) {
-    if (data.soc.value >= settings.maxSoc_percent) {
-      data = { ...data, rebalanceState: { startMs: timing.startMs } };
-      await saveData(data);
-    }
+  // Post-solve bookkeeping — reached only when the solve, parse and DESS
+  // mapping succeeded, so a failure never flips settings or rebalance state.
+  if (rebalanceCycleComplete) {
+    ({ settings, data } = await finishCompletedRebalanceCycle(settings, data));
+  }
+  if (settings.rebalanceEnabled) {
+    data = await recordRebalanceStartIfAtTarget(settings, data, timing.startMs);
   }
 
   /* v8 ignore next 4 — rebalanceCtx undefined branch (tests cover enabled=true;
@@ -364,9 +383,10 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   if (!cfg.ev && resolveEvMode(settings) === 'native' && evState?.soc_percent != null) {
     const liveSoc = evState.soc_percent;
     try {
-      const previewCfg = buildSolverConfigFromSettings(
+      // Same assembly as the main plan (adjustments + calibration + EV taper).
+      const previewCfg = await buildPlannerConfig(
         settings,
-        applyPredictionAdjustmentsToData(data),
+        data,
         timing.startMs,
         { pluggedIn: true, soc_percent: liveSoc, targetSoc_percent: evState.targetSoc_percent },
       );

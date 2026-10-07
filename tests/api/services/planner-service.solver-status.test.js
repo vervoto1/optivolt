@@ -49,7 +49,8 @@ vi.mock('../../../api/services/ev-decision-service.ts');
 import highsFactory from '../../../vendor/highs-build/highs.js';
 import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
 import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
@@ -147,6 +148,7 @@ beforeEach(() => {
   setDynamicEssSchedule.mockResolvedValue();
   saveSettings.mockResolvedValue();
   wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+  wireUpdateData({ loadData, saveData, updateData });
   saveData.mockResolvedValue();
   savePlanSnapshot.mockResolvedValue();
   // Car disconnected; the SoC sensor still reads (only used by the EV tests).

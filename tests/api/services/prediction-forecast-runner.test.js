@@ -16,6 +16,7 @@ vi.mock('../../../api/services/pv-prediction-service.ts', () => ({
 vi.mock('../../../api/services/data-store.ts', () => ({
   loadData: vi.fn(),
   saveData: vi.fn(async () => {}),
+  updateData: vi.fn(),
 }));
 vi.mock('../../../api/services/settings-store.ts', () => ({
   loadSettings: vi.fn(),
@@ -46,7 +47,8 @@ import {
 import { loadPredictionConfig } from '../../../api/services/prediction-config-store.ts';
 import { runValidation, runForecast as runLoadForecast, scoreStrategyPredictions } from '../../../api/services/load-prediction-service.ts';
 import { runPvForecast } from '../../../api/services/pv-prediction-service.ts';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 import {
   applyPredictionAdjustmentsToSeries,
@@ -74,6 +76,7 @@ function makeSeries(start = '2026-06-19T00:00:00.000Z') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  wireUpdateData({ loadData, saveData, updateData });
   delete process.env.SUPERVISOR_TOKEN;
   // sensible defaults the happy paths rely on
   loadSettings.mockResolvedValue({

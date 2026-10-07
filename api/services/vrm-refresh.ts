@@ -1,7 +1,7 @@
 import { VRMClient } from '../../lib/vrm-api.ts';
 import type { VRMForecasts, VRMPrices } from '../../lib/vrm-api.ts';
 import { loadSettings, updateSettings } from './settings-store.ts';
-import { loadData, saveData } from './data-store.ts';
+import { updateData } from './data-store.ts';
 import { readVictronSocPercent, readVictronSocLimits } from './mqtt-service.ts';
 import { fetchPricesFromHA } from './ha-price-service.ts';
 import { runForecast } from './load-prediction-service.ts';
@@ -115,24 +115,23 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     }
   }
 
-  // Load previous data for fallback (we overwrite specific keys if VRM usage is active)
-  const baseData = await loadData();
+  // Only the series actually refreshed below are patched onto data.json; every
+  // other field (and any series whose fetch failed) keeps its value as it is on
+  // disk at write time. Building the whole object from a snapshot loaded before
+  // the multi-second forecast/HA fetches used to revert any data.json write
+  // that landed in between (a prediction adjustment, POST /data).
+  const patch: Partial<Pick<Data, 'load' | 'pv' | 'importPrice' | 'exportPrice' | 'soc'>> = {};
 
-  // Build new data structures (or keep existing)
-
-  // v8 ignore next — module-level const
-  let load = baseData.load;
   if (shouldFetchVrmLoad && forecasts) {
-    load = {
+    patch.load = {
       start: getStart(forecasts, 'load'),
       step: forecasts.step_minutes,
       values: forecasts.load_W,
     };
   }
 
-  let pv = baseData.pv;
   if (shouldFetchVrmPv && forecasts) {
-    pv = {
+    patch.pv = {
       start: getStart(forecasts, 'pv'),
       step: forecasts.step_minutes,
       values: forecasts.pv_W,
@@ -162,7 +161,7 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       /* v8 ignore start — optional chaining null paths (loadRes.value?.forecast?.values) are untestable when resolved */
       if (shouldFetchApiLoad) {
         if (loadRes.status === 'fulfilled' && loadRes.value?.forecast?.values) {
-          load = loadRes.value.forecast;
+          patch.load = loadRes.value.forecast;
         } else if (loadRes.status === 'rejected') {
           /* v8 ignore next — non-Error branch of ternary on reason is untestable */
           console.error('[vrm-refresh] Load forecast failed after retries — keeping stale data:', (loadRes.reason as Error).message);
@@ -173,7 +172,7 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       /* v8 ignore start — optional chaining null paths (pvRes.value?.forecast?.values) are untestable when resolved */
       if (shouldFetchApiPv) {
         if (pvRes.status === 'fulfilled' && pvRes.value?.forecast?.values) {
-          pv = pvRes.value.forecast;
+          patch.pv = pvRes.value.forecast;
         } else if (pvRes.status === 'rejected') {
           /* v8 ignore next — non-Error branch of ternary on reason is untestable */
           console.error('[vrm-refresh] PV forecast failed after retries — keeping stale data:', (pvRes.reason as Error).message);
@@ -182,59 +181,42 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     }
   }
 
-  let importPrice = baseData.importPrice;
-  let exportPrice = baseData.exportPrice;
   if (shouldFetchPrices && prices) {
-    importPrice = {
+    patch.importPrice = {
       start: getStart(prices, 'importPrice'),
       step: prices.step_minutes,
       values: prices.importPrice_cents_per_kwh,
     };
-    exportPrice = {
+    patch.exportPrice = {
       start: getStart(prices, 'exportPrice'),
       step: prices.step_minutes,
       values: prices.exportPrice_cents_per_kwh,
     };
   }
 
-  const soc = shouldFetchSoc && socPercent !== null
-    ? { timestamp: new Date().toISOString(), value: socPercent }
-    : baseData.soc;
+  if (shouldFetchSoc && socPercent !== null) {
+    patch.soc = { timestamp: new Date().toISOString(), value: socPercent };
+  }
 
   // Prices from Home Assistant
   if (settings.dataSources.prices === 'ha') {
     try {
       const haPrices = await fetchPricesFromHA(settings);
       if (haPrices) {
-        importPrice = haPrices.importPrice;
-        exportPrice = haPrices.exportPrice;
+        patch.importPrice = haPrices.importPrice;
+        patch.exportPrice = haPrices.exportPrice;
       }
     } catch (err) {
       console.warn('[vrm-refresh] Failed to fetch prices from HA:', (err as Error).message);
     }
   }
 
-  // EV load is uncontrollable house load injected manually via POST /data (off
-  // mode). Native EV charging is planned in the LP and never injected here.
-  const evLoad = baseData.evLoad;
-
-  let nextData: Data = {
-    load,
-    pv,
-    importPrice,
-    exportPrice,
-    soc,
-    evLoad,
-    lastFullSocAt: baseData.lastFullSocAt,
-    rebalanceState: baseData.rebalanceState,
-    predictionAdjustments: baseData.predictionAdjustments,
-  };
-
-  if (shouldFetchSoc && socPercent !== null) {
-    nextData = recordFullSocObservation(nextData);
-  }
-
-  await saveData(nextData);
+  // EV load (uncontrollable house load injected via POST /data), the rebalance
+  // state, lastFullSocAt and the prediction adjustments are never touched here.
+  await updateData(current => {
+    const next: Data = { ...current, ...patch };
+    return patch.soc ? recordFullSocObservation(next) : next;
+  });
 
   // Keep stepSize_m in settings in sync. Patched onto the current file under
   // the store's lock rather than saving the `settings` snapshot loaded before

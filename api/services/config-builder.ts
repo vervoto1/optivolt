@@ -1,6 +1,6 @@
 import { HttpError } from '../http-errors.ts';
 import { loadSettings } from './settings-store.ts';
-import { loadData, saveData } from './data-store.ts';
+import { updateData } from './data-store.ts';
 import { loadCalibration, loadEvCalibration, generateThresholdsFromCurve, EV_MIN_RATE } from './efficiency-calibrator.ts';
 import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
@@ -11,7 +11,7 @@ import { resolveDepartureMs } from './ev-departure.ts';
 import { fetchEvTargetSoc } from './ev-target-soc.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
 import type { SolverConfig, EvConfig, TimeSeries } from '../../lib/types.ts';
-import type { Settings, Data, CalibrationResult, EvCalibrationResult } from '../types.ts';
+import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 /**
  * Live EV readings that seed the plan. `targetSoc_percent` is present only when
@@ -370,20 +370,87 @@ export function applyEvCalibration(cfg: SolverConfig, evCal: EvCalibrationResult
   };
 }
 
-export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: EvLiveState }> {
-  const [settings, loadedData] = await Promise.all([loadSettings(), loadData()]);
-  const startMs = getQuarterStart(new Date(), settings.stepSize_m);
-  const pruned = pruneExpiredPredictionAdjustments(loadedData, startMs);
-  let data = pruned.data;
-  let shouldSaveData = pruned.changed;
+/**
+ * The single place a planner `SolverConfig` is assembled from persisted state:
+ * prediction adjustments → `buildSolverConfigFromSettings` → (adaptive learning
+ * in 'auto' mode) the learned charge/CV taper → the learned EV charge taper.
+ *
+ * Every solve the planner runs — the main plan and the EV preview — goes
+ * through here, so no caller can rebuild a config that silently drops the
+ * adjustments or the calibration — the planner's soc=mqtt rebuild did exactly
+ * that on every solve from 2026-04-30 (a848f1b) until 0.7.64.
+ */
+export async function buildPlannerConfig(
+  settings: Settings,
+  data: Data,
+  startMs: number,
+  evState?: EvLiveState,
+): Promise<SolverConfig> {
+  const adjustedData = applyPredictionAdjustmentsToData(data);
+  let cfg = buildSolverConfigFromSettings(settings, adjustedData, startMs, evState);
 
-  const observedData = recordFullSocObservation(data);
-  if (observedData !== data) {
-    data = observedData;
-    shouldSaveData = true;
+  // Apply calibration when adaptive learning is in 'auto' mode
+  if (settings.adaptiveLearning?.enabled && settings.adaptiveLearning.mode === 'auto') {
+    try {
+      const cal = await loadCalibration();
+      if (cal) {
+        cfg = applyCalibration(cfg, cal);
+      }
+    } catch (err) {
+      console.warn('[config-builder] Failed to load calibration:', (err as Error).message);
+    }
+
+    // EV charge-acceptance taper: opt-in (evChargeCurveEnabled), and only when an EV
+    // is actually in the plan. Forecast-only; leaves the flat cap when disabled or
+    // not yet confident.
+    if (settings.evChargeCurveEnabled && cfg.ev) {
+      try {
+        const evCal = await loadEvCalibration();
+        if (evCal) {
+          cfg = applyEvCalibration(cfg, evCal);
+        }
+      } catch (err) {
+        console.warn('[config-builder] Failed to load EV calibration:', (err as Error).message);
+      }
+    }
   }
 
-  if (shouldSaveData) await saveData(data);
+  return cfg;
+}
+
+export interface SolverInputsOptions {
+  /**
+   * Live battery SoC reader (percent), consulted only when
+   * `settings.dataSources.soc === 'mqtt'`. It must throw when no reading is
+   * available — the plan is not built from a stale SoC — and its result is
+   * persisted (only the `soc` field) before the config is built.
+   */
+  readLiveSoc?: (settings: Settings) => Promise<number>;
+}
+
+export async function getSolverInputs(
+  { readLiveSoc }: SolverInputsOptions = {},
+): Promise<{ cfg: SolverConfig; timing: { startMs: number; stepMin: number }; data: Data; settings: Settings; evState?: EvLiveState }> {
+  const settings = await loadSettings();
+  const startMs = getQuarterStart(new Date(), settings.stepSize_m);
+
+  // Live SoC first, outside the data lock (an MQTT round-trip can take seconds).
+  let liveSoc: SocData | undefined;
+  if (readLiveSoc && settings.dataSources.soc === 'mqtt') {
+    const value = await readLiveSoc(settings);
+    liveSoc = { timestamp: new Date().toISOString(), value };
+  }
+
+  // Patch the fresh file under the store's lock — the live SoC, expired
+  // adjustments pruned, a full-SoC observation — instead of writing back a
+  // snapshot loaded before the awaits, which reverted any data.json write
+  // (a prediction adjustment, POST /data) that landed in between.
+  const data = await updateData(current => {
+    let next = liveSoc ? { ...current, soc: liveSoc } : current;
+    next = pruneExpiredPredictionAdjustments(next, startMs).data;
+    next = recordFullSocObservation(next);
+    return next === current ? null : next;
+  });
 
   let evState: EvLiveState | undefined;
   if (resolveEvMode(settings) === 'native' && settings.evSocSensor && settings.evPlugSensor) {
@@ -418,37 +485,11 @@ export async function getSolverInputs(): Promise<{ cfg: SolverConfig; timing: { 
     }
   }
 
-  const adjustedData = applyPredictionAdjustmentsToData(data);
-  let cfg = buildSolverConfigFromSettings(settings, adjustedData, startMs, evState);
+  // Built exactly once, from the data the plan reports: callers must not
+  // rebuild it (use buildPlannerConfig for any other solve).
+  const cfg = await buildPlannerConfig(settings, data, startMs, evState);
 
-  // Apply calibration when adaptive learning is in 'auto' mode
-  if (settings.adaptiveLearning?.enabled && settings.adaptiveLearning.mode === 'auto') {
-    try {
-      const cal = await loadCalibration();
-      if (cal) {
-        cfg = applyCalibration(cfg, cal);
-      }
-    } catch (err) {
-      console.warn('[config-builder] Failed to load calibration:', (err as Error).message);
-    }
-
-    // EV charge-acceptance taper: opt-in (evChargeCurveEnabled), and only when an EV
-    // is actually in the plan. Forecast-only; leaves the flat cap when disabled or
-    // not yet confident.
-    if (settings.evChargeCurveEnabled && cfg.ev) {
-      try {
-        const evCal = await loadEvCalibration();
-        if (evCal) {
-          cfg = applyEvCalibration(cfg, evCal);
-        }
-      } catch (err) {
-        console.warn('[config-builder] Failed to load EV calibration:', (err as Error).message);
-      }
-    }
-  }
-
-  // evState is returned so callers that REBUILD cfg (e.g. after an MQTT SoC
-  // refresh or a rebalance reset) can pass it back in — otherwise the rebuilt
-  // cfg silently drops the EV (no 4th arg → evState undefined → EV excluded).
+  // evState is returned for the EV preview, which plans the car as if plugged
+  // in now and needs the live SoC/target that was read here.
   return { cfg, timing: { startMs, stepMin: settings.stepSize_m }, data, settings, evState };
 }

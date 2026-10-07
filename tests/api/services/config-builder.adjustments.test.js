@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getSolverInputs } from '../../../api/services/config-builder.ts';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { loadSettings } from '../../../api/services/settings-store.ts';
 
 vi.mock('../../../api/services/data-store.ts');
@@ -29,6 +30,11 @@ const settings = {
   rebalanceHoldHours: 3,
   evEnabled: false,
 };
+
+// updateData keeps the real load → mutate → save contract (clearAllMocks keeps it).
+beforeEach(() => {
+  wireUpdateData({ loadData, saveData, updateData });
+});
 
 describe('getSolverInputs — prediction adjustments', () => {
   beforeEach(() => {

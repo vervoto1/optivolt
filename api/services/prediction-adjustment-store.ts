@@ -1,5 +1,6 @@
 import { assertCondition } from '../http-errors.ts';
-import { loadData, saveData } from './data-store.ts';
+import { updateData } from './data-store.ts';
+import type { PredictionAdjustment } from '../types.ts';
 import type { PredictionAdjustmentInput } from './prediction-adjustments.ts';
 import {
   createPredictionAdjustment,
@@ -7,45 +8,56 @@ import {
   updatePredictionAdjustment,
 } from './prediction-adjustments.ts';
 
+// Every function here is a locked read-modify-write of data.json (updateData):
+// the adjustment list is patched onto the file as it is now, so a concurrent
+// planner or forecast write can neither revert nor be reverted by it.
+
 export async function loadActiveAdjustmentsAndPrune() {
-  const data = await loadData();
-  const pruned = pruneExpiredPredictionAdjustments(data);
-  if (pruned.changed) await saveData(pruned.data);
-  return { data: pruned.data, adjustments: pruned.adjustments };
+  let adjustments: PredictionAdjustment[] = [];
+  const data = await updateData(current => {
+    const pruned = pruneExpiredPredictionAdjustments(current);
+    adjustments = pruned.adjustments;
+    return pruned.changed ? pruned.data : null;
+  });
+  return { data, adjustments };
 }
 
 export async function createStoredPredictionAdjustment(input: PredictionAdjustmentInput) {
-  const data = await loadData();
-  const { data: pruned } = pruneExpiredPredictionAdjustments(data);
+  // Validate (and build) outside the lock so a 400 never touches the file.
   const adjustment = createPredictionAdjustment(input);
-  const adjustments = [...(pruned.predictionAdjustments ?? []), adjustment];
-  const nextData = { ...pruned, predictionAdjustments: adjustments };
-  await saveData(nextData);
+  let adjustments: PredictionAdjustment[] = [];
+  await updateData(current => {
+    const { data: pruned } = pruneExpiredPredictionAdjustments(current);
+    adjustments = [...(pruned.predictionAdjustments ?? []), adjustment];
+    return { ...pruned, predictionAdjustments: adjustments };
+  });
   return { adjustment, adjustments };
 }
 
 export async function updateStoredPredictionAdjustment(id: string, input: PredictionAdjustmentInput) {
-  const data = await loadData();
-  const { data: pruned } = pruneExpiredPredictionAdjustments(data);
-  const adjustments = pruned.predictionAdjustments ?? [];
-  const index = adjustments.findIndex(adj => adj.id === id);
-  assertCondition(index >= 0, 404, 'Prediction adjustment not found');
+  let updated!: PredictionAdjustment;
+  let nextAdjustments: PredictionAdjustment[] = [];
+  await updateData(current => {
+    const { data: pruned } = pruneExpiredPredictionAdjustments(current);
+    const adjustments = pruned.predictionAdjustments ?? [];
+    const index = adjustments.findIndex(adj => adj.id === id);
+    assertCondition(index >= 0, 404, 'Prediction adjustment not found');
 
-  const updated = updatePredictionAdjustment(adjustments[index], input);
-  const nextAdjustments = adjustments.map((adj, i) => i === index ? updated : adj);
-  const nextData = { ...pruned, predictionAdjustments: nextAdjustments };
-  await saveData(nextData);
+    updated = updatePredictionAdjustment(adjustments[index], input);
+    nextAdjustments = adjustments.map((adj, i) => i === index ? updated : adj);
+    return { ...pruned, predictionAdjustments: nextAdjustments };
+  });
   return { adjustment: updated, adjustments: nextAdjustments };
 }
 
 export async function deleteStoredPredictionAdjustment(id: string) {
-  const data = await loadData();
-  const { data: pruned } = pruneExpiredPredictionAdjustments(data);
-  const adjustments = pruned.predictionAdjustments ?? [];
-  const nextAdjustments = adjustments.filter(adj => adj.id !== id);
-  assertCondition(nextAdjustments.length !== adjustments.length, 404, 'Prediction adjustment not found');
-
-  const nextData = { ...pruned, predictionAdjustments: nextAdjustments };
-  await saveData(nextData);
+  let nextAdjustments: PredictionAdjustment[] = [];
+  await updateData(current => {
+    const { data: pruned } = pruneExpiredPredictionAdjustments(current);
+    const adjustments = pruned.predictionAdjustments ?? [];
+    nextAdjustments = adjustments.filter(adj => adj.id !== id);
+    assertCondition(nextAdjustments.length !== adjustments.length, 404, 'Prediction adjustment not found');
+    return { ...pruned, predictionAdjustments: nextAdjustments };
+  });
   return { adjustments: nextAdjustments };
 }

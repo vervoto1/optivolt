@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
 import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import * as mqttService from '../../../api/services/mqtt-service.ts';
 
 // 1. Define hoisted mocks so they are available inside vi.mock factory
@@ -43,6 +44,7 @@ describe('vrm-refresh logic with custom data', () => {
     });
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
 
     // Default Data
     loadData.mockResolvedValue({

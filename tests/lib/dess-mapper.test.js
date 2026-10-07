@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapRowsToDess, mapRowsToDessV2, Strategy, Restrictions, FeedIn } from '../../lib/dess-mapper.ts';
+import { mapRowsToDess, mapRowsToDessV2, effectiveChargeCap_W, Strategy, Restrictions, FeedIn } from '../../lib/dess-mapper.ts';
 
 describe('mapRowsToDess', () => {
   const cfg = {
@@ -932,5 +932,128 @@ describe('mapRowsToDessV2', () => {
       const explicit = mapRowsToDessV2(rows, { ...cfg, inverterEfficiency_percent: 95 }).perSlot[2];
       expect(omitted.strategy).toBe(explicit.strategy);
     });
+  });
+});
+
+describe('effectiveChargeCap_W', () => {
+  const cfg = {
+    maxChargePower_W: 3600,
+    cvPhaseThresholds: [
+      { soc_percent: 60, maxChargePower_W: 2000 },
+      { soc_percent: 80, maxChargePower_W: 1000 },
+    ],
+  };
+
+  it('is the flat cap without thresholds', () => {
+    expect(effectiveChargeCap_W({ maxChargePower_W: 3600 }, 95)).toBe(3600);
+  });
+
+  it('steps down at each threshold the start SoC has reached (inclusive), like c_charge_cap_t', () => {
+    expect(effectiveChargeCap_W(cfg, 59.9)).toBe(3600);
+    expect(effectiveChargeCap_W(cfg, 60)).toBe(2000);
+    expect(effectiveChargeCap_W(cfg, 79.99)).toBe(2000);
+    expect(effectiveChargeCap_W(cfg, 80)).toBe(1000);
+    expect(effectiveChargeCap_W(cfg, 99)).toBe(1000);
+  });
+
+  it('mirrors the LP for unsorted thresholds (decremental steps in given order)', () => {
+    // build-lp does not sort cvPhaseThresholds: step_k = p_(k-1) - p_k in list order.
+    const unsorted = { maxChargePower_W: 3600, cvPhaseThresholds: [cfg.cvPhaseThresholds[1], cfg.cvPhaseThresholds[0]] };
+    // Only the 60% threshold on: 3600 - (1000 - 2000) = 4600, as the LP would allow.
+    expect(effectiveChargeCap_W(unsorted, 70)).toBe(4600);
+    expect(effectiveChargeCap_W(unsorted, 85)).toBe(2000);
+  });
+});
+
+describe('mapRowsToDessV2 — saturation against the CV/charge taper', () => {
+  const cfg = {
+    stepSize_m: 15,
+    batteryCapacity_Wh: 20480,
+    minSoc_percent: 10,
+    maxSoc_percent: 100,
+    maxChargePower_W: 3600,
+    maxDischargePower_W: 4000,
+    maxGridImport_W: 5000,
+    maxGridExport_W: 5000,
+    inverterEfficiency_percent: 100,
+    initialSoc_percent: 65,
+  };
+  const taperCfg = {
+    ...cfg,
+    cvPhaseThresholds: [
+      { soc_percent: 60, maxChargePower_W: 2000 },
+      { soc_percent: 80, maxChargePower_W: 1000 },
+    ],
+  };
+
+  function makeRow(overrides = {}) {
+    return {
+      g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+      soc: 500, soc_percent: 50,
+      load: 0, pv: 0, ev_charge: 0,
+      ic: 20, ec: 5,
+      ...overrides,
+    };
+  }
+
+  // Row 0 sets gridChargeTp = 15 so row 1 (ic 10) takes the grid-charge branch.
+  const tpRow = (soc_percent) => makeRow({ g2b: 100, ic: 15, soc_percent });
+
+  it('boosts a slot charging at the taper cap in force at its start SoC', () => {
+    const rows = [
+      tpRow(65),
+      makeRow({ ic: 10, g2b: 2000, soc_percent: 69.7 }), // starts at 65% → cap 2000 W, saturated
+    ];
+    const { perSlot } = mapRowsToDessV2(rows, taperCfg);
+    expect(perSlot[1].socTarget_percent).toBeCloseTo(74.7, 6); // 69.7 + 5, below the 80% CV cap
+  });
+
+  it('still caps the boost at the next CV threshold', () => {
+    const rows = [
+      tpRow(76),
+      makeRow({ ic: 10, g2b: 2000, soc_percent: 79.7 }),
+    ];
+    const { perSlot } = mapRowsToDessV2(rows, taperCfg);
+    expect(perSlot[1].socTarget_percent).toBe(80); // 84.7 capped by cvCap 80
+  });
+
+  it('uses cfg.initialSoc_percent as the first slot start SoC', () => {
+    // No tipping-point row: the only grid charge sets gridChargeTp = its own price.
+    const rows = [makeRow({ ic: 10, g2b: 2000, soc_percent: 69.7 })];
+    const { perSlot } = mapRowsToDessV2(rows, taperCfg);
+    expect(perSlot[0].socTarget_percent).toBeCloseTo(74.7, 6);
+  });
+
+  it('does not boost a tapered slot charging below its cap', () => {
+    const rows = [
+      tpRow(65),
+      makeRow({ ic: 10, g2b: 1500, soc_percent: 68.5 }), // cap 2000 W, not saturated
+    ];
+    const { perSlot } = mapRowsToDessV2(rows, taperCfg);
+    expect(perSlot[1].socTarget_percent).toBe(68.5);
+  });
+
+  it('untapered: unchanged — only the flat maxChargePower_W saturates', () => {
+    const below = mapRowsToDessV2([tpRow(65), makeRow({ ic: 10, g2b: 2000, soc_percent: 69.7 })], cfg).perSlot;
+    expect(below[1].socTarget_percent).toBe(69.7);
+    const at = mapRowsToDessV2([tpRow(65), makeRow({ ic: 10, g2b: 3600, soc_percent: 72 })], cfg).perSlot;
+    expect(at[1].socTarget_percent).toBe(77);
+  });
+
+  it('PV export forced by a taper-capped battery does not set the PV export tipping point', () => {
+    // Row 1 starts at 85% (cap 1000 W), charges at that cap and spills PV to grid
+    // at a low price: that export was forced, not chosen, so row 2 (PV surplus,
+    // ec 5) must not be pushed to proGrid by it.
+    const rows = [
+      makeRow({ soc_percent: 85, ic: 100 }),
+      makeRow({ pv: 1500, pv2b: 1000, pv2g: 500, ec: 2, ic: 100, soc_percent: 86.2 }),
+      makeRow({ ic: 100, ec: 5, pv: 1000, load: 200, soc_percent: 86.2 }),
+    ];
+    const tapered = mapRowsToDessV2(rows, taperCfg).perSlot;
+    expect(tapered[2].strategy).toBe(Strategy.selfConsumption);
+    // Same rows without a taper: the export happened below the flat cap, so it
+    // was voluntary and does set the tipping point (behaviour unchanged).
+    const flat = mapRowsToDessV2(rows, cfg).perSlot;
+    expect(flat[2].strategy).toBe(Strategy.proGrid);
   });
 });

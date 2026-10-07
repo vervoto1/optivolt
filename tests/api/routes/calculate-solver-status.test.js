@@ -26,7 +26,8 @@ vi.mock('../../../api/services/pv-curtailment.ts');
 import calculateRouter from '../../../api/routes/calculate.ts';
 import { loadSettings, saveSettings, updateSettings } from '../../../api/services/settings-store.ts';
 import { wireUpdateSettings } from '../helpers/settings-store-mock.js';
-import { loadData, saveData } from '../../../api/services/data-store.ts';
+import { loadData, saveData, updateData } from '../../../api/services/data-store.ts';
+import { wireUpdateData } from '../helpers/data-store-mock.js';
 import { refreshSeriesFromVrmAndPersist } from '../../../api/services/vrm-refresh.ts';
 import { setDynamicEssSchedule } from '../../../api/services/mqtt-service.ts';
 import { savePlanSnapshot } from '../../../api/services/plan-history-store.ts';
@@ -106,6 +107,7 @@ describe('POST /calculate — solver status', () => {
     loadSettings.mockResolvedValue(structuredClone(settings));
     saveSettings.mockResolvedValue();
     wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
     loadData.mockResolvedValue(structuredClone(data));
     saveData.mockResolvedValue();
     savePlanSnapshot.mockResolvedValue();
