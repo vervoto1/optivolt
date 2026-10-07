@@ -103,6 +103,52 @@ describe('Settings route integration', () => {
     expect(startAutoCalculate).not.toHaveBeenCalled();
   });
 
+  it('POST /settings rejects a patch that would invert min/max SoC, naming the patch key, and persists nothing', async () => {
+    await writeSettings({ minSoc_percent: 20, maxSoc_percent: 90 });
+    const before = await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8');
+
+    // A half-typed "85": the stored min is 20.
+    const res = await post(settingsRouter, '/', { maxSoc_percent: 8 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('maxSoc_percent (8) must not be below minSoc_percent (20)');
+    expect(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).toBe(before);
+    expect(startAutoCalculate).not.toHaveBeenCalled();
+
+    const ok = await post(settingsRouter, '/', { maxSoc_percent: 85 });
+    expect(ok.status).toBe(200);
+    expect(ok.body.settings.minSoc_percent).toBe(20);
+    expect(ok.body.settings.maxSoc_percent).toBe(85);
+  });
+
+  it('POST /settings names the key the patch changed when it carries both of an inverted pair', async () => {
+    await writeSettings({ minSoc_percent: 20, maxSoc_percent: 90 });
+
+    const res = await post(settingsRouter, '/', { minSoc_percent: 20, maxSoc_percent: 8 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('maxSoc_percent (8) must not be below minSoc_percent (20)');
+  });
+
+  it('POST /settings rejects a patch that would invert the EV min/max current', async () => {
+    await writeSettings({ evMinChargeCurrent_A: 6, evMaxChargeCurrent_A: 16 });
+
+    const res = await post(settingsRouter, '/', { evMinChargeCurrent_A: 20 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('evMinChargeCurrent_A (20) must not be above evMaxChargeCurrent_A (16)');
+  });
+
+  it('GET /settings still loads a stored inverted pair, repaired', async () => {
+    await writeSettings({ minSoc_percent: 90, maxSoc_percent: 20 });
+
+    const res = await get(settingsRouter, '/');
+
+    expect(res.status).toBe(200);
+    expect(res.body.minSoc_percent).toBe(20);
+    expect(res.body.maxSoc_percent).toBe(90);
+  });
+
   it('POST /settings rejects string booleans and unknown enum values instead of coercing them', async () => {
     const offRes = await post(settingsRouter, '/', { rebalanceEnabled: 'off' });
     expect(offRes.status).toBe(400);

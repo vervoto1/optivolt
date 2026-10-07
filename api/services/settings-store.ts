@@ -85,7 +85,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
  * used to be silently reverted on disk while the timers restarted by
  * `POST /settings` kept running on the newer config. `mutate` receives the
  * freshly loaded (normalised) settings and returns what to persist, or
- * `null` to leave the file untouched; the persisted value is returned. A
+ * `null` to leave the file untouched; the persisted (normalised) value is returned. A
  * throwing `mutate` (a 400 from `normalizeSettings`) rejects without writing.
  */
 export async function updateSettings(
@@ -93,8 +93,13 @@ export async function updateSettings(
 ): Promise<Settings | null> {
   return withJsonLock(SETTINGS_PATH, async () => {
     const next = mutate(await loadSettings());
-    if (next) await writeJson(SETTINGS_PATH, normalizeSettings(next));
-    return next;
+    if (!next) return null;
+    // Return what was written, not the raw mutate output: callers hand it on
+    // (the VRM refresh replies with it), and an unnormalised copy could show
+    // an unrounded value or an inverted min/max pair the file does not hold.
+    const written = normalizeSettings(next);
+    await writeJson(SETTINGS_PATH, written);
+    return written;
   });
 }
 

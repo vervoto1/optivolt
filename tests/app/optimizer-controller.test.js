@@ -69,8 +69,11 @@ function setupController() {
     updateSummaryUI: vi.fn(),
   };
 
+  const controller = createOptimizerController({ els, services });
+  // As if the user had just toggled the kWh column: one edited settings key.
+  controller.markSettingsDirty('tableShowKwh');
   return {
-    controller: createOptimizerController({ els, services }),
+    controller,
     els,
     rebalanceWindow,
     rows,
@@ -159,12 +162,12 @@ describe('optimizer controller', () => {
     services.saveConfig.mockClear();
 
     els.tableKwh.checked = false;
+    controller.markSettingsDirty('tableShowKwh');
     controller.onTableDisplayChange({ currentTarget: els.tableKwh });
-    await Promise.resolve();
 
     expect(services.renderTable).toHaveBeenCalledTimes(1);
     expect(services.renderTable.mock.calls[0][0].showKwh).toBe(false);
-    expect(services.saveConfig).toHaveBeenCalledWith({ tableShowKwh: false });
+    await vi.waitFor(() => expect(services.saveConfig).toHaveBeenCalledWith({ tableShowKwh: false }));
   });
 
   it('passes aggregateMinutes=null when flows-15m is checked, 60 when unchecked', async () => {
@@ -365,10 +368,8 @@ describe('optimizer controller', () => {
     // No prior onRun -> lastTableRows empty -> renderScheduleTable returns false.
     controller.onTableDisplayChange({ currentTarget: els.tableDess });
     // The fallback recompute is fire-and-forget; let its async body settle.
-    await Promise.resolve();
-    await Promise.resolve();
     // Falls back to a full recompute.
-    expect(services.requestRemoteSolve).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(services.requestRemoteSolve).toHaveBeenCalledTimes(1));
   });
 
   it('persists a snapshot only when the tableKwh toggle is the change source', async () => {
@@ -561,20 +562,22 @@ describe('optimizer controller', () => {
 
   // --- settings persist dirty-check ---
 
-  it('skips the boot-time persist when the snapshot matches the seeded config', async () => {
+  it('sends nothing at the boot-time run when no setting was edited', async () => {
     const { controller, els, services } = setupController();
-    controller.seedPersistedConfig();
+    await controller.persistConfig(); // the edit from setupController is saved
+    services.saveConfig.mockClear();
 
     await controller.onRun();
     expect(services.saveConfig).not.toHaveBeenCalled();
 
-    // A real change persists again.
+    // A real edit persists again.
     els.tableKwh.checked = false;
+    controller.markSettingsDirty('tableShowKwh');
     await controller.persistConfig();
     expect(services.saveConfig).toHaveBeenCalledWith({ tableShowKwh: false });
   });
 
-  it('does not re-persist an identical snapshot twice', async () => {
+  it('does not re-persist a saved edit twice', async () => {
     const { controller, services } = setupController();
 
     await controller.persistConfig();
@@ -591,8 +594,9 @@ describe('optimizer controller', () => {
     await controller.persistConfig();
     await controller.persistConfig();
 
-    // The failed attempt does not advance the baseline, so the retry still POSTs.
+    // The failed attempt leaves the key edited, so the retry still POSTs it.
     expect(services.saveConfig).toHaveBeenCalledTimes(2);
+    expect(services.saveConfig).toHaveBeenLastCalledWith({ tableShowKwh: true });
   });
 });
 

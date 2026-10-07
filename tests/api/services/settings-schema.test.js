@@ -84,6 +84,77 @@ describe('settings-schema', () => {
       expect(result.maxSoc_percent).toBe(80);
     });
 
+    it('swaps an inverted EV min/max current pair when loading', () => {
+      const s = { ...validSettings(), evMinChargeCurrent_A: 16, evMaxChargeCurrent_A: 6 };
+      const result = normalizeSettings(s);
+      expect(result.evMinChargeCurrent_A).toBe(6);
+      expect(result.evMaxChargeCurrent_A).toBe(16);
+    });
+
+    describe('saving a patch that inverts a min/max pair', () => {
+      it('rejects a min above the stored max, naming the min key', () => {
+        const s = { ...validSettings(), minSoc_percent: 95, maxSoc_percent: 90 };
+        expect(() => normalizeSettings(s, { savingPatch: { minSoc_percent: 95 } }))
+          .toThrow(/^minSoc_percent \(95\) must not be above maxSoc_percent \(90\)$/);
+      });
+
+      it('rejects a max below the stored min, naming the max key', () => {
+        const s = { ...validSettings(), minSoc_percent: 20, maxSoc_percent: 8 };
+        let error;
+        try {
+          normalizeSettings(s, { savingPatch: { maxSoc_percent: 8 } });
+        } catch (err) {
+          error = err;
+        }
+        expect(error.statusCode).toBe(400);
+        expect(error.message).toBe('maxSoc_percent (8) must not be below minSoc_percent (20)');
+      });
+
+      it('names the min key when the patch sets both', () => {
+        const s = { ...validSettings(), minSoc_percent: 80, maxSoc_percent: 20 };
+        expect(() => normalizeSettings(s, { savingPatch: { minSoc_percent: 80, maxSoc_percent: 20 } }))
+          .toThrow(/^minSoc_percent /);
+      });
+
+      it('names the key the patch changes when it carries both (min retyped as stored, max half-typed)', () => {
+        const previous = { ...validSettings(), minSoc_percent: 20, maxSoc_percent: 90 };
+        const s = { ...previous, maxSoc_percent: 8 };
+        expect(() => normalizeSettings(s, {
+          savingPatch: { minSoc_percent: 20, maxSoc_percent: 8 },
+          previous,
+        })).toThrow(/^maxSoc_percent \(8\) must not be below minSoc_percent \(20\)$/);
+      });
+
+      it('names the min key when the patch changes both', () => {
+        const previous = { ...validSettings(), minSoc_percent: 20, maxSoc_percent: 90 };
+        const s = { ...previous, minSoc_percent: 50, maxSoc_percent: 40 };
+        expect(() => normalizeSettings(s, {
+          savingPatch: { minSoc_percent: 50, maxSoc_percent: 40 },
+          previous,
+        })).toThrow(/^minSoc_percent /);
+      });
+
+      it('rejects an inverted EV current pair', () => {
+        const s = { ...validSettings(), evMinChargeCurrent_A: 16, evMaxChargeCurrent_A: 8 };
+        expect(() => normalizeSettings(s, { savingPatch: { evMaxChargeCurrent_A: 8 } }))
+          .toThrow(/^evMaxChargeCurrent_A \(8\) must not be below evMinChargeCurrent_A \(16\)$/);
+      });
+
+      it('compares the normalised values (rounded, clamped)', () => {
+        const s = { ...validSettings(), minSoc_percent: 90.4, maxSoc_percent: 90.2 };
+        const result = normalizeSettings(s, { savingPatch: { maxSoc_percent: 90.2 } });
+        expect(result.minSoc_percent).toBe(90);
+        expect(result.maxSoc_percent).toBe(90);
+      });
+
+      it('repairs a stored inverted pair the patch does not touch', () => {
+        const s = { ...validSettings(), minSoc_percent: 80, maxSoc_percent: 20 };
+        const result = normalizeSettings(s, { savingPatch: { idleDrain_W: 30 } });
+        expect(result.minSoc_percent).toBe(20);
+        expect(result.maxSoc_percent).toBe(80);
+      });
+    });
+
     it('throws on non-object dataSources', () => {
       const s = validSettings();
       s.dataSources = 'invalid';

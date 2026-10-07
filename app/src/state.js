@@ -3,189 +3,258 @@ import { parseQuickSettingSelection, writeQuickSettingSelection } from "./optimi
 
 // ---------- UI <-> settings snapshot ----------
 /* v8 ignore start — all optional-chaining (?.) branches are untestable when els is always a complete DOM element map */
+/**
+ * Every persisted setting the form owns: top-level settings key -> a reader
+ * that builds its value from the form controls (undefined = leave it out).
+ * The els entries each reader touches are also what ties a control to its
+ * key (see settingsKeysForElement), so a field added here is tracked as an
+ * edit and saved without any further wiring.
+ */
+const SETTINGS_FIELDS = {
+  // scalars (SYSTEM)
+  stepSize_m: (els) => num(els.step?.value),
+  batteryCapacity_Wh: (els) => num(els.cap?.value),
+  minSoc_percent: (els) => num(els.minsoc?.value),
+  maxSoc_percent: (els) => num(els.maxsoc?.value),
+  maxChargePower_W: (els) => num(els.pchg?.value),
+  maxDischargePower_W: (els) => num(els.pdis?.value),
+  maxGridImport_W: (els) => num(els.gimp?.value),
+  maxGridExport_W: (els) => num(els.gexp?.value),
+  chargeEfficiency_percent: (els) => num(els.etaC?.value),
+  dischargeEfficiency_percent: (els) => num(els.etaD?.value),
+  inverterEfficiency_percent: (els) => num(els.etaInv?.value),
+  batteryCost_cent_per_kWh: (els) => num(els.bwear?.value),
+  idleDrain_W: (els) => num(els.idleDrain?.value),
+  blockFeedInOnNegativePrices: (els) => !!els.blockFeedInOnNegativePrices?.checked,
+
+  // ALGORITHM
+  terminalSocValuation: (els) => els.terminal?.value || "zero",
+  terminalSocCustomPrice_cents_per_kWh: (els) => num(els.terminalCustom?.value),
+  optimizerQuickSettings: (els) => parseQuickSettingSelection(els.optimizerQuickSettingsSelection?.value),
+
+  // DATA. evLoad has no UI source — the legacy "Home Assistant" reader was
+  // removed and manual injection (POST /data) is the only path, so it is not
+  // part of the client snapshot; the server keeps its persisted default.
+  dataSources: (els) => ({
+    prices: els.sourcePrices?.value || "vrm",
+    load: els.sourceLoad?.value || "vrm",
+    pv: els.sourcePv?.value || "vrm",
+    soc: els.sourceSoc?.value || "mqtt",
+  }),
+
+  // ALGORITHM
+  rebalanceEnabled: (els) => !!els.rebalanceEnabled?.checked,
+  rebalanceHoldHours: (els) => num(els.rebalanceHoldHours?.value),
+
+  // HOME ASSISTANT
+  haUrl: (els) => els.haUrl?.value ?? '',
+
+  // CV PHASE TUNING
+  cvPhase: (els) => ({
+    enabled: els.cvEnabled?.checked ?? false,
+    thresholds: [
+      { soc_percent: +els.cvThreshold1Soc?.value, maxChargePower_W: +els.cvThreshold1Power?.value },
+      { soc_percent: +els.cvThreshold2Soc?.value, maxChargePower_W: +els.cvThreshold2Power?.value },
+    ].filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0),
+  }),
+
+  // BATTERY CHARGE-CURRENT CONTROLLER — always send complete object (shallow merge safe)
+  batteryChargeControl: (els) => ({
+    enabled: els.bccEnabled?.checked ?? false,
+    dryRun: els.bccDryRun?.checked ?? true,
+    controlIntervalSeconds: Math.max(5, num(els.bccInterval?.value) ?? 30),
+    emergencyVoltage: num(els.bccEmergency?.value) ?? 3.65,
+    reduceVoltage: num(els.bccReduce?.value) ?? 3.5,
+    restoreVoltage: num(els.bccRestore?.value) ?? 3.4,
+    stabilizationSeconds: Math.max(0, num(els.bccStabilization?.value) ?? 30),
+    currentLevels: parseLevels(els.bccLevels?.value),
+  }),
+
+  // BATTERY CELL-BALANCING TUNER — always send complete object (shallow merge safe)
+  batteryBalanceControl: (els) => ({
+    enabled: els.bbcEnabled?.checked ?? false,
+    dryRun: els.bbcDryRun?.checked ?? true,
+    controlIntervalSeconds: Math.max(5, num(els.bbcInterval?.value) ?? 300),
+    highCurrentThreshold_A: Math.max(0, num(els.bbcHighCurrent?.value) ?? 50),
+    tightTrigger: num(els.bbcTightTrigger?.value) ?? 0.005,
+    looseTrigger: num(els.bbcLooseTrigger?.value) ?? 0.02,
+    step: num(els.bbcStep?.value) ?? 0.05,
+    topCap: num(els.bbcTopCap?.value) ?? 3.55,
+    criticalHighVoltage: num(els.bbcCriticalHigh?.value) ?? 3.549,
+    topStart: num(els.bbcTopStart?.value) ?? 3.45,
+    bottomTop: num(els.bbcBottomTop?.value) ?? 3.4,
+    bottomFloor: num(els.bbcBottomFloor?.value) ?? 2.9,
+    maxWarnVoltage: num(els.bbcMaxWarn?.value) ?? 3.6,
+  }),
+
+  // Auto-Calculate — always send complete object (shallow merge safe)
+  autoCalculate: (els) => ({
+    enabled: els.autoCalcEnabled?.checked ?? false,
+    intervalMinutes: Math.max(1, Number(els.autoCalcInterval?.value) || 15),
+    updateData: els.autoCalcUpdateData?.checked ?? true,
+    writeToVictron: els.autoCalcWriteVictron?.checked ?? true,
+  }),
+
+  // DESS Price Refresh — always send complete object (shallow merge safe)
+  dessPriceRefresh: (els) => ({
+    enabled: els.dessRefreshEnabled?.checked ?? false,
+    time: els.dessRefreshTime?.value ?? '23:00',
+    durationMinutes: Math.max(5, Number(els.dessRefreshDuration?.value) || 15),
+  }),
+
+  // Shore Current Optimizer — always send complete object (shallow merge safe)
+  shoreOptimizer: (els) => ({
+    enabled: els.shoreOptEnabled?.checked ?? false,
+    dryRun: els.shoreOptDryRun?.checked ?? true,
+    tickMs: Math.max(1000, num(els.shoreOptTickMs?.value) ?? 3000),
+    stepA: num(els.shoreOptStepA?.value) ?? 0.5,
+    minShoreA: num(els.shoreOptMinShoreA?.value) ?? 0,
+    maxShoreA: num(els.shoreOptMaxShoreA?.value) ?? 25,
+    minChargingPowerW: Math.max(0, num(els.shoreOptMinChargingPowerW?.value) ?? 200),
+    gateOnDessSchedule: els.shoreOptGateOnDess?.checked ?? true,
+    portalId: els.shoreOptPortalId?.value ?? 'c0619ab6bd28',
+    multiInstance: num(els.shoreOptMultiInstance?.value) ?? 6,
+    acInputIndex: num(els.shoreOptAcInputIndex?.value) ?? 1,
+    mpptInstance: num(els.shoreOptMpptInstance?.value) ?? 0,
+    batteryInstance: num(els.shoreOptBatteryInstance?.value) ?? 512,
+  }),
+
+  // PV Curtailment — always send complete object (shallow merge safe)
+  pvCurtailment: (els) => ({
+    enabled: els.pvCurtailEnabled?.checked ?? false,
+    dryRun: els.pvCurtailDryRun?.checked ?? true,
+    tickMs: Math.max(1000, num(els.pvCurtailTickMs?.value) ?? 30000),
+    minPvPowerW: Math.max(0, num(els.pvCurtailMinPvPowerW?.value) ?? 100),
+    minGridHeadroomW: Math.max(0, num(els.pvCurtailMinGridHeadroomW?.value) ?? 100),
+    negativePriceThreshold_cents_per_kWh: num(els.pvCurtailPriceThreshold?.value) ?? 0,
+    portalId: els.pvCurtailPortalId?.value ?? 'c0619ab6bd28',
+    acsystemInstance: num(els.pvCurtailAcsystemInstance?.value) ?? 0,
+    enphaseSwitchEntity: els.pvCurtailEnphaseSwitch?.value ?? '',
+  }),
+
+  // HA Price Config — always send complete object (shallow merge safe)
+  haPriceConfig: (els) => ({
+    sensor: els.haPriceSensor?.value ?? '',
+    todayAttribute: els.haPriceTodayAttr?.value ?? 'today_hourly_prices',
+    tomorrowAttribute: els.haPriceTomorrowAttr?.value ?? 'tomorrow_hourly_prices',
+    timeKey: els.haPriceTimeKey?.value ?? 'time',
+    valueKey: els.haPriceValueKey?.value ?? 'value',
+    valueMultiplier: Number(els.haPriceMultiplier?.value) || 100,
+    importEqualsExport: els.haPriceImportEqualsExport?.checked ?? true,
+    priceInterval: Number(els.haPriceInterval?.value) || 60,
+  }),
+
+  // EV CHARGING
+  evEnabled: (els) => !!els.evEnabled?.checked,
+  evMinChargeCurrent_A: (els) => num(els.evMinChargeCurrent?.value),
+  evMaxChargeCurrent_A: (els) => num(els.evMaxChargeCurrent?.value),
+  evChargePhases: (els) => num(els.evChargePhases?.value),
+  evBatteryCapacity_kWh: (els) => num(els.evBatteryCapacity?.value),
+  evChargeEfficiency_percent: (els) => num(els.evChargeEfficiency?.value),
+  evDepartureTime: (els) => els.evDepartureTime?.value ?? '',
+  evDepartureDay: (els) => els.evDepartureDay?.value ?? 'tomorrow',
+  evTargetSoc_percent: (els) => num(els.evTargetSoc?.value),
+  evSocSensor: (els) => els.evSocSensor?.value ?? '',
+  evPlugSensor: (els) => els.evPlugSensor?.value ?? '',
+  evTargetSocEntity: (els) => els.evTargetSocEntity?.value ?? '',
+
+  // EV native-charging feature parity
+  evStartTime: (els) => els.evStartTime?.value ?? '',
+  evMinSoc_percent: (els) => num(els.evMinSoc?.value),
+  evApplyPriceLimit: (els) => !!els.evApplyPriceLimit?.checked,
+  evMaxPrice_cents_per_kWh: (els) => num(els.evMaxPrice?.value),
+  evOpportunisticEnabled: (els) => !!els.evOpportunisticEnabled?.checked,
+  evOpportunisticLevel_percent: (els) => num(els.evOpportunisticLevel?.value),
+  evOpportunisticType2Enabled: (els) => !!els.evOpportunisticType2Enabled?.checked,
+  evOpportunisticType2Level_percent: (els) => num(els.evOpportunisticType2Level?.value),
+  evLowPriceChargingEnabled: (els) => !!els.evLowPriceEnabled?.checked,
+  evLowPriceChargingLevel_cents_per_kWh: (els) => num(els.evLowPriceLevel?.value),
+  evLowSocChargingEnabled: (els) => !!els.evLowSocEnabled?.checked,
+  evLowSocChargingLevel_percent: (els) => num(els.evLowSocLevel?.value),
+  evKeepOn: (els) => !!els.evKeepOn?.checked,
+  evContinuous: (els) => !!els.evContinuous?.checked,
+  evChargeCurveEnabled: (els) => !!els.evChargeCurveEnabled?.checked,
+  evActuationEnabled: (els) => !!els.evActuationEnabled?.checked,
+  evActuationPaused: (els) => !!els.evActuationPaused?.checked,
+  evChargerSwitchEntity: (els) => els.evChargerSwitchEntity?.value ?? '',
+  evChargerCurrentEntity: (els) => els.evChargerCurrentEntity?.value ?? '',
+  evControlIntervalSeconds: (els) => num(els.evControlInterval?.value),
+  evFailSafeMode: (els) => els.evFailSafeMode?.value || 'hold',
+
+  // UI-only
+  tableShowKwh: (els) => !!els.tableKwh?.checked,
+  // Note: updateDataBeforeRun / pushToVictron are not part of the persisted settings
+  // Write-only: sent only when the user typed one (the server never returns it).
+  haToken: (els) => (els.haToken?.value ?? '') || undefined,
+};
+
 export function snapshotUI(els) {
-  const nextConfig = {
-    // scalars (SYSTEM)
-    stepSize_m: num(els.step?.value),
-    batteryCapacity_Wh: num(els.cap?.value),
-    minSoc_percent: num(els.minsoc?.value),
-    maxSoc_percent: num(els.maxsoc?.value),
-    maxChargePower_W: num(els.pchg?.value),
-    maxDischargePower_W: num(els.pdis?.value),
-    maxGridImport_W: num(els.gimp?.value),
-    maxGridExport_W: num(els.gexp?.value),
-    chargeEfficiency_percent: num(els.etaC?.value),
-    dischargeEfficiency_percent: num(els.etaD?.value),
-    inverterEfficiency_percent: num(els.etaInv?.value),
-    batteryCost_cent_per_kWh: num(els.bwear?.value),
-    idleDrain_W: num(els.idleDrain?.value),
-    blockFeedInOnNegativePrices: !!els.blockFeedInOnNegativePrices?.checked,
-
-    // ALGORITHM
-    terminalSocValuation: els.terminal?.value || "zero",
-    terminalSocCustomPrice_cents_per_kWh: num(els.terminalCustom?.value),
-    optimizerQuickSettings: parseQuickSettingSelection(els.optimizerQuickSettingsSelection?.value),
-
-    // DATA. evLoad has no UI source — the legacy "Home Assistant" reader was
-    // removed and manual injection (POST /data) is the only path, so it is not
-    // part of the client snapshot; the server keeps its persisted default.
-    dataSources: {
-      prices: els.sourcePrices?.value || "vrm",
-      load: els.sourceLoad?.value || "vrm",
-      pv: els.sourcePv?.value || "vrm",
-      soc: els.sourceSoc?.value || "mqtt",
-    },
-
-    // ALGORITHM
-    rebalanceEnabled: !!els.rebalanceEnabled?.checked,
-    rebalanceHoldHours: num(els.rebalanceHoldHours?.value),
-
-    // HOME ASSISTANT
-    haUrl: els.haUrl?.value ?? '',
-
-    // CV PHASE TUNING
-    cvPhase: {
-      enabled: els.cvEnabled?.checked ?? false,
-      thresholds: [
-        { soc_percent: +els.cvThreshold1Soc?.value, maxChargePower_W: +els.cvThreshold1Power?.value },
-        { soc_percent: +els.cvThreshold2Soc?.value, maxChargePower_W: +els.cvThreshold2Power?.value },
-      ].filter(t => t.soc_percent > 0 && t.maxChargePower_W > 0),
-    },
-
-    // BATTERY CHARGE-CURRENT CONTROLLER — always send complete object (shallow merge safe)
-    batteryChargeControl: {
-      enabled: els.bccEnabled?.checked ?? false,
-      dryRun: els.bccDryRun?.checked ?? true,
-      controlIntervalSeconds: Math.max(5, num(els.bccInterval?.value) ?? 30),
-      emergencyVoltage: num(els.bccEmergency?.value) ?? 3.65,
-      reduceVoltage: num(els.bccReduce?.value) ?? 3.5,
-      restoreVoltage: num(els.bccRestore?.value) ?? 3.4,
-      stabilizationSeconds: Math.max(0, num(els.bccStabilization?.value) ?? 30),
-      currentLevels: parseLevels(els.bccLevels?.value),
-    },
-
-    // BATTERY CELL-BALANCING TUNER — always send complete object (shallow merge safe)
-    batteryBalanceControl: {
-      enabled: els.bbcEnabled?.checked ?? false,
-      dryRun: els.bbcDryRun?.checked ?? true,
-      controlIntervalSeconds: Math.max(5, num(els.bbcInterval?.value) ?? 300),
-      highCurrentThreshold_A: Math.max(0, num(els.bbcHighCurrent?.value) ?? 50),
-      tightTrigger: num(els.bbcTightTrigger?.value) ?? 0.005,
-      looseTrigger: num(els.bbcLooseTrigger?.value) ?? 0.02,
-      step: num(els.bbcStep?.value) ?? 0.05,
-      topCap: num(els.bbcTopCap?.value) ?? 3.55,
-      criticalHighVoltage: num(els.bbcCriticalHigh?.value) ?? 3.549,
-      topStart: num(els.bbcTopStart?.value) ?? 3.45,
-      bottomTop: num(els.bbcBottomTop?.value) ?? 3.4,
-      bottomFloor: num(els.bbcBottomFloor?.value) ?? 2.9,
-      maxWarnVoltage: num(els.bbcMaxWarn?.value) ?? 3.6,
-    },
-
-    // Auto-Calculate — always send complete object (shallow merge safe)
-    autoCalculate: {
-      enabled: els.autoCalcEnabled?.checked ?? false,
-      intervalMinutes: Math.max(1, Number(els.autoCalcInterval?.value) || 15),
-      updateData: els.autoCalcUpdateData?.checked ?? true,
-      writeToVictron: els.autoCalcWriteVictron?.checked ?? true,
-    },
-
-    // DESS Price Refresh — always send complete object (shallow merge safe)
-    dessPriceRefresh: {
-      enabled: els.dessRefreshEnabled?.checked ?? false,
-      time: els.dessRefreshTime?.value ?? '23:00',
-      durationMinutes: Math.max(5, Number(els.dessRefreshDuration?.value) || 15),
-    },
-
-    // Shore Current Optimizer — always send complete object (shallow merge safe)
-    shoreOptimizer: {
-      enabled: els.shoreOptEnabled?.checked ?? false,
-      dryRun: els.shoreOptDryRun?.checked ?? true,
-      tickMs: Math.max(1000, num(els.shoreOptTickMs?.value) ?? 3000),
-      stepA: num(els.shoreOptStepA?.value) ?? 0.5,
-      minShoreA: num(els.shoreOptMinShoreA?.value) ?? 0,
-      maxShoreA: num(els.shoreOptMaxShoreA?.value) ?? 25,
-      minChargingPowerW: Math.max(0, num(els.shoreOptMinChargingPowerW?.value) ?? 200),
-      gateOnDessSchedule: els.shoreOptGateOnDess?.checked ?? true,
-      portalId: els.shoreOptPortalId?.value ?? 'c0619ab6bd28',
-      multiInstance: num(els.shoreOptMultiInstance?.value) ?? 6,
-      acInputIndex: num(els.shoreOptAcInputIndex?.value) ?? 1,
-      mpptInstance: num(els.shoreOptMpptInstance?.value) ?? 0,
-      batteryInstance: num(els.shoreOptBatteryInstance?.value) ?? 512,
-    },
-
-    // PV Curtailment — always send complete object (shallow merge safe)
-    pvCurtailment: {
-      enabled: els.pvCurtailEnabled?.checked ?? false,
-      dryRun: els.pvCurtailDryRun?.checked ?? true,
-      tickMs: Math.max(1000, num(els.pvCurtailTickMs?.value) ?? 30000),
-      minPvPowerW: Math.max(0, num(els.pvCurtailMinPvPowerW?.value) ?? 100),
-      minGridHeadroomW: Math.max(0, num(els.pvCurtailMinGridHeadroomW?.value) ?? 100),
-      negativePriceThreshold_cents_per_kWh: num(els.pvCurtailPriceThreshold?.value) ?? 0,
-      portalId: els.pvCurtailPortalId?.value ?? 'c0619ab6bd28',
-      acsystemInstance: num(els.pvCurtailAcsystemInstance?.value) ?? 0,
-      enphaseSwitchEntity: els.pvCurtailEnphaseSwitch?.value ?? '',
-    },
-
-    // HA Price Config — always send complete object (shallow merge safe)
-    haPriceConfig: {
-      sensor: els.haPriceSensor?.value ?? '',
-      todayAttribute: els.haPriceTodayAttr?.value ?? 'today_hourly_prices',
-      tomorrowAttribute: els.haPriceTomorrowAttr?.value ?? 'tomorrow_hourly_prices',
-      timeKey: els.haPriceTimeKey?.value ?? 'time',
-      valueKey: els.haPriceValueKey?.value ?? 'value',
-      valueMultiplier: Number(els.haPriceMultiplier?.value) || 100,
-      importEqualsExport: els.haPriceImportEqualsExport?.checked ?? true,
-      priceInterval: Number(els.haPriceInterval?.value) || 60,
-    },
-
-    // EV CHARGING
-    evEnabled: !!els.evEnabled?.checked,
-    evMinChargeCurrent_A: num(els.evMinChargeCurrent?.value),
-    evMaxChargeCurrent_A: num(els.evMaxChargeCurrent?.value),
-    evChargePhases: num(els.evChargePhases?.value),
-    evBatteryCapacity_kWh: num(els.evBatteryCapacity?.value),
-    evChargeEfficiency_percent: num(els.evChargeEfficiency?.value),
-    evDepartureTime: els.evDepartureTime?.value ?? '',
-    evDepartureDay: els.evDepartureDay?.value ?? 'tomorrow',
-    evTargetSoc_percent: num(els.evTargetSoc?.value),
-    evSocSensor: els.evSocSensor?.value ?? '',
-    evPlugSensor: els.evPlugSensor?.value ?? '',
-    evTargetSocEntity: els.evTargetSocEntity?.value ?? '',
-
-    // EV native-charging feature parity
-    evStartTime: els.evStartTime?.value ?? '',
-    evMinSoc_percent: num(els.evMinSoc?.value),
-    evApplyPriceLimit: !!els.evApplyPriceLimit?.checked,
-    evMaxPrice_cents_per_kWh: num(els.evMaxPrice?.value),
-    evOpportunisticEnabled: !!els.evOpportunisticEnabled?.checked,
-    evOpportunisticLevel_percent: num(els.evOpportunisticLevel?.value),
-    evOpportunisticType2Enabled: !!els.evOpportunisticType2Enabled?.checked,
-    evOpportunisticType2Level_percent: num(els.evOpportunisticType2Level?.value),
-    evLowPriceChargingEnabled: !!els.evLowPriceEnabled?.checked,
-    evLowPriceChargingLevel_cents_per_kWh: num(els.evLowPriceLevel?.value),
-    evLowSocChargingEnabled: !!els.evLowSocEnabled?.checked,
-    evLowSocChargingLevel_percent: num(els.evLowSocLevel?.value),
-    evKeepOn: !!els.evKeepOn?.checked,
-    evContinuous: !!els.evContinuous?.checked,
-    evChargeCurveEnabled: !!els.evChargeCurveEnabled?.checked,
-    evActuationEnabled: !!els.evActuationEnabled?.checked,
-    evActuationPaused: !!els.evActuationPaused?.checked,
-    evChargerSwitchEntity: els.evChargerSwitchEntity?.value ?? '',
-    evChargerCurrentEntity: els.evChargerCurrentEntity?.value ?? '',
-    evControlIntervalSeconds: num(els.evControlInterval?.value),
-    evFailSafeMode: els.evFailSafeMode?.value || 'hold',
-
-    // UI-only
-    tableShowKwh: !!els.tableKwh?.checked,
-    // Note: updateDataBeforeRun / pushToVictron are not part of the persisted settings
-  };
-
-  const nextToken = els.haToken?.value ?? '';
-  if (nextToken) {
-    nextConfig.haToken = nextToken;
+  const nextConfig = {};
+  for (const [key, read] of Object.entries(SETTINGS_FIELDS)) {
+    const value = read(els);
+    if (value !== undefined) nextConfig[key] = value;
   }
-
   return nextConfig;
+}
+
+// For each settings key, the names of the els entries its reader touches.
+// Found by running each reader once against a proxy that records property
+// reads; every reader reads all of its controls on every call (optional
+// chaining still reads `els.x`), so one run is complete.
+const fieldControlsCache = new WeakMap();
+function fieldControls(els) {
+  let controls = fieldControlsCache.get(els);
+  if (controls) return controls;
+  controls = new Map();
+  for (const [key, read] of Object.entries(SETTINGS_FIELDS)) {
+    const names = new Set();
+    const tracker = new Proxy(els, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string") names.add(prop);
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    read(tracker);
+    controls.set(key, names);
+  }
+  fieldControlsCache.set(els, controls);
+  return controls;
+}
+
+/** The settings keys whose value is read from `element` (empty for any other element). */
+export function settingsKeysForElement(els, element) {
+  const keys = [];
+  if (!element) return keys;
+  for (const [key, names] of fieldControls(els)) {
+    for (const name of names) {
+      if (els[name] === element) {
+        keys.push(key);
+        break;
+      }
+    }
+  }
+  return keys;
+}
+
+/**
+ * Write only the controls of `keys` from `settings` (a full settings object,
+ * e.g. the POST /settings response). hydrateUI runs on a map holding just
+ * those controls, so nothing else on the page is touched.
+ */
+export function hydrateSettingsKeys(els, settings, keys) {
+  const controls = fieldControls(els);
+  const subset = {};
+  for (const key of keys) {
+    for (const name of controls.get(key) ?? []) {
+      if (els[name]) subset[name] = els[name];
+    }
+  }
+  if (Object.keys(subset).length === 0) return;
+  hydrateUI(subset, settings);
+  // hydrateUI derives these from the subset, which may lack the controls
+  // they read or write; recompute them against the whole form.
+  updateTerminalCustomUI(els);
+  updateEvChargingSpeedHint(els, settings);
 }
 
 export function hydrateUI(els, obj = {}) {

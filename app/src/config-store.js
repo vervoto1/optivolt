@@ -14,6 +14,8 @@ export async function loadInitialConfig() {
   }
 }
 
+// Resolves to the server's reply, `{ message, settings }`, where `settings`
+// is the stored result after the server merged and normalised the patch.
 export async function saveConfig(config) {
-  await saveStoredSettings(config);
+  return saveStoredSettings(config);
 }
