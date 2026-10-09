@@ -83,10 +83,23 @@ jobs:
     - name: Build image
       run: docker build --platform linux/amd64 -t optivolt-smoke:ci optivolt/
 
-    # No Supervisor: bashio::config returns empty options, so VRM and MQTT stay
-    # unconfigured. Every controller defaults to off, so nothing talks to a Victron.
+    # bashio >= 0.19 (base image 2026.10.0) fails bashio::config when the
+    # Supervisor is unreachable, and the run script's `set -e` then exits. A stub
+    # at http://supervisor serves the add-on's default options from config.yaml,
+    # so VRM stays unconfigured and MQTT is never contacted (it connects lazily).
+    # Every controller defaults to off, so nothing talks to a Victron.
+    - name: Start stub Supervisor
+      run: |
+        mkdir -p "$RUNNER_TEMP/supervisor/addons/self/options"
+        yq -o=json -I=0 '{"result": "ok", "data": .options}' optivolt/config.yaml \
+          > "$RUNNER_TEMP/supervisor/addons/self/options/config"
+        docker network create optivolt-smoke
+        docker run -d --name optivolt-supervisor --network optivolt-smoke --network-alias supervisor \
+          -v "$RUNNER_TEMP/supervisor:/srv:ro" python:3.13-alpine \
+          python -m http.server 80 --directory /srv
+
     - name: Start container
-      run: docker run -d --name optivolt-smoke -p 127.0.0.1:3000:3000 optivolt-smoke:ci
+      run: docker run -d --name optivolt-smoke --network optivolt-smoke -p 127.0.0.1:3000:3000 optivolt-smoke:ci
 
     - name: Wait for /health
       run: |
@@ -119,8 +132,13 @@ jobs:
 
     - name: Dump container logs on failure
       if: failure()
-      run: docker logs optivolt-smoke
+      run: |
+        docker logs optivolt-smoke
+        echo "--- stub Supervisor"
+        docker logs optivolt-supervisor || true
 
-    - name: Remove container
+    - name: Remove containers
       if: always()
-      run: docker rm -f optivolt-smoke || true
+      run: |
+        docker rm -f optivolt-smoke optivolt-supervisor || true
+        docker network rm optivolt-smoke || true
