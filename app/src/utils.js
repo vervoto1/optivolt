@@ -8,10 +8,15 @@ export function toDatetimeLocal(d) {
 }
 
 // Inverse of toDatetimeLocal: a datetime-local value read in the display
-// zone → epoch ms. Anything else is parsed by Date as-is. Invalid → null.
+// zone → epoch ms. Seconds are optional (a browser may add them), so such a
+// value is never left to Date, which would read it in the browser's zone.
+// Anything else is parsed by Date as-is. Invalid → null.
 export function fromDatetimeLocal(value) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value ?? '').trim());
-  if (m) return zonedWallTimeToMs(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d{1,3})?))?$/.exec(String(value ?? '').trim());
+  if (m) {
+    const ms = zonedWallTimeToMs(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+    return ms + Math.round(Number(m[6] ?? 0) * 1000);
+  }
   const ms = new Date(value).getTime();
   return Number.isFinite(ms) ? ms : null;
 }

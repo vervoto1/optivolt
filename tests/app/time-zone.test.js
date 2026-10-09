@@ -73,6 +73,9 @@ describe('wall time ↔ instant in the display zone', () => {
     setDisplayTimeZone('America/New_York');
     expect(toDatetimeLocal(new Date(SLOT_MS))).toBe('2026-10-09T06:45');
     expect(fromDatetimeLocal('2026-10-09T06:45')).toBe(SLOT_MS);
+    // With seconds it is still read in the display zone, not by Date.
+    expect(fromDatetimeLocal('2026-10-09T06:45:00')).toBe(SLOT_MS);
+    expect(fromDatetimeLocal('2026-10-09T06:45:30.5')).toBe(SLOT_MS + 30_500);
     expect(fromDatetimeLocal('2026-10-09T10:45:00Z')).toBe(SLOT_MS);
     expect(fromDatetimeLocal('nope')).toBeNull();
   });

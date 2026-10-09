@@ -98,8 +98,10 @@ jobs:
           -v "$RUNNER_TEMP/supervisor:/srv:ro" python:3.13-alpine \
           python -m http.server 80 --directory /srv
 
+    # The Supervisor passes Home Assistant's zone in TZ; the UI shows every time
+    # in the zone GET /timezone reports.
     - name: Start container
-      run: docker run -d --name optivolt-smoke --network optivolt-smoke -p 127.0.0.1:3000:3000 optivolt-smoke:ci
+      run: docker run -d --name optivolt-smoke --network optivolt-smoke -e TZ=Europe/Amsterdam -p 127.0.0.1:3000:3000 optivolt-smoke:ci
 
     - name: Wait for /health
       run: |
@@ -113,6 +115,15 @@ jobs:
         done
         echo "::error::the add-on image did not answer /health within 60 s"
         exit 1
+
+    # The image's Node (Alpine ICU) must resolve TZ to its IANA name.
+    - name: Server time zone
+      run: |
+        curl -fsS -m 5 http://127.0.0.1:3000/timezone | jq -e '.timeZone == "Europe/Amsterdam"' > /dev/null || {
+          echo "::error::GET /timezone did not report the container's TZ"
+          curl -sS -m 5 http://127.0.0.1:3000/timezone || true
+          exit 1
+        }
 
     # Runs the vendored HiGHS WASM inside the image. The default SoC source is a
     # Victron MQTT read, so switch it to the stored value first; updateData and
