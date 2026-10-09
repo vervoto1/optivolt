@@ -48,6 +48,7 @@ All routes are implemented in `api/`. Important ones:
 - `GET/POST /predictions/config`, `/predictions/validate`, `/predictions/*/forecast`, `/predictions/adjustments` — prediction config, validation, forecast generation, and manual adjustment CRUD.
 - `GET /ev/current`, `GET /ev/schedule` — current and full EV charging schedule from the last computed plan.
 - `GET /ha/entity/:entityId` — live Home Assistant entity lookup for settings validation.
+- `GET /timezone` — the zone the server plans in; the UI formats every time in it (`app/src/time-zone.js`), whatever zone the browser reports.
 
 Prediction routing lives in `api/routes/predictions.ts`; orchestration and persistence helpers live in `api/services/prediction-forecast-runner.ts` and `api/services/prediction-adjustment-store.ts`.
 

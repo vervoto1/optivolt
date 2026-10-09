@@ -1,23 +1,17 @@
 /* global Chart */
 import { dim } from './colors.js';
+import { fmtZonedDDMM, fmtZonedHHMM, zonedParts } from '../time-zone.js';
 
 export function fmtHHMM(dt) {
-  const HH = String(dt.getHours()).padStart(2, "0");
-  const MM = String(dt.getMinutes()).padStart(2, "0");
-  return `${HH}:${MM}`;
+  return fmtZonedHHMM(dt);
 }
 
 function fmtTickHourOrDate(dt) {
-  const mins = dt.getMinutes();
+  const { hour, minute } = zonedParts(dt);
   /* v8 ignore next — unreachable: fmtTickHourOrDate is only called via ticksCb when isLabeledHour(dt) is true, which already requires minutes === 0 */
-  if (mins !== 0) return "";
-  const hrs = dt.getHours();
-  if (hrs === 0) {
-    const dd = String(dt.getDate()).padStart(2, "0");
-    const mm = String(dt.getMonth() + 1).padStart(2, "0");
-    return `${dd}/${mm}`;
-  }
-  return `${String(hrs).padStart(2, "0")}:00`;
+  if (minute !== 0) return "";
+  if (hour === 0) return fmtZonedDDMM(dt);
+  return `${String(hour).padStart(2, "0")}:00`;
 }
 
 export function buildTimeAxisFromTimestamps(timestampsMs) {
@@ -40,13 +34,13 @@ export function buildTimeAxisFromTimestamps(timestampsMs) {
     labelEveryH = 2;
   }
 
-  function isMidnight(dt) { return dt.getHours() === 0 && dt.getMinutes() === 0; }
-  function isFullMinute(dt) { return dt.getMinutes() === 0; }
+  function isMidnight(dt) { const p = zonedParts(dt); return p.hour === 0 && p.minute === 0; }
+  function isFullMinute(dt) { return zonedParts(dt).minute === 0; }
 
   function isLabeledHour(dt) {
     if (isMidnight(dt)) return true;
     if (!isFullMinute(dt)) return false;
-    return !sparseMode || (dt.getHours() % labelEveryH) === 0;
+    return !sparseMode || (zonedParts(dt).hour % labelEveryH) === 0;
   }
 
   const labels = times.map(dt => fmtHHMM(dt));

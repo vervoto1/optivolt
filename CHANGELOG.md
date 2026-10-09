@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.70 - 2026-10-09
+
+- **The UI shows times in the server's time zone, not the browser's.** Every slot time, chart axis, tooltip, the plan start, the EV table and departure marker, forecast adjustments and the accuracy charts' day split were formatted in the zone the browser reports. A browser that reports UTC (Firefox/LibreWolf with `privacy.resistFingerprinting`, Brave or Mullvad fingerprint protection, a kiosk or VM set to UTC) showed the whole plan two hours early in CEST: the 12:45 slot read "10:45", so the 11:00 and 12:00 slots looked like they were still ahead. The plan itself was always right.
+  - The server now answers `GET /timezone` with the zone it plans in (`{ "timeZone": "Europe/Amsterdam" }`; in the add-on that is Home Assistant's zone). The UI fetches it at boot, alongside the settings, and formats all times in it. When the request fails it keeps the browser's zone, as before.
+  - Times typed into the UI are read in that zone too: the EV "ready by" time used for the departure marker and the start/end of a forecast adjustment. A repeated wall time at the autumn DST change resolves to its first occurrence and a time in the spring gap moves forward, as before.
+  - UI and endpoint only. No LP, DESS or Victron/MQTT change.
+
 ## 0.7.69 - 2026-10-07
 
 - **The Auto-Calculate switches now save when changed.** Enabled, Interval, "Update data before calculation" and "Write to Victron" (Settings) had no save trigger, so e.g. switching "Write to Victron" off was only stored with the next other settings edit or Recalculate, and until then auto-calculate kept writing schedules to Victron. They now save on change like the other non-solving settings (no re-solve). A test now checks that every settings control on the page has a save trigger.

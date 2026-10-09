@@ -62,6 +62,12 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ message: 'Optivolt API is running.' });
 });
 
+// The zone the server plans in (EV departure, price days, DESS price refresh).
+// The UI shows every time in it, whatever zone the browser reports.
+app.get('/timezone', (_req: Request, res: Response) => {
+  res.json({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+});
+
 app.use(express.static(staticDir));
 
 app.use((_req: Request, _res: Response, next: NextFunction) => {

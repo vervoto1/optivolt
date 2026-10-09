@@ -4,7 +4,8 @@ import {
   fetchPredictionAdjustments,
   updatePredictionAdjustment,
 } from '../api/api.js';
-import { escapeHtml, toDatetimeLocal } from '../utils.js';
+import { escapeHtml, fromDatetimeLocal, toDatetimeLocal } from '../utils.js';
+import { withDisplayTimeZone } from '../time-zone.js';
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart, toRGBA, SOLUTION_COLORS } from '../charts.js';
 import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow } from '../chart-tooltip.js';
 import {
@@ -430,12 +431,12 @@ export function createForecastChartController({ getForecasts, onAdjustmentsChang
 function formatAdjustmentTime(value) {
   // hourCycle pins a 24-hour clock like the rest of the UI, whatever the
   // browser locale (en-US would otherwise show AM/PM).
-  return new Date(value).toLocaleString([], {
+  return new Date(value).toLocaleString([], withDisplayTimeZone({
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
-  });
+  }));
 }
 
 function formatRange(start, end) {
@@ -443,8 +444,8 @@ function formatRange(start, end) {
 }
 
 function fromDatetimeLocalValue(value) {
-  const ts = new Date(value).getTime();
-  return Number.isFinite(ts) ? new Date(ts).toISOString() : '';
+  const ts = fromDatetimeLocal(value);
+  return ts != null ? new Date(ts).toISOString() : '';
 }
 
 function adjustmentSummary(adj) {

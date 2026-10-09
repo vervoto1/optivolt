@@ -1,5 +1,6 @@
 import { SOLUTION_COLORS } from "./charts.js";
 import { parseQuickSettingSelection, writeQuickSettingSelection } from "./optimizer-quick-settings.js";
+import { fmtZonedDDMM, fmtZonedHHMM, withDisplayTimeZone } from "./time-zone.js";
 
 // ---------- UI <-> settings snapshot ----------
 /* v8 ignore start — all optional-chaining (?.) branches are untestable when els is always a complete DOM element map */
@@ -459,11 +460,7 @@ export function updatePlanMeta(els, initialSoc_percent, tsStart) {
       let display = raw;
       const date = new Date(tsStart);
       if (!isNaN(date.getTime())) {
-        const d = String(date.getDate()).padStart(2, "0");
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const H = String(date.getHours()).padStart(2, "0");
-        const M = String(date.getMinutes()).padStart(2, "0");
-        display = `${d}/${m} ${H}:${M}`;
+        display = `${fmtZonedDDMM(date)} ${fmtZonedHHMM(date)}`;
       }
       els.planTsStart.textContent = display;
     }
@@ -768,14 +765,14 @@ function formatLastFullSoc(value) {
   if (!value) return "not recorded yet";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "not recorded yet";
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(undefined, withDisplayTimeZone({
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23", // 24-hour clock regardless of the browser locale
-  });
+  }));
 }
 
 export function formatKWh(v) {

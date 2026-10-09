@@ -1,4 +1,5 @@
-import { refreshVrmSettings } from "./src/api/api.js";
+import { fetchServerTimeZone, refreshVrmSettings } from "./src/api/api.js";
+import { setDisplayTimeZone } from "./src/time-zone.js";
 import { loadInitialConfig } from "./src/config-store.js";
 import { initPredictionsTab } from "./src/predictions.js";
 import { initEssTab, deactivateEssTab } from "./src/ess-tab.js";
@@ -139,8 +140,23 @@ function setupTabSwitcher() {
   activateTab(0);
 }
 
+// Show times in the server's zone (what the plan is built in), not the
+// browser's: a browser reporting UTC would otherwise shift every slot. On
+// failure the browser's zone is kept.
+async function loadDisplayTimeZone() {
+  try {
+    const { timeZone } = await fetchServerTimeZone();
+    setDisplayTimeZone(timeZone);
+  } catch (err) {
+    console.warn("Could not load the server time zone; showing browser time.", err);
+  }
+}
+
 async function boot() {
-  const { config: initialConfig, source } = await loadInitialConfig();
+  const [{ config: initialConfig, source }] = await Promise.all([
+    loadInitialConfig(),
+    loadDisplayTimeZone(),
+  ]);
 
   hydrateUI(els, initialConfig);
   optimizerQuickSettings = initOptimizerQuickSettings({
