@@ -634,6 +634,13 @@ describe('Route contracts', () => {
     expect(res.body.reasons).toEqual(['plan/write run pending for 601s']);
   });
 
+  it('app.ts serves the server time zone', async () => {
+    const { default: app } = await import('../../api/app.ts');
+    const res = await inject(app, { method: 'GET', url: '/timezone' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ timeZone: 'Europe/Amsterdam' });
+  });
+
   it('app.ts 404 handler for unknown routes', async () => {
     const { default: app } = await import('../../api/app.ts');
     const res = await inject(app, { method: 'GET', url: '/nonexistent-route-xyz' });

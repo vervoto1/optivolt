@@ -1,5 +1,6 @@
 import { buildTimeAxisFromTimestamps, getBaseOptions, renderChart } from '../charts.js';
 import { createTooltipHandler, fmtKwh, getChartAnimations, ttHeader, ttRow, ttDivider } from '../chart-tooltip.js';
+import { withDisplayTimeZone, zonedDateKey } from '../time-zone.js';
 
 export function renderLoadAccuracyChart(recentData) {
   renderAccuracyCharts(
@@ -38,7 +39,7 @@ export function renderPvAccuracyChart(recentData) {
 function buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId) {
   const daySpans = new Map();
   for (let i = 0; i < timestamps.length; i++) {
-    const dateStr = new Date(timestamps[i]).toLocaleDateString('en-CA');
+    const dateStr = zonedDateKey(timestamps[i]);
     if (!daySpans.has(dateStr)) daySpans.set(dateStr, { first: i, last: i });
     else daySpans.get(dateStr).last = i;
   }
@@ -69,7 +70,7 @@ function buildDayDividersPlugin(timestamps, dayNetWh, netErrorContainerId) {
           ctx.stroke();
         }
         const midX = (scales.x.getPixelForValue(first) + scales.x.getPixelForValue(last)) / 2;
-        const dayName = new Date(timestamps[first]).toLocaleDateString('en-US', { weekday: 'short' });
+        const dayName = new Date(timestamps[first]).toLocaleDateString('en-US', withDisplayTimeZone({ weekday: 'short' }));
         ctx.fillText(dayName, midX, chartArea.top + 10);
       }
 
@@ -115,7 +116,7 @@ function renderAccuracyCharts(overlayCanvasId, diffCanvasId, netErrorContainerId
     const actual = options.valueActual(d);
     const pred = options.valuePred(d);
     if (actual == null || pred == null) continue;
-    const dateStr = new Date(d.time).toLocaleDateString('en-CA');
+    const dateStr = zonedDateKey(d.time);
     dayNetWh.set(dateStr, (dayNetWh.get(dateStr) ?? 0) + (pred - actual));
   }
 

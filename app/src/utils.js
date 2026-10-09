@@ -1,6 +1,19 @@
+import { zonedParts, zonedWallTimeToMs } from './time-zone.js';
+
+// Instant → "YYYY-MM-DDTHH:MM" for a datetime-local input, in the display zone.
 export function toDatetimeLocal(d) {
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const p = zonedParts(d);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+// Inverse of toDatetimeLocal: a datetime-local value read in the display
+// zone → epoch ms. Anything else is parsed by Date as-is. Invalid → null.
+export function fromDatetimeLocal(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value ?? '').trim());
+  if (m) return zonedWallTimeToMs(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 
 // Resolve a "ready by" time-of-day ("HH:MM") + today/tomorrow selector to an
@@ -15,10 +28,11 @@ export function resolveDepartureMs(timeStr, day, now = Date.now()) {
     const h = Number(m[1]);
     const min = Number(m[2]);
     if (h > 23 || min > 59) return null;
-    const d = new Date(now);
-    d.setHours(h, min, 0, 0);
-    if (day === 'tomorrow') d.setDate(d.getDate() + 1);
-    return d.getTime();
+    // Wall clock in the display (server) zone, so the marker matches the plan
+    // even when the browser runs in another zone.
+    const today = zonedParts(now);
+    const dayOffset = day === 'tomorrow' ? 1 : 0;
+    return zonedWallTimeToMs(today.year, today.month, today.day + dayOffset, h, min);
   }
   const ms = new Date(s).getTime();
   return Number.isFinite(ms) ? ms : null;

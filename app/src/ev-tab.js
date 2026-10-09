@@ -2,6 +2,7 @@ import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./
 import { formatKWh, updateStackedBarContainer } from "./state.js";
 import { fetchEvStatus, fetchEvOverride, setEvOverride } from "./api/api.js";
 import { resolveDepartureMs, effectiveTargetSoc, findEvTargetRow } from "./utils.js";
+import { fmtZonedDDMM, fmtZonedHHMM, isZonedMidnight } from "./time-zone.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
@@ -225,14 +226,7 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
 
   const h = Math.max(0.000001, stepSize_m / 60);
 
-  const fmtDate = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit" });
-  const fmtTime = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
-
-  const fmtRowTime = (ts) => {
-    const dt = new Date(ts);
-    if (dt.getHours() === 0 && dt.getMinutes() === 0) return fmtDate.format(dt);
-    return fmtTime.format(dt);
-  };
+  const fmtRowTime = (ts) => (isZonedMidnight(ts) ? fmtZonedDDMM(ts) : fmtZonedHHMM(ts));
 
   const fmtKwh = (w) => {
     const v = (w || 0) * h / 1000;

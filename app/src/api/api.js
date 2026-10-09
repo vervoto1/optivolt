@@ -24,6 +24,8 @@ export function requestRemoteSolve(body = {}) {
 // triggered. 404s (throws) when no plan has been computed since server start.
 export const fetchLastPlan = () => getJson("/calculate/last");
 
+export const fetchServerTimeZone = () => getJson("/timezone");
+
 // --- Data ---
 export function fetchStoredData() {
   return getJson("/data");

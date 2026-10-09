@@ -1,5 +1,6 @@
 import { SOLUTION_COLORS } from "./charts.js";
 import { escapeHtml, findEvTargetRow } from "./utils.js";
+import { fmtZonedDDMM, fmtZonedHHMM, isZonedMidnight } from "./time-zone.js";
 
 /**
  * Render the results table and unit label.
@@ -23,9 +24,6 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
   const h = Math.max(0.000001, Number(cfg?.stepSize_m ?? 15) / 60); // hours per slot
   const W2kWh = (x) => (Number(x) || 0) * h / 1000;
 
-  const fmtTime = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
-  const fmtDate = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit" });
-
   // Highlight the row the plan's EV target is pinned to; without one, the
   // first row at or after the browser-side departure time.
   const pinnedTarget = findEvTargetRow(rows);
@@ -37,12 +35,11 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
       : -1;
 
   const timesDisp = rows.map((row) => {
-    const dt = new Date(row.timestampMs);
     // If minutes and hours are 0, it's midnight -> show Date
-    if (dt.getHours() === 0 && dt.getMinutes() === 0) {
-      return fmtDate.format(dt);
+    if (isZonedMidnight(row.timestampMs)) {
+      return fmtZonedDDMM(row.timestampMs);
     }
-    return fmtTime.format(dt);
+    return fmtZonedHHMM(row.timestampMs);
   });
 
   const hasEv = rows.some(r => (Number(r.ev_charge) || 0) > 0 || (Number(r.ev_soc_percent) || 0) > 0);
