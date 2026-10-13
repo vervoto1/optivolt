@@ -18,6 +18,8 @@ async function requestJson(path, init = {}) {
   };
 
   const response = await fetch(buildApiUrl(path), options);
+  // Lets a caller read the response headers (e.g. the server's Date).
+  init.onResponse?.(response);
   let raw = "";
   try {
     raw = await response.text();

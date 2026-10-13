@@ -24,6 +24,16 @@ describe('API Client', () => {
     expect(res).toEqual({ success: true });
   });
 
+  it('getJson hands the response to onResponse before reading it', async () => {
+    const response = { ok: true, headers: new Headers({ Date: 'Tue, 13 Oct 2026 10:00:00 GMT' }), text: async () => '{"a":1}' };
+    fetchMock.mockResolvedValue(response);
+    const onResponse = vi.fn();
+
+    const res = await getJson('/test', { onResponse });
+    expect(onResponse).toHaveBeenCalledWith(response);
+    expect(res).toEqual({ a: 1 });
+  });
+
   it('postJson calls fetch with POST and payload', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

@@ -121,7 +121,7 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   // disk at write time. Building the whole object from a snapshot loaded before
   // the multi-second forecast/HA fetches used to revert any data.json write
   // that landed in between (a prediction adjustment, POST /data).
-  const patch: Partial<Pick<Data, 'load' | 'pv' | 'importPrice' | 'exportPrice' | 'soc'>> = {};
+  const patch: Partial<Pick<Data, 'load' | 'pv' | 'importPrice' | 'exportPrice' | 'marketPrice' | 'soc'>> = {};
 
   if (shouldFetchVrmLoad && forecasts) {
     patch.load = {
@@ -206,22 +206,32 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   }
 
   // Prices from Home Assistant
-  if (settings.dataSources.prices === 'ha') {
+  const usesHaPrices = settings.dataSources.prices === 'ha';
+  if (usesHaPrices) {
     try {
       const haPrices = await fetchPricesFromHA(settings);
       if (haPrices) {
         patch.importPrice = haPrices.importPrice;
         patch.exportPrice = haPrices.exportPrice;
+        // A failed market read leaves marketPrice unset, keeping the stored
+        // series: its slots age out of the window and fall back per slot.
+        if (haPrices.marketPrice) patch.marketPrice = haPrices.marketPrice;
       }
     } catch (err) {
       console.warn('[vrm-refresh] Failed to fetch prices from HA:', (err as Error).message);
     }
   }
+  // A series the price source can no longer produce (HA without a market
+  // sensor, or VRM after a switch) must not linger in data.json. API prices
+  // keep theirs: it came from POST /data.
+  const marketFromHa = usesHaPrices && !!settings.haPriceConfig?.exportSensor?.trim();
+  const dropMarketPrice = settings.dataSources.prices !== 'api' && !marketFromHa;
 
   // EV load (uncontrollable house load injected via POST /data), the rebalance
   // state, lastFullSocAt and the prediction adjustments are never touched here.
   await updateData(current => {
     const next: Data = { ...current, ...patch };
+    if (dropMarketPrice) delete next.marketPrice;
     return patch.soc ? recordFullSocObservation(next) : next;
   });
 

@@ -689,6 +689,136 @@ describe('computePlan — horizon warnings', () => {
     const result = await computePlan();
     expect(result.summary.horizonWarnings).toBeUndefined();
   });
+
+  describe('market prices and the export tariff', () => {
+    // 24 h of data, so only the warnings under test appear.
+    const fullData = {
+      ...baseData,
+      load: { start: NOW_STRING, step: 60, values: new Array(24).fill(500) },
+      pv: { start: NOW_STRING, step: 60, values: new Array(24).fill(0) },
+      importPrice: { start: NOW_STRING, step: 60, values: new Array(24).fill(10) },
+      exportPrice: { start: NOW_STRING, step: 60, values: new Array(24).fill(5) },
+    };
+    const shortMarket = { start: NOW_STRING, step: 60, values: [3, 3, 3, 3, 3] };
+    const tariff = (overrides = {}) => ({
+      mode: 'auto',
+      effectiveFrom: '2024-01-05T00:00:00Z',
+      fee_cents_per_kWh: 0,
+      negativePrice: 'floorZero',
+      terminalSocValuation: 'tailMin',
+      terminalTail_h: 6,
+      ...overrides,
+    });
+    const apiPrices = { ...baseSettings, dataSources: { ...baseSettings.dataSources, prices: 'api' } };
+    const haPrices = (exportSensor) => ({
+      ...baseSettings,
+      dataSources: { ...baseSettings.dataSources, prices: 'ha' },
+      haPriceConfig: { sensor: 'sensor.import', exportSensor },
+    });
+
+    let errorSpy;
+    let warnSpy;
+    beforeEach(() => {
+      errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('checks a posted market series against the horizon with API prices', async () => {
+      loadSettings.mockResolvedValue(apiPrices);
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+
+      expect(result.summary.horizonWarnings).toEqual([
+        expect.stringMatching(/^Market prices ends \d+h short of expected horizon/),
+      ]);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[calculate] STALE DATA: Market prices ends'));
+    });
+
+    it('checks the market series when an HA export sensor is configured', async () => {
+      loadSettings.mockResolvedValue(haPrices(' sensor.market '));
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+
+      expect(result.summary.horizonWarnings).toEqual([
+        expect.stringMatching(/^Market prices ends \d+h short of expected horizon/),
+      ]);
+    });
+
+    it('ignores a market series left in data.json under VRM prices', async () => {
+      loadSettings.mockResolvedValue({ ...baseSettings, exportTariff: tariff() });
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+
+      // Net metering is kept (no 0 c fallback) and the series raises no STALE DATA warning.
+      expect(result.cfg.exportTariffInfo).toMatchObject({ fallbackSlots: 0, missingMarketSource: true });
+      expect(result.summary.horizonWarnings).not.toContainEqual(expect.stringMatching(/^Market prices/));
+    });
+
+    it('ignores a leftover market series when HA prices have no export sensor', async () => {
+      loadSettings.mockResolvedValue(haPrices('  '));
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+      expect(result.summary.horizonWarnings).toBeUndefined();
+    });
+
+    it('ignores a leftover market series when HA prices have no haPriceConfig at all', async () => {
+      const { haPriceConfig: _haPriceConfig, ...settings } = haPrices('');
+      loadSettings.mockResolvedValue(settings);
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+      expect(result.summary.horizonWarnings).toBeUndefined();
+    });
+
+    it('warns about market-rule slots that fell back to 0, with the [export-tariff] prefix', async () => {
+      loadSettings.mockResolvedValue({ ...apiPrices, exportTariff: tariff({ mode: 'marketPrice' }) });
+      loadData.mockResolvedValue({ ...fullData, marketPrice: shortMarket });
+
+      const result = await computePlan();
+
+      expect(result.cfg.exportTariffInfo.fallbackSlots).toBe(19);
+      const fallbackWarning = 'Market price missing for 19 slots after net metering ends — export valued at 0 for those slots';
+      // The stale market series and the fallback both reach the UI list; only
+      // the former is logged as STALE DATA.
+      expect(result.summary.horizonWarnings).toEqual([
+        expect.stringMatching(/^Market prices ends \d+h short of expected horizon/),
+        fallbackWarning,
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(`[export-tariff] ${fallbackWarning}`);
+      expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining(`STALE DATA: ${fallbackWarning}`));
+    });
+
+    it('warns when net metering is about to end without a market source', async () => {
+      loadSettings.mockResolvedValue({ ...baseSettings, exportTariff: tariff() });
+      loadData.mockResolvedValue({ ...fullData });
+
+      const result = await computePlan();
+
+      const warning = 'Net metering ends at 2024-01-05T00:00:00Z but no market-price source is configured — export still valued at the import price';
+      expect(result.summary.horizonWarnings).toEqual([warning]);
+      expect(warnSpy).toHaveBeenCalledWith(`[export-tariff] ${warning}`);
+      expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('STALE DATA'));
+    });
+
+    it('adds no tariff warning while the resolved tariff is clean', async () => {
+      loadSettings.mockResolvedValue({ ...baseSettings, exportTariff: tariff({ mode: 'netMetering' }) });
+      loadData.mockResolvedValue({ ...fullData });
+
+      const result = await computePlan();
+
+      expect(result.cfg.exportTariffInfo).toMatchObject({ fallbackSlots: 0, missingMarketSource: false });
+      expect(result.summary.horizonWarnings).toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[export-tariff]'));
+    });
+  });
 });
 
 describe('computePlan — EV info in solve log', () => {

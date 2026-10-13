@@ -41,7 +41,8 @@
     "valueKey": "value",
     "valueMultiplier": 100,
     "importEqualsExport": true,
-    "priceInterval": 60
+    "priceInterval": 60,
+    "exportSensor": ""
   },
   "dessPriceRefresh": {
     "enabled": false,
@@ -73,6 +74,14 @@
     "portalId": "c0619ab6bd28",
     "acsystemInstance": 0,
     "enphaseSwitchEntity": ""
+  },
+  "exportTariff": {
+    "mode": "auto",
+    "effectiveFrom": "2027-01-01T00:00:00+01:00",
+    "fee_cents_per_kWh": 0,
+    "negativePrice": "floorZero",
+    "terminalSocValuation": "tailMin",
+    "terminalTail_h": 6
   },
   "cvPhase": {
     "enabled": false,

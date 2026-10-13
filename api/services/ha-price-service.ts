@@ -1,4 +1,4 @@
-import type { Settings } from '../types.ts';
+import type { HaPriceConfig, Settings } from '../types.ts';
 import type { TimeSeries } from '../../lib/types.ts';
 import { resolveHaHttpConfig } from './ha-config.ts';
 
@@ -400,12 +400,21 @@ export function pricePointsToSeries(points: PriceSlot[], opts: PricePointsOption
   return toSeries(current);
 }
 
+export interface HaPrices {
+  importPrice: TimeSeries;
+  exportPrice: TimeSeries;
+  /** Bare market price from `haPriceConfig.exportSensor`; absent when unset or unreadable. */
+  marketPrice?: TimeSeries;
+}
+
 /**
  * Fetch electricity prices from a Home Assistant sensor.
  * Reads today + tomorrow price arrays from sensor attributes,
- * converts to 15-min slot TimeSeries in cents/kWh.
+ * converts to 15-min slot TimeSeries in cents/kWh. When
+ * `haPriceConfig.exportSensor` is set, the market-price sensor is read the
+ * same way; its failure only drops `marketPrice` (the import result stands).
  */
-export async function fetchPricesFromHA(settings: Settings): Promise<{ importPrice: TimeSeries; exportPrice: TimeSeries } | null> {
+export async function fetchPricesFromHA(settings: Settings): Promise<HaPrices | null> {
   const { haPriceConfig, haUrl, haToken } = settings;
 
   if (!haPriceConfig?.sensor) {
@@ -417,53 +426,83 @@ export async function fetchPricesFromHA(settings: Settings): Promise<{ importPri
     return null;
   }
   const { baseUrl, token } = haConfig;
+  const exportSensor = haPriceConfig.exportSensor?.trim() ?? '';
+  const nowMs = Date.now();
 
-  try {
-    const state = await fetchEntityState(baseUrl, token, haPriceConfig.sensor);
-    if (!state?.attributes) {
-      console.warn('[ha-price] No attributes found on sensor', haPriceConfig.sensor);
-      return null;
-    }
+  // Both sensors are read concurrently; each request has its own 10 s timeout.
+  const [importRes, marketRes] = await Promise.allSettled([
+    readPriceSensor(baseUrl, token, haPriceConfig.sensor, haPriceConfig, nowMs),
+    exportSensor ? readPriceSensor(baseUrl, token, exportSensor, haPriceConfig, nowMs) : Promise.resolve(null),
+  ]);
 
-    const todayAttr = haPriceConfig.todayAttribute || 'today_hourly_prices';
-    const tomorrowAttr = haPriceConfig.tomorrowAttribute || 'tomorrow_hourly_prices';
-    const timeKey = haPriceConfig.timeKey || 'time';
-    const valueKey = haPriceConfig.valueKey || 'value';
-    const multiplier = haPriceConfig.valueMultiplier ?? 100;
-    const interval = haPriceConfig.priceInterval ?? 60;
-
-    const todayPrices = state.attributes[todayAttr] as PriceSlot[] | undefined;
-    const tomorrowPrices = state.attributes[tomorrowAttr] as PriceSlot[] | undefined;
-
-    if (!Array.isArray(todayPrices) || todayPrices.length === 0) {
-      console.warn('[ha-price] No today prices found in attribute', todayAttr);
-      return null;
-    }
-
-    // Combine today + tomorrow (tomorrow may be empty before ~14:00).
-    // pricePointsToSeries sorts explicit-offset timestamps itself; for bare
-    // wall-clock ones feed order is what resolves the repeated DST hour.
-    const allPrices = [...todayPrices];
-    if (Array.isArray(tomorrowPrices) && tomorrowPrices.length > 0) {
-      allPrices.push(...tomorrowPrices);
-    }
-
-    const series = pricePointsToSeries(allPrices, {
-      timeKey, valueKey, multiplier, interval, nowMs: Date.now(),
-    });
-    if (!series) return null;
-    const { start: startTime, values } = series;
-
-    const importPrice: TimeSeries = { start: startTime, step: 15, values };
-    const exportPrice: TimeSeries = haPriceConfig.importEqualsExport !== false
-      ? { start: startTime, step: 15, values: [...values] }
-      : { start: startTime, step: 15, values: new Array(values.length).fill(0) };
-
-    return { importPrice, exportPrice };
-  } catch (err) {
-    console.warn('[ha-price] Failed to fetch prices from HA:', (err as Error).message);
+  if (importRes.status === 'rejected') {
+    console.warn('[ha-price] Failed to fetch prices from HA:', (importRes.reason as Error).message);
     return null;
   }
+  const series = importRes.value;
+  if (!series) return null;
+  const { start: startTime, values } = series;
+
+  const importPrice: TimeSeries = { start: startTime, step: 15, values };
+  const exportPrice: TimeSeries = haPriceConfig.importEqualsExport !== false
+    ? { start: startTime, step: 15, values: [...values] }
+    : { start: startTime, step: 15, values: new Array(values.length).fill(0) };
+  const result: HaPrices = { importPrice, exportPrice };
+
+  if (exportSensor) {
+    if (marketRes.status === 'fulfilled' && marketRes.value) {
+      result.marketPrice = { start: marketRes.value.start, step: 15, values: marketRes.value.values };
+    } else {
+      const reason = marketRes.status === 'rejected' ? (marketRes.reason as Error).message : 'no usable prices';
+      console.warn(`[ha-price] Market-price sensor ${exportSensor} unavailable (${reason}); keeping stored market prices`);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Read one price sensor: state -> today + tomorrow attributes -> 15-min
+ * series. Returns null (after a warning) when the sensor carries no usable
+ * prices; throws when the HA request itself fails.
+ */
+async function readPriceSensor(
+  baseUrl: string,
+  token: string,
+  entityId: string,
+  haPriceConfig: HaPriceConfig,
+  nowMs: number,
+): Promise<TimeSeries | null> {
+  const state = await fetchEntityState(baseUrl, token, entityId);
+  if (!state?.attributes) {
+    console.warn('[ha-price] No attributes found on sensor', entityId);
+    return null;
+  }
+
+  const todayAttr = haPriceConfig.todayAttribute || 'today_hourly_prices';
+  const tomorrowAttr = haPriceConfig.tomorrowAttribute || 'tomorrow_hourly_prices';
+  const timeKey = haPriceConfig.timeKey || 'time';
+  const valueKey = haPriceConfig.valueKey || 'value';
+  const multiplier = haPriceConfig.valueMultiplier ?? 100;
+  const interval = haPriceConfig.priceInterval ?? 60;
+
+  const todayPrices = state.attributes[todayAttr] as PriceSlot[] | undefined;
+  const tomorrowPrices = state.attributes[tomorrowAttr] as PriceSlot[] | undefined;
+
+  if (!Array.isArray(todayPrices) || todayPrices.length === 0) {
+    console.warn('[ha-price] No today prices found in attribute', todayAttr);
+    return null;
+  }
+
+  // Combine today + tomorrow (tomorrow may be empty before ~14:00).
+  // pricePointsToSeries sorts explicit-offset timestamps itself; for bare
+  // wall-clock ones feed order is what resolves the repeated DST hour.
+  const allPrices = [...todayPrices];
+  if (Array.isArray(tomorrowPrices) && tomorrowPrices.length > 0) {
+    allPrices.push(...tomorrowPrices);
+  }
+
+  return pricePointsToSeries(allPrices, { timeKey, valueKey, multiplier, interval, nowMs });
 }
 
 async function fetchEntityState(

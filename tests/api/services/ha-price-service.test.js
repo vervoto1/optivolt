@@ -382,6 +382,109 @@ describe('fetchPricesFromHA', () => {
     }
   });
 
+  describe('market-price export sensor', () => {
+    const importDay = [
+      { time: '2026-03-17T00:00:00+01:00', value: 0.30 },
+      { time: '2026-03-17T01:00:00+01:00', value: 0.40 },
+    ];
+    const marketDay = [
+      { time: '2026-03-17T00:00:00+01:00', value: 0.05 },
+      { time: '2026-03-17T01:00:00+01:00', value: -0.02 },
+    ];
+    const withMarket = (exportSensor = 'sensor.gespot_hourly_market_average_price_nl') => makeSettings({
+      haPriceConfig: { ...makeSettings().haPriceConfig, exportSensor },
+    });
+    /** Route fetches by entity id: `responses` maps a sensor to a response or an Error. */
+    const routeFetch = (responses) => {
+      fetchMock.mockImplementation(async (url) => {
+        const entity = Object.keys(responses).find(id => url.endsWith(`/api/states/${encodeURIComponent(id)}`));
+        const response = responses[entity];
+        if (response instanceof Error) throw response;
+        return response;
+      });
+    };
+
+    it('reads the export sensor with the import sensor settings into marketPrice', async () => {
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': makeOkResponse({ state: '0.3', attributes: { today_hourly_prices: importDay } }),
+        'sensor.gespot_hourly_market_average_price_nl': makeOkResponse({ state: '0.05', attributes: { today_hourly_prices: marketDay } }),
+      });
+
+      const result = await fetchPricesFromHA(withMarket());
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.importPrice.values).toEqual([30, 30, 30, 30, 40, 40, 40, 40]);
+      // importEqualsExport still copies the import price, not the market price.
+      expect(result.exportPrice.values).toEqual(result.importPrice.values);
+      expect(result.marketPrice.start).toBe('2026-03-16T23:00:00.000Z');
+      expect(result.marketPrice.step).toBe(15);
+      expect(result.marketPrice.values.map(v => Math.round(v * 1e6) / 1e6)).toEqual([5, 5, 5, 5, -2, -2, -2, -2]);
+    });
+
+    it('trims the export sensor id', async () => {
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': makeOkResponse({ state: '0.3', attributes: { today_hourly_prices: importDay } }),
+        'sensor.market': makeOkResponse({ state: '0.05', attributes: { today_hourly_prices: marketDay } }),
+      });
+
+      const result = await fetchPricesFromHA(withMarket('  sensor.market  '));
+
+      expect(result.marketPrice.values).toHaveLength(8);
+    });
+
+    it('does not read a market sensor when exportSensor is blank', async () => {
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': makeOkResponse({ state: '0.3', attributes: { today_hourly_prices: importDay } }),
+      });
+
+      const result = await fetchPricesFromHA(withMarket('   '));
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result).not.toHaveProperty('marketPrice');
+    });
+
+    it('still returns the import prices when the market sensor request fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': makeOkResponse({ state: '0.3', attributes: { today_hourly_prices: importDay } }),
+        'sensor.gespot_hourly_market_average_price_nl': { ok: false, status: 404, json: async () => ({}) },
+      });
+
+      const result = await fetchPricesFromHA(withMarket());
+
+      expect(result.importPrice.values).toHaveLength(8);
+      expect(result).not.toHaveProperty('marketPrice');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+        /Market-price sensor sensor\.gespot_hourly_market_average_price_nl unavailable \(HA API returned 404/,
+      ));
+    });
+
+    it('still returns the import prices when the market sensor has no usable prices', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': makeOkResponse({ state: '0.3', attributes: { today_hourly_prices: importDay } }),
+        'sensor.gespot_hourly_market_average_price_nl': makeOkResponse({ state: 'unavailable', attributes: { today_hourly_prices: [] } }),
+      });
+
+      const result = await fetchPricesFromHA(withMarket());
+
+      expect(result.importPrice.values).toHaveLength(8);
+      expect(result).not.toHaveProperty('marketPrice');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('(no usable prices); keeping stored market prices'));
+    });
+
+    it('returns null when the import sensor fails, even with a working market sensor', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      routeFetch({
+        'sensor.gespot_hourly_average_price_nl': new Error('Network failure'),
+        'sensor.gespot_hourly_market_average_price_nl': makeOkResponse({ state: '0.05', attributes: { today_hourly_prices: marketDay } }),
+      });
+
+      expect(await fetchPricesFromHA(withMarket())).toBeNull();
+      expect(warn).toHaveBeenCalledWith('[ha-price] Failed to fetch prices from HA:', 'Network failure');
+    });
+  });
+
   it('uses supervisor proxy when SUPERVISOR_TOKEN is set', async () => {
     process.env.SUPERVISOR_TOKEN = 'test-supervisor-token';
     try {

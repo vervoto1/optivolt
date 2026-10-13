@@ -221,6 +221,64 @@ describe('loadSettings — validateSettings edge cases', () => {
   });
 });
 
+describe('loadSettings — exportTariff merge', () => {
+  beforeEach(() => {
+    _reset();
+  });
+
+  const defaultTariff = {
+    mode: 'auto',
+    effectiveFrom: '2027-01-01T00:00:00+01:00',
+    fee_cents_per_kWh: 0,
+    negativePrice: 'floorZero',
+    terminalSocValuation: 'tailMin',
+    terminalTail_h: 6,
+  };
+
+  it('gives a settings file from before the block the default exportTariff', async () => {
+    _set(getDefaultPath(), makeDefaults({ exportTariff: defaultTariff }));
+    _set('/tmp/test-data/settings.json', { batteryCost_cent_per_kWh: 7 });
+
+    const settings = await loadSettings();
+    expect(settings.exportTariff).toEqual(defaultTariff);
+  });
+
+  it('merges a partial stored exportTariff field by field with the defaults', async () => {
+    _set(getDefaultPath(), makeDefaults({ exportTariff: defaultTariff }));
+    _set('/tmp/test-data/settings.json', { exportTariff: { mode: 'marketPrice', terminalTail_h: 12 } });
+
+    const settings = await loadSettings();
+    expect(settings.exportTariff).toEqual({ ...defaultTariff, mode: 'marketPrice', terminalTail_h: 12 });
+  });
+
+  it('falls back to the default for an invalid stored field instead of failing the load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _set(getDefaultPath(), makeDefaults({ exportTariff: defaultTariff }));
+    _set('/tmp/test-data/settings.json', { exportTariff: { mode: 'sometimes', fee_cents_per_kWh: 1.5 } });
+
+    const settings = await loadSettings();
+    expect(settings.exportTariff).toEqual({ ...defaultTariff, fee_cents_per_kWh: 1.5 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exportTariff.mode'));
+    warn.mockRestore();
+  });
+
+  it('leaves exportTariff absent when neither the defaults nor the file have it', async () => {
+    _set(getDefaultPath(), makeDefaults());
+    _set('/tmp/test-data/settings.json', {});
+
+    const settings = await loadSettings();
+    expect(settings.exportTariff).toBeUndefined();
+  });
+
+  it('ships the block in default-settings.json', async () => {
+    const { EXPORT_TARIFF_DEFAULTS } = await import('../../../api/services/settings-schema.ts');
+    const { readFile } = await import('node:fs/promises');
+    const shipped = JSON.parse(await readFile(getDefaultPath(), 'utf8'));
+    expect(shipped.exportTariff).toEqual(EXPORT_TARIFF_DEFAULTS);
+    expect(shipped.haPriceConfig.exportSensor).toBe('');
+  });
+});
+
 describe('loadSettings — essConfig is defaults-authoritative', () => {
   beforeEach(() => {
     _reset();

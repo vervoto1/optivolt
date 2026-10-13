@@ -88,6 +88,22 @@ export function extractWindow(source: TimeSeries, targetStartMs: number, targetE
 }
 
 /**
+ * The source value covering each target instant, matched by timestamp in the
+ * source's own step (an hourly series gives each 15-minute slot its hour's
+ * value). Instants outside the series, and non-numeric values, read as NaN so
+ * a missing slot never passes for a real 0 (e.g. the market price).
+ */
+export function sampleSeriesAt(source: TimeSeries, timesMs: number[]): number[] {
+  const sourceStartMs = new Date(source.start).getTime();
+  const stepMs = (source.step || 15) * 60 * 1000;
+  return timesMs.map(timeMs => {
+    const index = Math.floor((timeMs - sourceStartMs) / stepMs);
+    const value: unknown = index >= 0 && index < source.values.length ? source.values[index] : undefined;
+    return typeof value === 'number' ? value : NaN;
+  });
+}
+
+/**
  * Calculates the standard forecast time window.
  * Forecast duration:
  * < 13:00 -> until midnight tonight

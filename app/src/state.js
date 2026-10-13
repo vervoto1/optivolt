@@ -1,6 +1,7 @@
 import { SOLUTION_COLORS } from "./charts.js";
 import { parseQuickSettingSelection, writeQuickSettingSelection } from "./optimizer-quick-settings.js";
 import { fmtZonedDDMM, fmtZonedHHMM, withDisplayTimeZone } from "./time-zone.js";
+import { EXPORT_TARIFF_DEFAULT_EFFECTIVE_FROM, updateExportTariffUI } from "./export-tariff.js";
 
 // ---------- UI <-> settings snapshot ----------
 /* v8 ignore start — all optional-chaining (?.) branches are untestable when els is always a complete DOM element map */
@@ -143,6 +144,17 @@ const SETTINGS_FIELDS = {
     valueMultiplier: Number(els.haPriceMultiplier?.value) || 100,
     importEqualsExport: els.haPriceImportEqualsExport?.checked ?? true,
     priceInterval: Number(els.haPriceInterval?.value) || 60,
+    exportSensor: els.haPriceExportSensor?.value ?? '',
+  }),
+
+  // Export tariff — always send complete object (shallow merge safe)
+  exportTariff: (els) => ({
+    mode: els.exportTariffMode?.value || 'auto',
+    effectiveFrom: (els.exportTariffEffectiveFrom?.value ?? EXPORT_TARIFF_DEFAULT_EFFECTIVE_FROM).trim(),
+    fee_cents_per_kWh: num(els.exportTariffFee?.value) ?? 0,
+    negativePrice: els.exportTariffNegativePrice?.value || 'floorZero',
+    terminalSocValuation: els.exportTariffTerminal?.value || 'tailMin',
+    terminalTail_h: num(els.exportTariffTail?.value) ?? 6,
   }),
 
   // EV CHARGING
@@ -256,6 +268,7 @@ export function hydrateSettingsKeys(els, settings, keys) {
   // they read or write; recompute them against the whole form.
   updateTerminalCustomUI(els);
   updateEvChargingSpeedHint(els, settings);
+  updateExportTariffUI(els);
 }
 
 export function hydrateUI(els, obj = {}) {
@@ -431,6 +444,16 @@ export function hydrateUI(els, obj = {}) {
   if (els.haPriceValueKey) els.haPriceValueKey.value = obj.haPriceConfig?.valueKey ?? 'value';
   if (els.haPriceMultiplier) els.haPriceMultiplier.value = obj.haPriceConfig?.valueMultiplier ?? 100;
   if (els.haPriceImportEqualsExport) els.haPriceImportEqualsExport.checked = obj.haPriceConfig?.importEqualsExport ?? true;
+  if (els.haPriceExportSensor) els.haPriceExportSensor.value = obj.haPriceConfig?.exportSensor ?? '';
+
+  // Export tariff
+  const tariff = obj.exportTariff ?? {};
+  if (els.exportTariffMode) els.exportTariffMode.value = tariff.mode ?? 'auto';
+  if (els.exportTariffEffectiveFrom) els.exportTariffEffectiveFrom.value = tariff.effectiveFrom ?? EXPORT_TARIFF_DEFAULT_EFFECTIVE_FROM;
+  if (els.exportTariffFee) els.exportTariffFee.value = tariff.fee_cents_per_kWh ?? 0;
+  if (els.exportTariffNegativePrice) els.exportTariffNegativePrice.value = tariff.negativePrice ?? 'floorZero';
+  if (els.exportTariffTerminal) els.exportTariffTerminal.value = tariff.terminalSocValuation ?? 'tailMin';
+  if (els.exportTariffTail) els.exportTariffTail.value = tariff.terminalTail_h ?? 6;
 
   // UI-only
   if (els.tableKwh && obj.tableShowKwh != null) {
@@ -438,6 +461,7 @@ export function hydrateUI(els, obj = {}) {
   }
 
   updateTerminalCustomUI(els);
+  updateExportTariffUI(els);
   updateRebalanceNudgeUI(els, obj.rebalanceNudge);
 }
 

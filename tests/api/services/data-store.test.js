@@ -84,6 +84,21 @@ describe('validateData', () => {
     expect(() => validateData(data)).toThrow(/evLoad/);
   });
 
+  it('validates marketPrice when present', () => {
+    const data = makeValidData({
+      marketPrice: { start: NOW_STRING, step: 15, values: [8, 9] },
+    });
+    expect(validateData(data)).toBe(data);
+  });
+
+  it('rejects a malformed or null marketPrice', () => {
+    expect(() => validateData(makeValidData({ marketPrice: { start: 'nope', values: [] } })))
+      .toThrow(/marketPrice.*start/);
+    expect(() => validateData(makeValidData({ marketPrice: { start: NOW_STRING, step: 0, values: [] } })))
+      .toThrow(/marketPrice.*step/);
+    expect(() => validateData(makeValidData({ marketPrice: null }))).toThrow(/marketPrice: must be an object/);
+  });
+
   it('throws when step is zero', () => {
     const data = makeValidData({ load: { start: NOW_STRING, step: 0, values: [100] } });
     expect(() => validateData(data)).toThrow(/load.*step.*positive/i);

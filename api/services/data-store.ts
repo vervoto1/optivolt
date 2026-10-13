@@ -28,6 +28,9 @@ export function validateData(d: Data): Data {
   validateTimeSeries(d.pv, 'pv');
   validateTimeSeries(d.importPrice, 'importPrice');
   validateTimeSeries(d.exportPrice, 'exportPrice');
+  if (d.marketPrice !== undefined) {
+    validateTimeSeries(d.marketPrice, 'marketPrice');
+  }
   if (!Number.isFinite(d.soc.value)) {
     throw new Error('Invalid soc: value must be a finite number; refresh VRM data first');
   }

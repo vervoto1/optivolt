@@ -5,6 +5,31 @@
 export type TerminalSocValuation = 'zero' | 'min' | 'avg' | 'max' | 'custom';
 
 /**
+ * What the export tariff resolved to, attached by config-builder as
+ * `SolverConfig.exportTariffInfo` (only when settings carry an `exportTariff`
+ * block). Diagnostics only: buildLP never reads it.
+ */
+export interface ExportTariffInfo {
+  /** Slots valued at the market price (minus fee, after the negative-price rule). */
+  marketPricedSlots: number;
+  /** Market-rule slots with no finite market price, valued at 0. */
+  fallbackSlots: number;
+  /** `auto` mode, no market source configured, and the horizon reaches effectiveFrom − 7 days. */
+  missingMarketSource: boolean;
+  /** The configured switch instant, as stored (ISO with offset). */
+  effectiveFrom: string;
+  /**
+   * The terminal valuation that replaced the top-level one because the last
+   * slot is market-priced (or fallback), or null when the top-level setting
+   * was used.
+   */
+  terminalOverride: {
+    terminalSocValuation: TerminalSocValuation;
+    terminalSocCustomPrice_cents_per_kWh: number;
+  } | null;
+}
+
+/**
  * How HA should control the charger for a given slot:
  *   fixed      — set exactly ev_charge_A amps (minimum, partial, or source-limited planned rate)
  *   solar_only — track actual PV surplus only; may turn off if PV drops below minimum
@@ -148,6 +173,9 @@ export interface SolverConfig {
 
   // EV charging (optional — only present when evEnabled is true and EV is plugged in)
   ev?: EvConfig;
+
+  // Export-tariff diagnostics (ignored by buildLP)
+  exportTariffInfo?: ExportTariffInfo;
 }
 
 export interface CvPhaseThreshold {

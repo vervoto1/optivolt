@@ -7,11 +7,13 @@ vi.mock('../../../app/src/api/client.js', () => ({
 }));
 
 import { getJson, postJson } from '../../../app/src/api/client.js';
+import { serverNowMs, syncServerClock } from '../../../app/src/server-clock.js';
 import {
   fetchStoredSettings,
   saveStoredSettings,
   requestRemoteSolve,
   fetchLastPlan,
+  fetchServerTimeZone,
   refreshVrmSettings,
   fetchHaEntityState,
   fetchPredictionConfig,
@@ -55,6 +57,19 @@ describe('api.js wrappers', () => {
     getJson.mockResolvedValue('not an object');
     const res = await fetchStoredSettings();
     expect(res).toEqual({});
+  });
+
+  it('fetchServerTimeZone calls getJson /timezone and syncs the server clock from its Date header', async () => {
+    getJson.mockResolvedValue({ timeZone: 'Europe/Amsterdam' });
+    const res = await fetchServerTimeZone();
+    expect(res).toEqual({ timeZone: 'Europe/Amsterdam' });
+    expect(getJson).toHaveBeenCalledWith('/timezone', { onResponse: expect.any(Function) });
+
+    const { onResponse } = getJson.mock.calls[0][1];
+    const ahead = new Date(Date.now() + 3_600_000).toUTCString();
+    onResponse({ headers: new Headers({ Date: ahead }) });
+    expect(serverNowMs() - Date.now()).toBeGreaterThan(3_590_000);
+    syncServerClock(undefined);
   });
 
   it('saveStoredSettings calls postJson /settings', async () => {

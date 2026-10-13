@@ -7,6 +7,7 @@ export type PvCurtailmentReason =
   | 'price_not_negative'
   | 'no_expected_pv'
   | 'planned_pv_curtailment'
+  | 'negative_export_not_curtailed'
   | 'insufficient_current_grid_headroom'
   | 'insufficient_remaining_grid_headroom'
   | 'negative_price_grid_headroom';
@@ -112,10 +113,12 @@ export function decidePvCurtailment(
     remainingGridHeadroom_Wh: 0,
   });
 
-  if (!isNegativePrice(row, policy)) return base('price_not_negative');
+  const importNegative = isNegativeImportPrice(row, policy);
+  if (!importNegative && !isNegativeExportPrice(row, policy)) return base('price_not_negative');
   if (currentPv_W < policy.minPvPowerW) return base('no_expected_pv');
 
-  const negativeBlockEndIndex = findNegativeBlockEnd(rows, currentIndex, policy);
+  const isNegative = importNegative ? isNegativeImportPrice : isNegativePrice;
+  const negativeBlockEndIndex = findNegativeBlockEnd(rows, currentIndex, policy, isNegative);
   const remaining = computeRemainingEnergy(rows, currentIndex, negativeBlockEndIndex, cfg, policy, nowMs);
 
   const withEnergy = (reason: PvCurtailmentReason, shouldDisable = false): PvCurtailmentDecision => ({
@@ -127,6 +130,11 @@ export function decidePvCurtailment(
   if (currentPvCurtail_W >= Math.max(policy.minPvPowerW, currentPv_W - FLOW_TOLERANCE_W)) {
     return withEnergy('planned_pv_curtailment', true);
   }
+
+  // A negative export price alone only costs money on the PV the plan exports;
+  // switching all PV off would buy the self-consumed part back at the import
+  // price. So it acts only through the plan's own curtailment (above).
+  if (!importNegative) return withEnergy('negative_export_not_curtailed');
 
   if (currentGridHeadroom_W + FLOW_TOLERANCE_W < Math.max(policy.minGridHeadroomW, currentPvToReplace_W)) {
     return withEnergy('insufficient_current_grid_headroom');
@@ -159,14 +167,31 @@ export function annotatePvCurtailmentSlots(
   });
 }
 
-function isNegativePrice(row: PlanRow, policy: PvCurtailmentPolicy): boolean {
+type NegativePriceTest = (row: PlanRow, policy: PvCurtailmentPolicy) => boolean;
+
+function isNegativeImportPrice(row: PlanRow, policy: PvCurtailmentPolicy): boolean {
   return row.ic < policy.negativePriceThreshold_cents_per_kWh;
 }
 
-function findNegativeBlockEnd(rows: PlanRow[], startIndex: number, policy: PvCurtailmentPolicy): number {
+// Export counts only when it truly costs money (passThrough tariff): with a
+// positive threshold, a 0 c floored or fallback export slot must not qualify.
+function isNegativeExportPrice(row: PlanRow, policy: PvCurtailmentPolicy): boolean {
+  return row.ec < Math.min(policy.negativePriceThreshold_cents_per_kWh, 0);
+}
+
+function isNegativePrice(row: PlanRow, policy: PvCurtailmentPolicy): boolean {
+  return isNegativeImportPrice(row, policy) || isNegativeExportPrice(row, policy);
+}
+
+function findNegativeBlockEnd(
+  rows: PlanRow[],
+  startIndex: number,
+  policy: PvCurtailmentPolicy,
+  isNegative: NegativePriceTest,
+): number {
   let endIndex = startIndex;
   for (let i = startIndex + 1; i < rows.length; i += 1) {
-    if (!isNegativePrice(rows[i], policy)) break;
+    if (!isNegative(rows[i], policy)) break;
     endIndex = i;
   }
   return endIndex;

@@ -18,6 +18,8 @@ Browser modules providing UI logic, state management, charting, predictions, and
 | `predictions-validation.js` | Strategy validation: compares parameter combinations for accuracy |
 | `ui-binding.js` | DOM element references via querySelector; event handler wiring; Ctrl+Enter shortcut |
 | `config-store.js` | Load/save settings to API (`/settings` endpoint) |
+| `export-tariff.js` | Export-tariff card: effective-from parsing and hint, status line (`describeExportTariffStatus()`, `updateExportTariffUI()`) |
+| `server-clock.js` | Server clock offset from the `GET /timezone` `Date` header: `serverNowMs()`, `syncServerClock()` |
 | `theme.js` | Dark mode toggle: localStorage persistence, system preference detection |
 | `utils.js` | Debounce helper for input throttling |
 
