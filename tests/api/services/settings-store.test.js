@@ -287,7 +287,7 @@ describe('loadSettings — extendedHorizon merge', () => {
   const defaultBlock = {
     mode: 'off',
     extraDays: 3,
-    forecastUrl: 'https://epexpredictor.batzill.com',
+    forecastUrl: 'auto',
     region: 'NL',
     importVat_percent: 21,
     riskMargin_cents_per_kWh: 1,

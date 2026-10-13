@@ -1,4 +1,4 @@
-import type { TimeSeries, PlanRow, DessSlot, TerminalSocValuation } from '../lib/types.ts';
+import type { TimeSeries, PlanRow, DessSlot, TerminalSocValuation, PriceForecastSourceKind } from '../lib/types.ts';
 import type { PvCurtailmentSlot } from '../lib/pv-curtailment.ts';
 import type { DayFilter, Aggregation } from '../lib/load-predictor-historical.ts';
 import type { SelectionMetric, SelectionReason, StrategyScore } from '../lib/strategy-selector.ts';
@@ -359,7 +359,11 @@ export interface ExtendedHorizonConfig {
   mode: ExtendedHorizonMode;
   /** Days planned past the local midnight at or after the firm end (1–4). */
   extraDays: number;
-  /** Base URL of the EpexPredictor feed: http(s), no credentials. */
+  /**
+   * Base URL of the EpexPredictor feed (http(s), no credentials), or `auto`:
+   * the EpexPredictor add-on when installed and started, else the public
+   * server (api/services/forecast-source.ts).
+   */
   forecastUrl: string;
   /** Bidding zone requested from the feed. */
   region: PriceForecastRegion;
@@ -459,6 +463,12 @@ export interface PriceForecastData {
   /** Market price, c/kWh ex VAT, 15-minute slots, as fetched (from local midnight). */
   series: TimeSeries;
   fit?: PriceForecastFit;
+  /** Where it was fetched from (absent in a forecast stored before 0.7.73). */
+  source?: PriceForecastSourceKind;
+  /** Base URL it was fetched from (absent in a forecast stored before 0.7.73). */
+  url?: string;
+  /** `forecastUrl` `auto` only, with `source` `public`: why the local add-on was not used. */
+  sourceReason?: string;
 }
 
 export interface Data {

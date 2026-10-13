@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   EXTENDED_HORIZON_DEFAULTS,
   describeExtendedHorizonStatus,
+  formatForecastSource,
   formatHorizonDay,
   formatHorizonInstant,
   updateExtendedHorizonUI,
@@ -22,7 +23,7 @@ const END_MS = Date.parse('2026-10-17T22:00:00Z');
 const HORIZON = {
   mode: 'off',
   extraDays: 3,
-  forecastUrl: 'https://epexpredictor.batzill.com',
+  forecastUrl: 'auto',
   region: 'NL',
   importVat_percent: 21,
   riskMargin_cents_per_kWh: 1,
@@ -140,6 +141,27 @@ describe('describeExtendedHorizonStatus', () => {
   });
 });
 
+describe('formatForecastSource', () => {
+  it('names the local add-on, the public server or the configured URL', () => {
+    expect(formatForecastSource({ source: 'local', url: 'http://601a68d0-epexpredictor' })).toBe('; forecast: local add-on');
+    expect(formatForecastSource({ source: 'public', url: 'https://epexpredictor.batzill.com' })).toBe('; forecast: public server');
+    expect(formatForecastSource({ source: 'configured', url: ' http://192.0.2.10:8000 ' })).toBe('; forecast: http://192.0.2.10:8000');
+  });
+
+  it('says nothing without a usable source', () => {
+    for (const fs of [undefined, null, {}, { source: 'configured' }, { source: 'configured', url: '  ' }, { source: 'configured', url: 42 }, { source: 'other', url: 'http://x' }]) {
+      expect(formatForecastSource(fs)).toBe('');
+    }
+  });
+
+  it('is appended to the extended and the firm-only status line', () => {
+    expect(describeExtendedHorizonStatus({ mode: 'on', info: { ...EXTENDED_INFO, forecastSource: { source: 'local', url: 'http://h' } } }).text)
+      .toBe('Planning through Sat 17 Oct (forecast prices after Thu 00:00; fit a 1.21, b 14.3 c); forecast: local add-on');
+    expect(describeExtendedHorizonStatus({ mode: 'on', info: { ...FIRM_ONLY_INFO, forecastSource: { source: 'public', url: 'https://p' } } }))
+      .toEqual({ tone: 'warn', text: 'Published prices only: the price forecast is missing; forecast: public server' });
+  });
+});
+
 describe('updateExtendedHorizonUI', () => {
   function makeEls() {
     const els = {
@@ -209,6 +231,18 @@ describe('multi-day horizon settings on the real page', () => {
     const els = loadPage();
     expect(snapshotUI(els).extendedHorizon).toEqual(HORIZON);
     expect(EXTENDED_HORIZON_DEFAULTS).toEqual(HORIZON);
+  });
+
+  it('the forecast URL field takes "auto" and explains it', () => {
+    const els = loadPage();
+    const input = els.extendedHorizonForecastUrl;
+    // A text field: "auto" is not a URL, so type="url" would flag it invalid.
+    expect(input.type).toBe('text');
+    expect(input.value).toBe('auto');
+    expect(input.placeholder).toBe('auto');
+    expect(input.checkValidity()).toBe(true);
+    const help = document.getElementById(input.getAttribute('aria-describedby'));
+    expect(help.textContent).toContain('auto = the EpexPredictor add-on from this repository when installed and running, else the public server');
   });
 
   it('hydrates the inputs and the status line from stored settings', () => {

@@ -1,0 +1,28 @@
+name: EpexPredictor
+slug: epexpredictor
+version: "0.1.0"
+description: Local day-ahead electricity price forecast for OptiVolt's multi-day horizon
+url: https://github.com/vervoto1/optivolt
+image: "ghcr.io/vervoto1/{arch}-addon-epexpredictor"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+# Not an s6-overlay image: let Docker's init reap the uvicorn process.
+init: true
+
+# Only OptiVolt (and other add-ons) need it, over the internal network at
+# http://<hostname shown on the Info tab>. The port is declared but not mapped;
+# map it in the Network section to reach the API from the LAN for debugging.
+ports:
+  "80/tcp": null
+ports_description:
+  "80/tcp": Forecast API (not needed by OptiVolt; for debugging only)
+
+watchdog: "http://[HOST]:[PORT:80]/openapi.json"
+
+options:
+  entsoe_api_key: ""
+schema:
+  entsoe_api_key: password?

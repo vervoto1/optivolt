@@ -2038,8 +2038,9 @@
             </div>
             <label class="block text-sm">
               <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Forecast URL</span>
-              <input id="extended-horizon-forecast-url" type="url" value="https://epexpredictor.batzill.com" placeholder="https://epexpredictor.batzill.com"
-                spellcheck="false" autocomplete="off" class="form-input font-mono" data-settings-input data-no-autosolve />
+              <input id="extended-horizon-forecast-url" type="text" inputmode="url" value="auto" placeholder="auto"
+                spellcheck="false" autocomplete="off" aria-describedby="extended-horizon-forecast-url-help" class="form-input font-mono" data-settings-input data-no-autosolve />
+              <span id="extended-horizon-forecast-url-help" class="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">auto = the EpexPredictor add-on from this repository when installed and running, else the public server. Or an http(s) URL.</span>
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="text-sm">

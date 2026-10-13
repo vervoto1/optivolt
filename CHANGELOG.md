@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.73 - 2026-10-13
+
+The multi-day horizon's forecast URL can be `auto`, now the default: OptiVolt uses the EpexPredictor add-on from this repository when it is installed and started, and the public server otherwise, so the local forecaster needs no URL typed in.
+
+- **`extendedHorizon.forecastUrl` accepts `auto`** besides an `http(s)` URL (trimmed, any case, stored as `auto`); `POST /settings` rejects anything else with `extendedHorizon.forecastUrl must be "auto" or a valid http(s) URL`. The default in `default-settings.json` and the UI is now `auto`. A settings file that already stores a URL keeps it: an install that saved its settings on 0.7.72 has `https://epexpredictor.batzill.com` stored, so set the field to `auto` to switch.
+- **How `auto` resolves** (`api/services/forecast-source.ts`, before each forecast fetch): outside Home Assistant (no Supervisor) it is the public server. In the add-on OptiVolt reads its own slug from `GET http://supervisor/addons/self/info` (e.g. `601a68d0_optivolt`), replaces `optivolt` with `epexpredictor`, and reads `GET http://supervisor/addons/<slug>/info`: when that add-on is `started` the forecast comes from `http://<its hostname>` (port 80 on the internal network). Not installed, not started, or a failed Supervisor call falls back to the public server with the reason (`not installed`, `not started (state stopped)`, `Supervisor lookup failed: …`). The answer is cached for 10 minutes either way (5 s timeout per call), so an add-on started later is used from the next refresh after that.
+- **Add-on permission: `hassio_api: true`** in `optivolt/config.yaml`, with the Supervisor's `default` role. It allows reading add-on info (`/addons/self/info`, `/addons/<slug>/info`); OptiVolt only reads the state and hostname and changes nothing.
+- **Where the forecast came from is recorded and shown.** `data.priceForecast` gains optional `source` (`configured`, `local` or `public`), `url` and, for an `auto` fallback, `sourceReason`; a forecast stored by 0.7.72 loads unchanged. `summary.extendedHorizon.forecastSource` (`{ source, url }`) reports it, and the card's status line ends with "forecast: local add-on", "forecast: public server" or "forecast: <url>". With `auto`, a forecast fetched from the public server logs a warning and, in `collect` and `on`, adds a plan warning: "Local EpexPredictor add-on not used (<reason>): forecast from the public server".
+- **UI.** The Forecast URL field is a text field (an `auto` value is not a URL) with the explanation "auto = the EpexPredictor add-on from this repository when installed and running, else the public server".
+- **Docs.** The README and the EpexPredictor add-on's documentation describe `auto`: install and start the add-on, nothing to configure; a hostname is only needed to pin it.
+
 ## 0.7.72 - 2026-10-13
 
 An opt-in multi-day planning horizon: the plan can run 1–4 days past the published day-ahead prices, priced with a market-price forecast, so the optimizer itself decides how much charge to carry into the next days. With the default `mode: "off"` nothing changes: every LP, DESS schedule and plan-history write is byte-identical to 0.7.71.

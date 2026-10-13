@@ -23,6 +23,7 @@ import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts'
 import { getRebalanceNudge, recordCompletedRebalanceHold, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
 import { extendedWindowEndMs, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
+import { isAutoForecastUrl } from '../../lib/price-forecast.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data, Settings } from '../types.ts';
@@ -83,6 +84,25 @@ function computeExtendedSeriesWarnings(data: Data, settings: Settings, firmEndMs
   check('Load forecast', settings.dataSources.load, data.load);
   check('PV forecast', settings.dataSources.pv, data.pv);
   return warnings;
+}
+
+/**
+ * Multi-day horizon (`collect`/`on`) with `forecastUrl` `auto`: the stored
+ * forecast came from the public server because the local EpexPredictor
+ * add-on could not be used (the reason was stored with the forecast).
+ */
+function computeForecastSourceWarnings(data: Data, settings: Settings): string[] {
+  const cfg = settings.extendedHorizon;
+  if (!cfg || cfg.mode === 'off' || !isAutoForecastUrl(cfg.forecastUrl)) return [];
+  const pf = data.priceForecast;
+  if (pf?.source !== 'public') return [];
+  return [`Local EpexPredictor add-on not used (${pf.sourceReason ?? 'reason unknown'}): forecast from the public server`];
+}
+
+/** Where the stored forecast came from, for summary.extendedHorizon (absent when not recorded). */
+function forecastSourceOf(data: Data): Pick<ExtendedHorizonSummary, 'forecastSource'> {
+  const pf = data.priceForecast;
+  return pf?.source && pf.url ? { forecastSource: { source: pf.source, url: pf.url } } : {};
 }
 
 /**
@@ -849,7 +869,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const summary = buildPlanSummary(rowsWithDess, cfg, diagnostics, rebalanceCtx);
   if (relaxedMaxStartSlot !== undefined) summary.rebalanceHoldMaxStartSlot = relaxedMaxStartSlot;
-  if (extended) summary.extendedHorizon = extended.summary;
+  if (extended) summary.extendedHorizon = { ...extended.summary, ...forecastSourceOf(data) };
 
   const horizonWarnings = computeHorizonWarnings(data, timing.startMs, settings);
   for (const w of horizonWarnings) {
@@ -860,6 +880,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     console.warn(`[export-tariff] ${w}`);
   }
   const extendedWarnings = [
+    ...computeForecastSourceWarnings(data, settings),
     ...computeExtendedSeriesWarnings(data, settings, extended?.summary.firmEndMs),
     ...(extended?.warnings ?? []),
   ];

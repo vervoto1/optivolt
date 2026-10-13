@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.ts';
 import type { Data, PriceForecastData, TimeSeries } from '../types.ts';
 import { validatePredictionAdjustment } from './prediction-adjustments.ts';
-import { PRICE_FORECAST_REGIONS, PRICE_FORECAST_STEP_M } from '../../lib/price-forecast.ts';
+import { PRICE_FORECAST_REGIONS, PRICE_FORECAST_SOURCES, PRICE_FORECAST_STEP_M } from '../../lib/price-forecast.ts';
 
 const DATA_DIR = resolveDataDir();
 const DATA_PATH = path.join(DATA_DIR, 'data.json');
@@ -100,6 +100,16 @@ export function validatePriceForecast(pf: PriceForecastData): void {
       throw new Error('Invalid priceForecast.fit.n: must be a whole number ≥ 0');
     }
     assertTimestamp(fit.fittedAt, 'priceForecast.fit.fittedAt');
+  }
+  // Optional: a forecast stored before 0.7.73 has none of these.
+  if (pf.source !== undefined && !(PRICE_FORECAST_SOURCES as readonly unknown[]).includes(pf.source)) {
+    throw new Error(`Invalid priceForecast.source: must be one of ${PRICE_FORECAST_SOURCES.join(', ')}`);
+  }
+  if (pf.url !== undefined && (typeof pf.url !== 'string' || pf.url === '')) {
+    throw new Error('Invalid priceForecast.url: must be a non-empty string');
+  }
+  if (pf.sourceReason !== undefined && typeof pf.sourceReason !== 'string') {
+    throw new Error('Invalid priceForecast.sourceReason: must be a string');
   }
 }
 

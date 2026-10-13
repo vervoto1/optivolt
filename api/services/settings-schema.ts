@@ -20,7 +20,12 @@ import type {
 } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
 import { parseEffectiveFrom } from '../../lib/export-tariff.ts';
-import { PRICE_FORECAST_REGIONS, forecastUrlError } from '../../lib/price-forecast.ts';
+import {
+  AUTO_FORECAST_URL,
+  PRICE_FORECAST_REGIONS,
+  forecastUrlSettingError,
+  isAutoForecastUrl,
+} from '../../lib/price-forecast.ts';
 import {
   assertObject,
   clampInt,
@@ -106,7 +111,7 @@ const EXPORT_TERMINAL_VALUATIONS = ['tailMin', 'zero', 'min', 'avg', 'max', 'cus
 export const EXTENDED_HORIZON_DEFAULTS: Readonly<ExtendedHorizonConfig> = {
   mode: 'off',
   extraDays: 3,
-  forecastUrl: 'https://epexpredictor.batzill.com',
+  forecastUrl: AUTO_FORECAST_URL,
   region: 'NL',
   importVat_percent: 21,
   riskMargin_cents_per_kWh: 1.0,
@@ -696,12 +701,17 @@ function normalizeExtendedHorizon(extendedHorizon: unknown): ExtendedHorizonConf
   return {
     mode: pick('mode', value => typeof value === 'string' && (EXTENDED_HORIZON_MODES as readonly string[]).includes(value)),
     extraDays: pick('extraDays', isValidExtraDays),
-    forecastUrl: pick('forecastUrl', value => forecastUrlError(value) === null),
+    // `auto` is stored lower-case, whatever case it was written in.
+    forecastUrl: normalizeForecastUrl(pick('forecastUrl', value => forecastUrlSettingError(value) === null)),
     region: pick('region', isValidRegion),
     importVat_percent: pick('importVat_percent', isValidVat),
     riskMargin_cents_per_kWh: pick('riskMargin_cents_per_kWh', isValidFee),
     refreshMinutes: pick('refreshMinutes', isValidRefreshMinutes),
   };
+}
+
+function normalizeForecastUrl(value: string): string {
+  return isAutoForecastUrl(value) ? AUTO_FORECAST_URL : value;
 }
 
 /** Strict `extendedHorizon` checks for a `POST /settings` patch (only the keys it carries). */
@@ -714,7 +724,7 @@ function validateExtendedHorizonPatch(value: unknown): void {
     throw new HttpError(400, `extendedHorizon.extraDays must be a whole number between ${min} and ${max}`);
   }
   if (has('forecastUrl')) {
-    const error = forecastUrlError(value.forecastUrl);
+    const error = forecastUrlSettingError(value.forecastUrl);
     if (error) throw new HttpError(400, `extendedHorizon.forecastUrl ${error}`);
   }
   if (has('region')) expectEnum(value.region, PRICE_FORECAST_REGIONS, 'extendedHorizon.region');

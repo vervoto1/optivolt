@@ -100,6 +100,9 @@ jobs:
           persist-credentials: false
 
       - name: Copy source into add-on directory
+        # Only the OptiVolt image is built from this repository's source; other
+        # add-ons (epexpredictor) are self-contained in their directory.
+        if: inputs.addon == 'optivolt'
         env:
           ADDON: ${{ inputs.addon }}
         run: |

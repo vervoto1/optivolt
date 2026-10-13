@@ -18,6 +18,7 @@ import { resolveDataDir, readJson, writeJson, withJsonLock } from './json-store.
 import { updateData } from './data-store.ts';
 import { withRetry } from './retry.ts';
 import { fetchWithTimeout } from '../../lib/fetch-utils.ts';
+import { resolveForecastSource } from './forecast-source.ts';
 import {
   buildPriceForecastUrl,
   parsePriceForecastResponse,
@@ -184,7 +185,10 @@ export interface PriceForecastRefreshResult {
   error?: string;
 }
 
-/** Fetch and parse the feed (10 s timeout, 2 attempts). Throws on failure. */
+/**
+ * Fetch and parse the feed (10 s timeout, 2 attempts). `forecastUrl` is the
+ * base URL to fetch from (already resolved: not `auto`). Throws on failure.
+ */
 export async function fetchPriceForecast(
   cfg: Pick<ExtendedHorizonConfig, 'forecastUrl' | 'region'>,
   nowMs: number,
@@ -209,9 +213,11 @@ export async function fetchPriceForecast(
 }
 
 /**
- * Fetch, persist `data.priceForecast` (keeping the stored import fit when the
- * region is unchanged) and log the daily snapshot. Never throws: a failure
- * keeps the stored forecast, warns, and starts the failure back-off.
+ * Resolve the source (`forecastUrl` `auto`: the local add-on or the public
+ * server), fetch, persist `data.priceForecast` with its source (keeping the
+ * stored import fit when the region is unchanged) and log the daily snapshot.
+ * Never throws: a failure keeps the stored forecast, warns, and starts the
+ * failure back-off.
  */
 export async function refreshPriceForecast(
   cfg: ExtendedHorizonConfig,
@@ -219,11 +225,20 @@ export async function refreshPriceForecast(
 ): Promise<PriceForecastRefreshResult> {
   let forecast: PriceForecastData;
   try {
-    const fetched = await fetchPriceForecast(cfg, nowMs);
+    const resolved = await resolveForecastSource(cfg.forecastUrl, { nowMs });
+    if (resolved.source === 'public') {
+      console.warn(`[price-forecast] local EpexPredictor add-on not used (${resolved.reason}): fetching from the public server`);
+    }
+    const fetched = await fetchPriceForecast({ forecastUrl: resolved.url, region: cfg.region }, nowMs);
+    const source = {
+      source: resolved.source,
+      url: resolved.url,
+      ...(resolved.reason !== undefined ? { sourceReason: resolved.reason } : {}),
+    };
     const persisted = await updateData(current => {
       const previous = current.priceForecast;
       const fit = previous?.fit && previous.region === fetched.region ? { fit: previous.fit } : {};
-      return { ...current, priceForecast: { ...fetched, ...fit } };
+      return { ...current, priceForecast: { ...fetched, ...fit, ...source } };
     });
     // v8 ignore next — updateData always returns the persisted object; ?? is defensive
     forecast = persisted.priceForecast ?? fetched;
@@ -235,7 +250,7 @@ export async function refreshPriceForecast(
   }
   lastFailureMs = null;
   const logged = await recordPriceForecastSnapshot(forecast, nowMs);
-  console.log(`[price-forecast] fetched ${forecast.series.values.length} slots for ${forecast.region}; published until ${forecast.publishedEnd}`);
+  console.log(`[price-forecast] fetched ${forecast.series.values.length} slots for ${forecast.region} from ${forecast.url}; published until ${forecast.publishedEnd}`);
   return { ok: true, forecast, logged };
 }
 

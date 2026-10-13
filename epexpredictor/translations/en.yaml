@@ -1,0 +1,10 @@
+configuration:
+  entsoe_api_key:
+    name: ENTSO-E API key
+    description: >
+      Optional but recommended. Adds ENTSO-E's grid load forecast (a noticeably
+      better model) and a second price source. Request a free key from the
+      ENTSO-E transparency platform (register, then e-mail
+      transparency@entsoe.eu with "Restful API access" in the subject).
+network:
+  80/tcp: Forecast API (for debugging only; OptiVolt uses the internal network)

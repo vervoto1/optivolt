@@ -719,6 +719,79 @@ describe('computePlan — multi-day horizon off or collect', () => {
   });
 });
 
+describe('computePlan — forecast source', () => {
+  const PUBLIC = 'https://epexpredictor.batzill.com';
+  const fallback = (reason = 'not installed') => forecast({ source: 'public', url: PUBLIC, sourceReason: reason });
+
+  it('reports where the stored forecast came from in summary.extendedHorizon', async () => {
+    loadData.mockResolvedValue(makeData({ priceForecast: forecast({ source: 'local', url: 'http://601a68d0-epexpredictor' }) }));
+    loadSettings.mockResolvedValue(onSettings({ extendedHorizon: extendedHorizon({ forecastUrl: 'auto' }) }));
+
+    const plan = await computePlan();
+
+    expect(plan.summary.extendedHorizon).toMatchObject({
+      status: 'extended',
+      forecastSource: { source: 'local', url: 'http://601a68d0-epexpredictor' },
+    });
+    expect(plan.summary.horizonWarnings).toBeUndefined();
+  });
+
+  it('leaves forecastSource out for a forecast stored without one (before 0.7.73)', async () => {
+    const plan = await computePlan();
+    expect(plan.summary.extendedHorizon).not.toHaveProperty('forecastSource');
+  });
+
+  it('reports it on a firm-only plan too', async () => {
+    loadData.mockResolvedValue(makeData({ priceForecast: forecast({ source: 'configured', url: 'http://192.0.2.10:8000' }) }));
+    solverCtl.solveHook = ({ extended, instance, lp, options }) => (extended ? { Status: 'Infeasible' } : instance.solve(lp, options));
+
+    const plan = await computePlan();
+
+    expect(plan.summary.extendedHorizon).toMatchObject({ status: 'firmOnly', forecastSource: { source: 'configured', url: 'http://192.0.2.10:8000' } });
+  });
+
+  it('warns when auto fell back to the public server, with the stored reason', async () => {
+    loadData.mockResolvedValue(makeData({ priceForecast: fallback('not started (state stopped)') }));
+    loadSettings.mockResolvedValue(onSettings({ extendedHorizon: extendedHorizon({ forecastUrl: 'auto' }) }));
+
+    const plan = await computePlan();
+
+    const warning = 'Local EpexPredictor add-on not used (not started (state stopped)): forecast from the public server';
+    expect(plan.summary.extendedHorizon.forecastSource).toEqual({ source: 'public', url: PUBLIC });
+    expect(plan.summary.horizonWarnings).toEqual([warning]);
+    expect(extendedWarnings()).toEqual([`[extended-horizon] ${warning}`]);
+  });
+
+  it('warns in collect mode as well, and names no reason when none was stored', async () => {
+    const { sourceReason: _r, ...noReason } = fallback();
+    loadData.mockResolvedValue(makeData({ priceForecast: noReason }));
+    loadSettings.mockResolvedValue(onSettings({ extendedHorizon: extendedHorizon({ mode: 'collect', forecastUrl: 'auto' }) }));
+
+    const plan = await computePlan();
+
+    expect(plan.summary).not.toHaveProperty('extendedHorizon');
+    expect(plan.summary.horizonWarnings).toEqual(['Local EpexPredictor add-on not used (reason unknown): forecast from the public server']);
+  });
+
+  it('does not warn with the mode off, a configured URL, or a forecast that did not fall back', async () => {
+    const cases = [
+      [extendedHorizon({ mode: 'off', forecastUrl: 'auto' }), fallback()],
+      [extendedHorizon({ forecastUrl: PUBLIC }), fallback()],
+      [extendedHorizon({ forecastUrl: 'auto' }), forecast({ source: 'local', url: 'http://h' })],
+      [extendedHorizon({ forecastUrl: 'auto' }), forecast()],
+    ];
+    for (const [eh, priceForecast] of cases) {
+      loadSettings.mockResolvedValue(onSettings({ extendedHorizon: eh }));
+      loadData.mockResolvedValue(makeData({ priceForecast }));
+      const plan = await computePlan();
+      expect(plan.summary.horizonWarnings ?? []).not.toContainEqual(expect.stringContaining('EpexPredictor'));
+    }
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue(makeData({ priceForecast: fallback() }));
+    expect((await computePlan()).summary.horizonWarnings).toBeUndefined();
+  });
+});
+
 describe('writePlanToVictron — firm slots only', () => {
   const dessRow = (i, overrides = {}) => ({
     timestampMs: NOW + i * Q,

@@ -1,7 +1,7 @@
 name: Builder
 
 env:
-  MONITORED_FILES: "config.yaml Dockerfile rootfs"
+  MONITORED_FILES: "config.yaml Dockerfile rootfs run.sh constraints.txt"
 
 on:
   push:
