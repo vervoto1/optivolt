@@ -15,6 +15,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /code
 
+# LightGBM's wheel links against the OpenMP runtime, which slim images lack.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libgomp1 \
+  && rm -rf /var/lib/apt/lists/*
+
 # constraints.txt pins every runtime dependency to the versions this add-on was
 # tested with; upstream's requirements.txt is unpinned. The test-only packages
 # after its "# Testing dependencies" marker are not installed.
