@@ -153,3 +153,49 @@ jobs:
       run: |
         docker rm -f optivolt-smoke optivolt-supervisor || true
         docker network rm optivolt-smoke || true
+
+  # Builds the EpexPredictor add-on image and checks that it boots and serves its
+  # API with the add-on's default options. It does not train (that downloads
+  # months of data from third parties); training is exercised on the host.
+  epexpredictor-smoke:
+    name: EpexPredictor add-on smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    - name: Build image
+      run: docker build --platform linux/amd64 -t epexpredictor-smoke:ci epexpredictor/
+
+    - name: Start container
+      run: |
+        mkdir -p "$RUNNER_TEMP/epex-data"
+        yq -o=json '.options' epexpredictor/config.yaml > "$RUNNER_TEMP/epex-data/options.json"
+        docker run -d --name epexpredictor-smoke -v "$RUNNER_TEMP/epex-data:/data" \
+          -p 127.0.0.1:8080:80 epexpredictor-smoke:ci
+
+    - name: Wait for the API
+      run: |
+        for i in $(seq 1 45); do
+          if curl -fsS -m 5 http://127.0.0.1:8080/openapi.json | jq -e '.paths["/prices"]' > /dev/null; then
+            echo "API is up."
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::the EpexPredictor image did not serve /openapi.json within 90 s"
+        exit 1
+
+    - name: Models directory created on /data
+      run: test -d "$RUNNER_TEMP/epex-data/models"
+
+    - name: Dump container logs on failure
+      if: failure()
+      run: docker logs epexpredictor-smoke
+
+    - name: Remove container
+      if: always()
+      run: docker rm -f epexpredictor-smoke || true
