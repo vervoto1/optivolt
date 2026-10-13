@@ -8,8 +8,8 @@ import { buildLP } from '../../lib/build-lp.ts';
 import { solveOptionsFor } from '../../lib/solve-options.ts';
 import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
-import type { SolverConfig, PlanSummary, PlanRow, TimeSeries } from '../../lib/types.ts';
-import { getSolverInputs, buildPlannerConfig, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from './config-builder.ts';
+import type { SolverConfig, PlanSummary, PlanRow, TimeSeries, ExportTariffInfo } from '../../lib/types.ts';
+import { getSolverInputs, buildPlannerConfig, isMarketSourceConfigured, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
 // Aliased: computePlan's `updateData` option means "refresh the series first".
@@ -24,7 +24,7 @@ import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data, Settings } from '../types.ts';
 import type { ShoreOptimizerSlotMode } from '../../lib/shore-optimizer.ts';
 
-function computeHorizonWarnings(data: Data, nowMs: number): string[] {
+function computeHorizonWarnings(data: Data, nowMs: number, settings: Settings): string[] {
   /* v8 ignore start — line 22 is a statement counter artifact inside a function body */
   // v8 ignore next — trivial one-liner function
   const warnings: string[] = [];
@@ -46,6 +46,27 @@ function computeHorizonWarnings(data: Data, nowMs: number): string[] {
   check('PV forecast', data.pv);
   check('Import prices', data.importPrice);
   check('Export prices', data.exportPrice);
+  // Only a configured market source is expected to cover the horizon; a series
+  // the price source cannot produce (left from an earlier one) is ignored, as
+  // in the config.
+  if (isMarketSourceConfigured(settings, data)) check('Market prices', data.marketPrice);
+  return warnings;
+}
+
+/**
+ * Warnings about the export tariff the config builder resolved: market-rule
+ * slots that fell back to 0 for lack of a market price, and an `auto` switch
+ * coming up (or past) with no market source configured.
+ */
+function computeExportTariffWarnings(info: ExportTariffInfo | undefined): string[] {
+  if (!info) return [];
+  const warnings: string[] = [];
+  if (info.fallbackSlots > 0) {
+    warnings.push(`Market price missing for ${info.fallbackSlots} slots after net metering ends — export valued at 0 for those slots`);
+  }
+  if (info.missingMarketSource) {
+    warnings.push(`Net metering ends at ${info.effectiveFrom} but no market-price source is configured — export still valued at the import price`);
+  }
   return warnings;
 }
 
@@ -630,12 +651,16 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   const summary = buildPlanSummary(rowsWithDess, cfg, diagnostics, rebalanceCtx);
   if (relaxedMaxStartSlot !== undefined) summary.rebalanceHoldMaxStartSlot = relaxedMaxStartSlot;
 
-  const horizonWarnings = computeHorizonWarnings(data, timing.startMs);
-  if (horizonWarnings.length > 0) {
-    summary.horizonWarnings = horizonWarnings;
-    for (const w of horizonWarnings) {
-      console.error(`[calculate] STALE DATA: ${w}`);
-    }
+  const horizonWarnings = computeHorizonWarnings(data, timing.startMs, settings);
+  for (const w of horizonWarnings) {
+    console.error(`[calculate] STALE DATA: ${w}`);
+  }
+  const exportTariffWarnings = computeExportTariffWarnings(cfg.exportTariffInfo);
+  for (const w of exportTariffWarnings) {
+    console.warn(`[export-tariff] ${w}`);
+  }
+  if (horizonWarnings.length + exportTariffWarnings.length > 0) {
+    summary.horizonWarnings = [...horizonWarnings, ...exportTariffWarnings];
   }
 
   const rebalanceNudge = getRebalanceNudge(data);

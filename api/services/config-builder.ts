@@ -4,13 +4,14 @@ import { updateData } from './data-store.ts';
 import { loadCalibration, loadEvCalibration, generateThresholdsFromCurve, EV_MIN_RATE } from './efficiency-calibrator.ts';
 import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
-import { extractWindow, getQuarterStart, getSeriesEndMs } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getSeriesEndMs, sampleSeriesAt } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { resolveDepartureMs } from './ev-departure.ts';
 import { fetchEvTargetSoc } from './ev-target-soc.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
-import type { SolverConfig, EvConfig, TimeSeries } from '../../lib/types.ts';
+import { resolveExportPrices, terminalTailMinPrice } from '../../lib/export-tariff.ts';
+import type { SolverConfig, EvConfig, TimeSeries, ExportTariffInfo } from '../../lib/types.ts';
 import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } from '../types.ts';
 
 /**
@@ -74,6 +75,84 @@ function startTimeToSlot(
   if (!Number.isFinite(ms)) return 0;
   const slot = Math.ceil((ms - startMs) / (stepSize_m * 60_000));
   return slot > 0 ? slot : 0;
+}
+
+/**
+ * Whether a market-price series can be expected, by price source: Home
+ * Assistant needs the configured `exportSensor`, API prices a stored
+ * `data.marketPrice` (posted to /data), and VRM never supplies one — a series
+ * left from an earlier source does not count. Without one, `auto` keeps net
+ * metering for every slot.
+ */
+export function isMarketSourceConfigured(settings: Settings, data: Data): boolean {
+  switch (settings.dataSources.prices) {
+    case 'ha': return (settings.haPriceConfig?.exportSensor ?? '').trim() !== '';
+    case 'api': return data.marketPrice !== undefined;
+    default: return false;
+  }
+}
+
+/**
+ * Apply `settings.exportTariff` to `cfg` in place: per-slot export prices (net
+ * metering, market or the 0 fallback, see lib/export-tariff.ts), the terminal
+ * valuation override when the last slot is market-priced, and the
+ * `exportTariffInfo` diagnostics. Without the block nothing changes, so the LP
+ * is byte-identical to the pre-tariff one.
+ *
+ * The market series is not part of the horizon or the must-cover checks: a
+ * lagging market feed must not shorten the plan; its missing slots fall back
+ * per slot instead (NaN marks them missing, not 0 c).
+ */
+function applyExportTariff(cfg: SolverConfig, settings: Settings, data: Data, nowMs: number): void {
+  const tariff = settings.exportTariff;
+  if (!tariff) return;
+
+  const T = cfg.exportPrice.length;
+  const stepMs = settings.stepSize_m * 60_000;
+  const slotStartsMs = Array.from({ length: T }, (_, t) => nowMs + t * stepMs);
+  // A series the current price source cannot produce (left in data.json
+  // after a source switch) is ignored rather than priced.
+  const marketSourceConfigured = isMarketSourceConfigured(settings, data);
+  // Sampled by slot timestamp, so an hourly market feed (as posted to /data)
+  // lines up with the 15-minute slots instead of being read one hour per slot.
+  const market = marketSourceConfigured && data.marketPrice
+    ? sampleSeriesAt(data.marketPrice, slotStartsMs)
+    : new Array<number>(T).fill(NaN);
+
+  const resolved = resolveExportPrices({
+    slotStartsMs,
+    sourceExport: cfg.exportPrice,
+    market,
+    tariff,
+    marketSourceConfigured,
+  });
+  cfg.exportPrice = resolved.exportPrice;
+
+  // The end-of-horizon valuation follows the tariff of the last slot, so a 2026
+  // horizon keeps the top-level setting untouched.
+  let terminalOverride: ExportTariffInfo['terminalOverride'] = null;
+  const lastRegime = resolved.regime[T - 1];
+  if (lastRegime === 'market' || lastRegime === 'fallback') {
+    terminalOverride = tariff.terminalSocValuation === 'tailMin'
+      ? {
+          terminalSocValuation: 'custom',
+          terminalSocCustomPrice_cents_per_kWh: terminalTailMinPrice(cfg.importPrice, settings.stepSize_m, tariff.terminalTail_h),
+        }
+      : {
+          terminalSocValuation: tariff.terminalSocValuation,
+          terminalSocCustomPrice_cents_per_kWh: cfg.terminalSocCustomPrice_cents_per_kWh,
+        };
+    cfg.terminalSocValuation = terminalOverride.terminalSocValuation;
+    cfg.terminalSocCustomPrice_cents_per_kWh = terminalOverride.terminalSocCustomPrice_cents_per_kWh;
+  }
+
+  cfg.exportTariffInfo = {
+    marketPricedSlots: resolved.marketPricedSlots,
+    fallbackSlots: resolved.fallbackSlots,
+    missingMarketSource: resolved.missingMarketSource,
+    effectiveFrom: tariff.effectiveFrom,
+    terminalOverride,
+  };
 }
 
 /**
@@ -171,6 +250,8 @@ export function buildSolverConfigFromSettings(
   base.evLoad_W = (resolveEvMode(settings) !== 'native' && data.evLoad)
     ? extractWindow(data.evLoad, nowMs, endMs)
     : new Array(base.load_W.length).fill(0);
+
+  applyExportTariff(base, settings, data, nowMs);
 
   // Manual CV phase thresholds remain supported and act as the baseline.
   if (settings.cvPhase?.enabled && settings.cvPhase.thresholds?.length) {

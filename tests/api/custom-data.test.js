@@ -159,4 +159,77 @@ describe('Data route integration', () => {
     expect(res.body.keysUpdated).toEqual(['evLoad']);
     expect(saved.evLoad.values).toEqual([0, 0, 11000]);
   });
+
+  it('POST /data accepts marketPrice when prices are API-backed and validates it', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+
+    const res = await post(dataRouter, '/', {
+      marketPrice: { start: '2026-12-31T23:00:00.000Z', step: 15, values: [8.5, 9, -1] },
+    });
+
+    const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'data.json'), 'utf8'));
+    expect(res.status).toBe(200);
+    expect(res.body.keysUpdated).toEqual(['marketPrice']);
+    expect(saved.marketPrice.values).toEqual([8.5, 9, -1]);
+
+    const bad = await post(dataRouter, '/', { marketPrice: { start: 'invalid-date', values: [] } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/marketPrice.*not a valid timestamp/);
+  });
+
+  it('POST /data rejects non-numeric market prices and a non-array values field', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+
+    const strings = await post(dataRouter, '/', {
+      marketPrice: { start: '2026-12-31T23:00:00.000Z', step: 15, values: [8.5, '9'] },
+    });
+    expect(strings.status).toBe(400);
+    expect(strings.body.error).toBe("'marketPrice' values must be numbers or null");
+
+    const notArray = await post(dataRouter, '/', {
+      marketPrice: { start: '2026-12-31T23:00:00.000Z', step: 15, values: 'x' },
+    });
+    expect(notArray.status).toBe(400);
+    expect(notArray.body.error).toMatch(/marketPrice.*'values' must be an array/);
+  });
+
+  it('POST /data accepts null market prices and removes the series on marketPrice: null', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+    const readSaved = async () => JSON.parse(await fs.readFile(path.join(tempDir, 'data.json'), 'utf8'));
+
+    const res = await post(dataRouter, '/', {
+      marketPrice: { start: '2026-12-31T23:00:00.000Z', step: 60, values: [8.5, null] },
+    });
+    expect(res.status).toBe(200);
+    expect((await readSaved()).marketPrice.values).toEqual([8.5, null]);
+
+    const cleared = await post(dataRouter, '/', { marketPrice: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.keysUpdated).toEqual(['marketPrice']);
+    expect(await readSaved()).not.toHaveProperty('marketPrice');
+
+    // Any other key still has to be an object.
+    const badNull = await post(dataRouter, '/', { importPrice: null });
+    expect(badNull.status).toBe(400);
+    expect(badNull.body.error).toBe("'importPrice' must be a JSON object");
+  });
+
+  it('POST /data rejects marketPrice when prices are not API-backed', async () => {
+    await writeSettings({
+      dataSources: { prices: 'ha', load: 'api', pv: 'api', soc: 'api' },
+    });
+
+    const res = await post(dataRouter, '/', {
+      marketPrice: { start: '2026-12-31T23:00:00.000Z', step: 15, values: [8.5] },
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('No valid data keys provided or settings are not set to API');
+  });
 });

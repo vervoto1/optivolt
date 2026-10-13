@@ -36,6 +36,13 @@ export async function loadSettings(): Promise<Settings> {
           ...(settings.pvCurtailment ?? {}),
         } as Settings['pvCurtailment']
       : undefined;
+    const mergedExportTariff = (defaults.exportTariff || settings.exportTariff)
+      ? {
+          /* v8 ignore next — default settings always include exportTariff; ?? fallback is defensive */
+          ...(defaults.exportTariff ?? {}),
+          ...(settings.exportTariff ?? {}),
+        } as Settings['exportTariff']
+      : undefined;
     // essConfig is server-owned and has no settings UI yet, so
     // default-settings.json is authoritative — ignore any persisted essConfig.
     // A persisted copy gets written whenever the user saves unrelated settings
@@ -50,6 +57,7 @@ export async function loadSettings(): Promise<Settings> {
       dataSources: mergedDataSources,
       ...(mergedShoreOptimizer ? { shoreOptimizer: mergedShoreOptimizer } : {}),
       ...(mergedPvCurtailment ? { pvCurtailment: mergedPvCurtailment } : {}),
+      ...(mergedExportTariff ? { exportTariff: mergedExportTariff } : {}),
       ...(mergedEssConfig ? { essConfig: mergedEssConfig } : {}),
     };
     // Strip the field from the merged object so the auto-split migration

@@ -15,11 +15,14 @@ import type {
   EssConfig,
   EssBatteryConfig,
   EssSystemConfig,
+  ExportTariffConfig,
 } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
+import { parseEffectiveFrom } from '../../lib/export-tariff.ts';
 import {
   assertObject,
   clampInt,
+  isObject,
   expectBoolean,
   expectEnum,
   expectFiniteNumber,
@@ -33,6 +36,7 @@ export type SettingsPatch = Partial<Settings> & {
   dessPriceRefresh?: Partial<DessPriceRefreshConfig>;
   shoreOptimizer?: Partial<ShoreOptimizerConfig>;
   pvCurtailment?: Partial<PvCurtailmentConfig>;
+  exportTariff?: Partial<ExportTariffConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
   batteryChargeControl?: Partial<BatteryChargeControlConfig>;
   batteryBalanceControl?: Partial<BatteryBalanceControlConfig>;
@@ -75,6 +79,22 @@ export const DESS_PRICE_REFRESH_LIMITS = {
  * stored value is clamped on load (as the floor already was).
  */
 export const REBALANCE_HOLD_HOURS_LIMITS = { min: 0, max: 12 } as const;
+/**
+ * The `exportTariff` defaults (mirrored in default-settings.json). A stored
+ * field that fails validation falls back to its default here, with a warning.
+ */
+export const EXPORT_TARIFF_DEFAULTS: Readonly<ExportTariffConfig> = {
+  mode: 'auto',
+  effectiveFrom: '2027-01-01T00:00:00+01:00',
+  fee_cents_per_kWh: 0,
+  negativePrice: 'floorZero',
+  terminalSocValuation: 'tailMin',
+  terminalTail_h: 6,
+};
+export const EXPORT_TARIFF_TAIL_HOURS_LIMITS = { min: 1, max: 24 } as const;
+const EXPORT_TARIFF_MODES = ['auto', 'netMetering', 'marketPrice'] as const;
+const EXPORT_NEGATIVE_PRICE_RULES = ['floorZero', 'passThrough'] as const;
+const EXPORT_TERMINAL_VALUATIONS = ['tailMin', 'zero', 'min', 'avg', 'max', 'custom'] as const;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 const MAX_SAFE_SHORE_A = 25;
 
@@ -173,6 +193,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     dessPriceRefresh: patch.dessPriceRefresh ? { ...base.dessPriceRefresh, ...patch.dessPriceRefresh } as DessPriceRefreshConfig : base.dessPriceRefresh,
     shoreOptimizer: patch.shoreOptimizer ? { ...base.shoreOptimizer, ...patch.shoreOptimizer } as ShoreOptimizerConfig : base.shoreOptimizer,
     pvCurtailment: patch.pvCurtailment ? { ...base.pvCurtailment, ...patch.pvCurtailment } as PvCurtailmentConfig : base.pvCurtailment,
+    exportTariff: patch.exportTariff ? { ...base.exportTariff, ...patch.exportTariff } as ExportTariffConfig : base.exportTariff,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
     batteryChargeControl: patch.batteryChargeControl ? { ...base.batteryChargeControl, ...patch.batteryChargeControl } as BatteryChargeControlConfig : base.batteryChargeControl,
     batteryBalanceControl: patch.batteryBalanceControl ? { ...base.batteryBalanceControl, ...patch.batteryBalanceControl } as BatteryBalanceControlConfig : base.batteryBalanceControl,
@@ -327,6 +348,9 @@ export function normalizeSettings(settings: Settings, options: NormalizeSettings
   if (normalized.pvCurtailment) {
     normalized.pvCurtailment = normalizePvCurtailment(normalized.pvCurtailment);
   }
+  if (normalized.exportTariff) {
+    normalized.exportTariff = normalizeExportTariff(normalized.exportTariff);
+  }
   if (normalized.cvPhase) {
     normalized.cvPhase = normalizeCvPhase(normalized.cvPhase);
   }
@@ -468,6 +492,9 @@ function normalizeHaPriceConfig(haPriceConfig: HaPriceConfig): HaPriceConfig {
     valueMultiplier: expectFiniteNumber(haPriceConfig.valueMultiplier, 'haPriceConfig.valueMultiplier'),
     importEqualsExport: expectBoolean(haPriceConfig.importEqualsExport, 'haPriceConfig.importEqualsExport'),
     priceInterval,
+    exportSensor: haPriceConfig.exportSensor == null
+      ? ''
+      : expectString(haPriceConfig.exportSensor, 'haPriceConfig.exportSensor').trim(),
   };
 }
 
@@ -537,6 +564,69 @@ function normalizePvCurtailment(pvCurtailment: PvCurtailmentConfig): PvCurtailme
     acsystemInstance: Math.max(0, Math.round(expectFiniteNumber(pvCurtailment.acsystemInstance, 'pvCurtailment.acsystemInstance'))),
     enphaseSwitchEntity: expectString(pvCurtailment.enphaseSwitchEntity ?? '', 'pvCurtailment.enphaseSwitchEntity').trim(),
   };
+}
+
+function isValidTailHours(value: unknown): value is number {
+  const { min, max } = EXPORT_TARIFF_TAIL_HOURS_LIMITS;
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+}
+
+function isValidFee(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Lenient on purpose: this runs on load, and a bad stored value must not stop
+ * the add-on. An invalid field falls back to its default with a warning (a
+ * missing one silently); `validateSettingsPatch` rejects bad values on save.
+ */
+function normalizeExportTariff(exportTariff: unknown): ExportTariffConfig {
+  const source = isObject(exportTariff) ? exportTariff : {};
+  if (source !== exportTariff) {
+    console.warn('[settings] exportTariff is not an object; using the defaults');
+  }
+  const pick = <K extends keyof ExportTariffConfig>(
+    key: K,
+    valid: (value: unknown) => boolean,
+  ): ExportTariffConfig[K] => {
+    const value = source[key];
+    if (value === undefined) return EXPORT_TARIFF_DEFAULTS[key];
+    if (valid(value)) return (typeof value === 'string' ? value.trim() : value) as ExportTariffConfig[K];
+    console.warn(`[settings] invalid exportTariff.${key} (${JSON.stringify(value)}); using the default ${JSON.stringify(EXPORT_TARIFF_DEFAULTS[key])}`);
+    return EXPORT_TARIFF_DEFAULTS[key];
+  };
+  const isOneOf = (allowed: readonly string[]) => (value: unknown) => typeof value === 'string' && allowed.includes(value);
+
+  return {
+    mode: pick('mode', isOneOf(EXPORT_TARIFF_MODES)),
+    effectiveFrom: pick('effectiveFrom', value => parseEffectiveFrom(value).ok),
+    fee_cents_per_kWh: pick('fee_cents_per_kWh', isValidFee),
+    negativePrice: pick('negativePrice', isOneOf(EXPORT_NEGATIVE_PRICE_RULES)),
+    terminalSocValuation: pick('terminalSocValuation', isOneOf(EXPORT_TERMINAL_VALUATIONS)),
+    terminalTail_h: pick('terminalTail_h', isValidTailHours),
+  };
+}
+
+/** Strict `exportTariff` checks for a `POST /settings` patch (only the keys it carries). */
+function validateExportTariffPatch(value: unknown): void {
+  assertObject(value, 'exportTariff');
+  const has = (key: string) => value[key] !== undefined;
+  if (has('mode')) expectEnum(value.mode, EXPORT_TARIFF_MODES, 'exportTariff.mode');
+  if (has('effectiveFrom')) {
+    const parsed = parseEffectiveFrom(value.effectiveFrom);
+    if (!parsed.ok) throw new HttpError(400, `exportTariff.effectiveFrom ${parsed.error}`);
+  }
+  if (has('fee_cents_per_kWh') && !isValidFee(value.fee_cents_per_kWh)) {
+    throw new HttpError(400, 'exportTariff.fee_cents_per_kWh must be a finite number ≥ 0');
+  }
+  if (has('negativePrice')) expectEnum(value.negativePrice, EXPORT_NEGATIVE_PRICE_RULES, 'exportTariff.negativePrice');
+  if (has('terminalSocValuation')) {
+    expectEnum(value.terminalSocValuation, EXPORT_TERMINAL_VALUATIONS, 'exportTariff.terminalSocValuation');
+  }
+  if (has('terminalTail_h') && !isValidTailHours(value.terminalTail_h)) {
+    const { min, max } = EXPORT_TARIFF_TAIL_HOURS_LIMITS;
+    throw new HttpError(400, `exportTariff.terminalTail_h must be a number between ${min} and ${max}`);
+  }
 }
 
 function normalizeCvPhase(cvPhase: CvPhaseConfig): CvPhaseConfig {
@@ -846,6 +936,8 @@ export function validateSettingsPatch(patch: Record<string, unknown>): void {
   if (typeof holdHours === 'number' && Number.isFinite(holdHours) && (holdHours < min || holdHours > max)) {
     throw new HttpError(400, `rebalanceHoldHours must be a number between ${min} and ${max}`);
   }
+
+  if (has('exportTariff')) validateExportTariffPatch(patch.exportTariff);
 }
 
 export function sanitizeSettingsResponse(settings: Settings): Omit<Settings, 'haToken'> & { hasHaToken: boolean } {

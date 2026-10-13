@@ -52,6 +52,7 @@ export interface Settings {
   dessPriceRefresh?: DessPriceRefreshConfig;
   shoreOptimizer?: ShoreOptimizerConfig;
   pvCurtailment?: PvCurtailmentConfig;
+  exportTariff?: ExportTariffConfig;
   cvPhase?: CvPhaseConfig;
   batteryChargeControl?: BatteryChargeControlConfig;
   batteryBalanceControl?: BatteryBalanceControlConfig;
@@ -306,6 +307,36 @@ export interface HaPriceConfig {
   valueMultiplier: number;
   importEqualsExport: boolean;
   priceInterval: number;
+  /**
+   * Optional sensor holding the bare market price (excl. VAT and energy tax),
+   * read with the same attribute/key/multiplier/interval settings as `sensor`
+   * and stored as `data.marketPrice`. "" = none.
+   */
+  exportSensor?: string;
+}
+
+export type ExportTariffMode = 'auto' | 'netMetering' | 'marketPrice';
+export type ExportNegativePriceRule = 'floorZero' | 'passThrough';
+/** `tailMin`: max(0, min import price over the last `terminalTail_h` hours). */
+export type ExportTariffTerminalValuation = TerminalSocValuation | 'tailMin';
+
+/**
+ * How export is valued once net metering (salderingsregeling) ends. A
+ * settings object without this block behaves as `netMetering`.
+ */
+export interface ExportTariffConfig {
+  /** `auto`: net metering before `effectiveFrom`, market price from then on (needs a market source). */
+  mode: ExportTariffMode;
+  /** ISO instant with an explicit offset, on a 15-minute UTC boundary. */
+  effectiveFrom: string;
+  /** Subtracted from the market price; finite and ≥ 0. */
+  fee_cents_per_kWh: number;
+  /** `floorZero`: export earns max(0, market − fee); `passThrough`: negatives reach the LP. */
+  negativePrice: ExportNegativePriceRule;
+  /** End-of-horizon SoC valuation, used only when the last slot is market-priced. */
+  terminalSocValuation: ExportTariffTerminalValuation;
+  /** Tail window for `tailMin`, in hours (1–24). */
+  terminalTail_h: number;
 }
 
 export interface ShoreOptimizerConfig {
@@ -374,6 +405,8 @@ export interface Data {
   pv: TimeSeries;
   importPrice: TimeSeries;
   exportPrice: TimeSeries;
+  /** Bare market price in c€/kWh (excl. VAT and tax); the export value once net metering ends. */
+  marketPrice?: TimeSeries;
   soc: SocData;
   lastFullSocAt?: string | null;
   rebalanceState?: RebalanceState;

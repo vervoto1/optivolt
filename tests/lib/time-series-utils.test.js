@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractWindow, getQuarterStart, getNextQuarterStart, buildForecastSeries } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getNextQuarterStart, buildForecastSeries, sampleSeriesAt } from '../../lib/time-series-utils.ts';
 
 describe('Time Series Utils', () => {
   describe('getQuarterStart', () => {
@@ -79,6 +79,29 @@ describe('Time Series Utils', () => {
       const end = baseTime + 7 * stepMs;   // 11:45
       const result = extractWindow(source, start, end);
       expect(result).toEqual([50, 0, 0]);
+    });
+  });
+
+  describe('sampleSeriesAt', () => {
+    const stepMs = 15 * 60 * 1000;
+    const baseTime = new Date('2024-01-01T10:00:00Z').getTime();
+    const source = { start: new Date(baseTime).toISOString(), step: 15, values: [10, 20, 30, 40, 50] };
+    const quarter = (n) => baseTime + n * stepMs;
+
+    it('reads a same-step series slot by slot, NaN outside it', () => {
+      const result = sampleSeriesAt(source, [quarter(-1), quarter(0), quarter(4), quarter(5)]);
+      expect(result).toEqual([NaN, 10, 50, NaN]);
+    });
+
+    it('gives each 15-minute slot the value of the hour it falls in', () => {
+      const hourly = { start: new Date(baseTime).toISOString(), step: 60, values: [1, 2] };
+      const result = sampleSeriesAt(hourly, Array.from({ length: 9 }, (_, i) => quarter(i)));
+      expect(result).toEqual([1, 1, 1, 1, 2, 2, 2, 2, NaN]);
+    });
+
+    it('treats a missing step as 15 minutes and non-numeric values as NaN', () => {
+      const loose = { start: new Date(baseTime).toISOString(), values: [null, '7', 3] };
+      expect(sampleSeriesAt(loose, [quarter(0), quarter(1), quarter(2)])).toEqual([NaN, NaN, 3]);
     });
   });
 });

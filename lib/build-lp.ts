@@ -139,6 +139,7 @@ export function buildLP({
     rebalanceStartPerSlot: 1e-6, // escalating per-window penalty on start_balance_k: breaks symmetry between equivalent rebalance windows
     avoidGridRoundTrip: 5e-7, // prefer battery→load over grid→load when battery is already discharging (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierCharging: 5e-7, // per-slot increasing penalty on g2b to prefer continuous charging from start of price block
+    preferEarlierPvCharging: 2e-7, // per-slot increasing penalty on pv→battery: fill the battery from the first PV surplus and export later when the order is otherwise free (stays below preferEarlierCharging so PV keeps beating grid charging; must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierDischarge: 5e-7, // per-slot increasing penalty on battery→grid to front-load export within an equal-price block (must exceed HiGHS dual_feasibility_tolerance of 1e-7)
     preferEarlierEvCharging: 5e-7, // per-slot increasing penalty on the EV charge flows to front-load EV charging within an equal-price window (mirrors preferEarlierCharging; the binary ev_on penalty alone is too small to survive the production MIP gap)
     allowCurtailAtNegativePrice: 1e-8, // permit PV curtailment when import/export prices make PV economically harmful
@@ -410,7 +411,7 @@ export function buildLP({
     const pvToGridCoeff = -acExportCoeff_cents + TIEBREAK.avoidExport; // export revenue (post-inverter) + slight penalty to prefer using PV locally
     const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents + t * TIEBREAK.preferEarlierDischarge; // export revenue (post-inverter) + battery cost + slight preference for earlier export (symmetry-break for equal-price drain windows)
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
-    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery; // battery cost + tiny routing tiebreak
+    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery + t * TIEBREAK.preferEarlierPvCharging; // battery cost + tiny routing tiebreak + slight preference for charging from the earliest PV surplus
     const socShortfallCoeff = softMinSocPenalty_cents_per_Wh; // penalty for being below minSoc
     const pvCurtailCoeff =
       importPrice[t] < 0 || exportPrice[t] < 0

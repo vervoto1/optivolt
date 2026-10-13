@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import {
   AUTO_SELECT_LIMITS,
@@ -6,6 +6,8 @@ import {
   normalizeSettings,
   validateSettingsPatch,
   REBALANCE_HOLD_HOURS_LIMITS,
+  EXPORT_TARIFF_DEFAULTS,
+  EXPORT_TARIFF_TAIL_HOURS_LIMITS,
   sanitizeSettingsResponse, DESS_PRICE_REFRESH_LIMITS } from '../../../api/services/settings-schema.ts';
 
 const defaultSettings = JSON.parse(fs.readFileSync(new URL('../../../api/defaults/default-settings.json', import.meta.url), 'utf8'));
@@ -960,5 +962,159 @@ describe('validateSettingsPatch — strict checks on POST /settings', () => {
     // clamp to 1 % would make every auto-calc write a nonsense schedule.
     const stored = normalizeSettings({ ...validSettings(), inverterEfficiency_percent: 95, dischargeEfficiency_percent: 0 });
     expect(stored.dischargeEfficiency_percent).toBe(0);
+  });
+});
+
+describe('exportTariff and haPriceConfig.exportSensor', () => {
+  const tariff = (overrides = {}) => ({ ...EXPORT_TARIFF_DEFAULTS, ...overrides });
+
+  describe('normalizeHaPriceConfig — exportSensor', () => {
+    it('defaults a missing exportSensor to "" and trims a set one', () => {
+      expect(normalizeSettings(validSettings()).haPriceConfig.exportSensor).toBe('');
+      const s = validSettings();
+      s.haPriceConfig.exportSensor = '  sensor.gespot_hourly_market_average_price_nl ';
+      expect(normalizeSettings(s).haPriceConfig.exportSensor).toBe('sensor.gespot_hourly_market_average_price_nl');
+    });
+
+    it('treats null as unset and rejects a non-string', () => {
+      const s = validSettings();
+      s.haPriceConfig.exportSensor = null;
+      expect(normalizeSettings(s).haPriceConfig.exportSensor).toBe('');
+      s.haPriceConfig.exportSensor = 42;
+      expect(() => normalizeSettings(s)).toThrow('haPriceConfig.exportSensor must be a string');
+    });
+  });
+
+  describe('normalizeSettings — lenient exportTariff', () => {
+    let warn;
+    beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+    afterEach(() => { warn.mockRestore(); });
+
+    it('keeps a valid block (trimming effectiveFrom) and leaves an absent block absent', () => {
+      const custom = tariff({
+        mode: 'marketPrice', effectiveFrom: ' 2026-12-31T23:00:00Z ', fee_cents_per_kWh: 1.25,
+        negativePrice: 'passThrough', terminalSocValuation: 'avg', terminalTail_h: 24,
+      });
+      expect(normalizeSettings({ ...validSettings(), exportTariff: custom }).exportTariff)
+        .toEqual({ ...custom, effectiveFrom: '2026-12-31T23:00:00Z' });
+      expect(normalizeSettings(validSettings()).exportTariff).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('fills missing fields with the defaults without warning', () => {
+      expect(normalizeSettings({ ...validSettings(), exportTariff: { mode: 'netMetering' } }).exportTariff)
+        .toEqual(tariff({ mode: 'netMetering' }));
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('replaces each invalid stored field with its default and warns, instead of throwing', () => {
+      const result = normalizeSettings({
+        ...validSettings(),
+        exportTariff: {
+          mode: 'sometimes',
+          effectiveFrom: '2027-01-01T00:00:00',
+          fee_cents_per_kWh: -1,
+          negativePrice: 'clamp',
+          terminalSocValuation: 'tail',
+          terminalTail_h: 25,
+        },
+      });
+      expect(result.exportTariff).toEqual(EXPORT_TARIFF_DEFAULTS);
+      expect(warn).toHaveBeenCalledTimes(6);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid exportTariff.effectiveFrom'));
+    });
+
+    it('falls back to the whole default block when the stored value is not an object', () => {
+      expect(normalizeSettings({ ...validSettings(), exportTariff: 'auto' }).exportTariff).toEqual(EXPORT_TARIFF_DEFAULTS);
+      expect(warn).toHaveBeenCalledWith('[settings] exportTariff is not an object; using the defaults');
+    });
+  });
+
+  describe('mergeSettings — exportTariff', () => {
+    it('merges a partial patch field by field, keeping the other fields', () => {
+      const base = { ...validSettings(), exportTariff: tariff() };
+      const merged = mergeSettings(base, { exportTariff: { fee_cents_per_kWh: 2 } });
+      expect(merged.exportTariff).toEqual(tariff({ fee_cents_per_kWh: 2 }));
+      expect(normalizeSettings(merged).exportTariff).toEqual(tariff({ fee_cents_per_kWh: 2 }));
+    });
+  });
+
+  describe('validateSettingsPatch — exportTariff', () => {
+    it('accepts the defaults, a partial block and every valid enum value', () => {
+      expect(() => validateSettingsPatch({ exportTariff: tariff() })).not.toThrow();
+      expect(() => validateSettingsPatch({ exportTariff: { mode: 'netMetering' } })).not.toThrow();
+      expect(() => validateSettingsPatch({ exportTariff: {} })).not.toThrow();
+      for (const mode of ['auto', 'netMetering', 'marketPrice']) {
+        expect(() => validateSettingsPatch({ exportTariff: { mode } })).not.toThrow();
+      }
+      for (const negativePrice of ['floorZero', 'passThrough']) {
+        expect(() => validateSettingsPatch({ exportTariff: { negativePrice } })).not.toThrow();
+      }
+      for (const terminalSocValuation of ['tailMin', 'zero', 'min', 'avg', 'max', 'custom']) {
+        expect(() => validateSettingsPatch({ exportTariff: { terminalSocValuation } })).not.toThrow();
+      }
+    });
+
+    it('rejects a non-object block', () => {
+      for (const bad of [null, 'auto', [], 1]) {
+        expect(() => validateSettingsPatch({ exportTariff: bad })).toThrow('exportTariff must be an object');
+      }
+    });
+
+    it('rejects bad enums', () => {
+      expect(() => validateSettingsPatch({ exportTariff: { mode: 'Auto' } }))
+        .toThrow('exportTariff.mode must be one of: auto, netMetering, marketPrice');
+      expect(() => validateSettingsPatch({ exportTariff: { negativePrice: 'zero' } }))
+        .toThrow('exportTariff.negativePrice must be one of: floorZero, passThrough');
+      expect(() => validateSettingsPatch({ exportTariff: { terminalSocValuation: 'tailmin' } }))
+        .toThrow('exportTariff.terminalSocValuation must be one of: tailMin, zero, min, avg, max, custom');
+    });
+
+    it('accepts effectiveFrom with Z or a ±hh:mm offset on a 15-minute UTC boundary', () => {
+      for (const ok of [
+        '2027-01-01T00:00:00+01:00', '2026-12-31T23:00:00Z', '2026-12-31T23:00Z',
+        '2026-12-31T23:00:00.000Z', '2027-01-01T05:45:00+05:45', '2026-12-31T19:00:00-05:00',
+      ]) {
+        expect(() => validateSettingsPatch({ exportTariff: { effectiveFrom: ok } })).not.toThrow();
+      }
+    });
+
+    it('rejects effectiveFrom without an offset, unparseable or off the 15-minute grid', () => {
+      const cases = [
+        ['2027-01-01T00:00:00', 'must be an ISO date-time with an explicit offset'],
+        ['2027-01-01', 'must be an ISO date-time with an explicit offset'],
+        ['', 'must be an ISO date-time with an explicit offset'],
+        ['2027-13-01T00:00:00Z', 'is not a valid date-time'],
+        ['2027-02-30T00:00:00Z', 'is not a valid date-time'],
+        ['2027-01-01T24:00:00Z', 'is not a valid date-time'],
+        ['2027-01-01T00:10:00Z', 'must fall on a 15-minute boundary in UTC'],
+        ['2027-01-01T00:00:30+01:00', 'must fall on a 15-minute boundary in UTC'],
+        [1798758000000, 'must be a string'],
+      ];
+      for (const [bad, message] of cases) {
+        expect(() => validateSettingsPatch({ exportTariff: { effectiveFrom: bad } }))
+          .toThrow(`exportTariff.effectiveFrom ${message}`);
+      }
+    });
+
+    it('rejects a negative or non-finite fee', () => {
+      for (const bad of [-0.01, Number.NaN, Number.POSITIVE_INFINITY, '1', null]) {
+        expect(() => validateSettingsPatch({ exportTariff: { fee_cents_per_kWh: bad } }))
+          .toThrow('exportTariff.fee_cents_per_kWh must be a finite number ≥ 0');
+      }
+      expect(() => validateSettingsPatch({ exportTariff: { fee_cents_per_kWh: 0 } })).not.toThrow();
+      expect(() => validateSettingsPatch({ exportTariff: { fee_cents_per_kWh: 1.5 } })).not.toThrow();
+    });
+
+    it('bounds terminalTail_h to 1–24', () => {
+      expect(EXPORT_TARIFF_TAIL_HOURS_LIMITS).toEqual({ min: 1, max: 24 });
+      for (const bad of [0, 0.5, 24.5, -1, Number.NaN, '6']) {
+        expect(() => validateSettingsPatch({ exportTariff: { terminalTail_h: bad } }))
+          .toThrow('exportTariff.terminalTail_h must be a number between 1 and 24');
+      }
+      for (const good of [1, 6, 12.5, 24]) {
+        expect(() => validateSettingsPatch({ exportTariff: { terminalTail_h: good } })).not.toThrow();
+      }
+    });
   });
 });

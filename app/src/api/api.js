@@ -1,4 +1,5 @@
 import { getJson, postJson } from "./client.js";
+import { syncServerClock } from "../server-clock.js";
 
 // --- Settings ---
 export async function fetchStoredSettings() {
@@ -24,7 +25,9 @@ export function requestRemoteSolve(body = {}) {
 // triggered. 404s (throws) when no plan has been computed since server start.
 export const fetchLastPlan = () => getJson("/calculate/last");
 
-export const fetchServerTimeZone = () => getJson("/timezone");
+// Also syncs the server clock from the response's Date header.
+export const fetchServerTimeZone = () =>
+  getJson("/timezone", { onResponse: (response) => syncServerClock(response.headers.get("Date")) });
 
 // --- Data ---
 export function fetchStoredData() {

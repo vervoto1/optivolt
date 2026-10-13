@@ -37,11 +37,13 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       pv: dataSources.pv,
       importPrice: dataSources.prices,
       exportPrice: dataSources.prices,
+      // The bare market price (export value once net metering ends) follows the price source.
+      marketPrice: dataSources.prices,
       soc: dataSources.soc,
       evLoad: dataSources.evLoad ?? 'api',
     };
 
-    const allowedKeys = ['load', 'pv', 'importPrice', 'exportPrice', 'soc', 'evLoad'];
+    const allowedKeys = ['load', 'pv', 'importPrice', 'exportPrice', 'marketPrice', 'soc', 'evLoad'];
     const keysToUpdate = Object.keys(payload).filter(k => allowedKeys.includes(k) && sourceMapping[k] === 'api');
 
     assertCondition(
@@ -52,12 +54,22 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     for (const key of keysToUpdate) {
       const value = payload[key];
+      // `marketPrice: null` removes a posted series (back to net metering in auto).
+      if (key === 'marketPrice' && value === null) continue;
       assertCondition(
         !!value && typeof value === 'object' && !Array.isArray(value),
         400,
         `'${key}' must be a JSON object`,
       );
     }
+    // A non-numeric market price would silently become a 0 c fallback slot.
+    const market = payload.marketPrice as { values?: unknown } | null | undefined;
+    assertCondition(
+      !keysToUpdate.includes('marketPrice') || !Array.isArray(market?.values)
+        || market.values.every(v => v === null || Number.isFinite(v)),
+      400,
+      "'marketPrice' values must be numbers or null",
+    );
 
     // Patch only the posted keys onto data.json as it is at write time, under
     // the store's lock: a planner run or forecast refresh in flight can no
@@ -69,9 +81,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         if (key === 'soc') {
           nextData.soc = value as SocData;
           nextData = recordFullSocObservation(nextData);
+        } else if (key === 'marketPrice' && value === null) {
+          delete nextData.marketPrice;
         } else if (key === 'evLoad') {
           nextData.evLoad = value as TimeSeries;
-        } else if (key === 'load' || key === 'pv' || key === 'importPrice' || key === 'exportPrice') {
+        } else if (key === 'load' || key === 'pv' || key === 'importPrice' || key === 'exportPrice' || key === 'marketPrice') {
           nextData[key] = value as TimeSeries;
         }
       }

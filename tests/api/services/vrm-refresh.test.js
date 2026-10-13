@@ -350,6 +350,115 @@ describe('refreshSeriesFromVrmAndPersist — HA prices and EV load', () => {
   });
 });
 
+describe('refreshSeriesFromVrmAndPersist — HA market price', () => {
+  const haDataSources = { load: 'vrm', pv: 'vrm', prices: 'ha', soc: 'mqtt' };
+  const storedMarket = { start: '2024-01-01T00:00:00.000Z', step: 15, values: [3] };
+  const haImport = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [20] };
+  const haExport = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [20] };
+  const haMarket = { start: '2024-01-01T10:00:00.000Z', step: 15, values: [7] };
+  let fetchPricesFromHA;
+
+  const useSettings = (haPriceConfig, dataSources = haDataSources) => {
+    loadSettings.mockResolvedValue({ ...baseSettings, dataSources, haPriceConfig });
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+
+    loadData.mockResolvedValue({ ...baseData, marketPrice: storedMarket });
+    saveData.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
+    mqttService.readVictronSocPercent.mockResolvedValue(50);
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+    ({ fetchPricesFromHA } = await import('../../../api/services/ha-price-service.ts'));
+  });
+
+  afterEach(() => {
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  it('persists the market price returned by the HA fetch', async () => {
+    useSettings({ sensor: 'sensor.import', exportSensor: 'sensor.market' });
+    fetchPricesFromHA.mockResolvedValueOnce({ importPrice: haImport, exportPrice: haExport, marketPrice: haMarket });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.marketPrice).toEqual(haMarket);
+    expect(savedData.importPrice).toEqual(haImport);
+  });
+
+  it('keeps the stored market price when the market fetch failed', async () => {
+    useSettings({ sensor: 'sensor.import', exportSensor: 'sensor.market' });
+    fetchPricesFromHA.mockResolvedValueOnce({ importPrice: haImport, exportPrice: haExport });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.marketPrice).toEqual(storedMarket);
+    expect(savedData.importPrice).toEqual(haImport);
+  });
+
+  it('keeps the stored market price when the whole HA fetch returned nothing', async () => {
+    useSettings({ sensor: 'sensor.import', exportSensor: 'sensor.market' });
+    fetchPricesFromHA.mockResolvedValueOnce(null);
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(saveData.mock.calls[0][0].marketPrice).toEqual(storedMarket);
+  });
+
+  it.each([
+    ['empty', { sensor: 'sensor.import', exportSensor: '' }],
+    ['whitespace', { sensor: 'sensor.import', exportSensor: '   ' }],
+    ['missing', { sensor: 'sensor.import' }],
+    ['missing haPriceConfig', undefined],
+  ])('removes a stored market price when exportSensor is %s', async (_label, haPriceConfig) => {
+    useSettings(haPriceConfig);
+    fetchPricesFromHA.mockResolvedValueOnce({ importPrice: haImport, exportPrice: haExport });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData).not.toHaveProperty('marketPrice');
+    expect(savedData.importPrice).toEqual(haImport);
+  });
+
+  it('removes a stored market price without a sensor even when the HA fetch failed', async () => {
+    useSettings({ sensor: 'sensor.import', exportSensor: '' });
+    fetchPricesFromHA.mockResolvedValueOnce(null);
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(saveData.mock.calls[0][0]).not.toHaveProperty('marketPrice');
+  });
+
+  it('leaves a POST /data market price alone with API prices', async () => {
+    useSettings({ sensor: '', exportSensor: '' }, { ...haDataSources, prices: 'api' });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(fetchPricesFromHA).not.toHaveBeenCalled();
+    expect(saveData.mock.calls[0][0].marketPrice).toEqual(storedMarket);
+  });
+
+  it('removes a market price left from an earlier source once prices come from VRM', async () => {
+    // Even with the old HA market sensor still configured: VRM prices cannot refresh it.
+    useSettings({ sensor: 'sensor.import', exportSensor: 'sensor.market' }, { ...haDataSources, prices: 'vrm' });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(fetchPricesFromHA).not.toHaveBeenCalled();
+    expect(saveData.mock.calls[0][0]).not.toHaveProperty('marketPrice');
+  });
+});
+
 describe('refreshSeriesFromVrmAndPersist — SoC null result and HA prices null', () => {
   beforeEach(() => {
     vi.clearAllMocks();

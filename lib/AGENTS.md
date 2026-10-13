@@ -12,7 +12,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | File | Description |
 |------|-------------|
 | `types.ts` | Shared type definitions: `SolverConfig`, `PlanRow`, `DessSlot`, `PlanSummary`, `TimeSeries`, `TerminalSocValuation` |
-| `time-series-utils.ts` | Time series utilities: `getQuarterStart()`, `extractWindow()`, `buildForecastSeries()`, `computeErrorMetrics()` (MAE/RMSE/MAPE) |
+| `time-series-utils.ts` | Time series utilities: `getQuarterStart()`, `extractWindow()`, `sampleSeriesAt()` (timestamp-matched sampling, NaN outside), `buildForecastSeries()`, `computeErrorMetrics()` (MAE/RMSE/MAPE) |
 | `predict-pv.ts` | PV forecasting with Bird Clear Sky Model: `calculateClearSkyGHI()`, `estimateHourlyCapacity()`, `forecastPv()`, `validatePvForecast()` |
 | `open-meteo.ts` | Open-Meteo API URL builders and response parsers: `buildForecastUrl()`, `parseIrradianceResponse()`, `parseMinutely15Response()` |
 | `predict-load.ts` | Historical load prediction: `predict()`, `validate()`, `generateAllConfigs()`, day filtering, mean/median aggregation |
@@ -23,6 +23,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | `build-lp.ts` | LP/MIP model builder: `buildLP()` generates CPLEX LP format for HiGHS solver with rebalancing MILP |
 | `parse-solution.ts` | HiGHS solver output parser: `parseSolution()` reconstructs energy flows and SoC from solver columns |
 | `plan-summary.ts` | Plan KPI aggregation: `buildPlanSummary()` computes totals, tipping points, rebalance status |
+| `export-tariff.ts` | Export valuation around the end of net metering: `resolveExportPrices()` (per-slot net metering / market − fee / 0 fallback), `parseEffectiveFrom()`, `terminalTailMinPrice()` |
 | `dess-mapper.ts` | Dynamic ESS strategy mapper: `mapRowsToDessV2()` assigns strategies per 15-minute slot (tipping points; rebalance hold window → proBattery hold) |
 
 ## For AI Agents

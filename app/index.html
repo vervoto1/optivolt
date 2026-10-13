@@ -1943,6 +1943,72 @@
               <span class="toggle-knob"></span>
               <span class="text-sm text-slate-600 dark:text-slate-400">Import = Export price</span>
             </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Export market-price sensor</span>
+              <input id="ha-price-export-sensor" type="text" placeholder="sensor.gespot_hourly_market_average_price_nl" class="form-input" data-settings-input data-no-autosolve />
+              <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">
+                Optional. Bare market price (excl. VAT and energy tax), read with the settings above. Values export once net metering ends (see Export tariff).
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Export Tariff Card -->
+        <section id="card-export-tariff" class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Export tariff</h2>
+            <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Under net metering (salderingsregeling) export is valued at the price source's export price. Once it ends, export earns only the market price minus the fee.
+            </p>
+            <p id="export-tariff-status" role="status" aria-live="polite" class="mt-2 text-xs font-medium text-slate-600 dark:text-slate-400"></p>
+          </div>
+          <div class="space-y-3">
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Mode</span>
+              <select id="export-tariff-mode" class="form-select" data-settings-input>
+                <option value="auto" selected>Auto by date</option>
+                <option value="netMetering">Net metering</option>
+                <option value="marketPrice">Market price</option>
+              </select>
+            </label>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Net metering ends at (ISO, with offset)</span>
+              <input id="export-tariff-effective-from" type="text" value="2027-01-01T00:00:00+01:00" placeholder="2027-01-01T00:00:00+01:00"
+                spellcheck="false" autocomplete="off" class="form-input font-mono" data-settings-input />
+              <span id="export-tariff-effective-from-hint" class="mt-1 block text-xs text-slate-600 dark:text-slate-400"></span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Fee (c€/kWh)</span>
+                <input id="export-tariff-fee" type="number" min="0" step="0.01" value="0" class="form-input" data-settings-input />
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Negative prices</span>
+                <select id="export-tariff-negative-price" class="form-select" data-settings-input>
+                  <option value="floorZero" selected>Floor at 0</option>
+                  <option value="passThrough">Pass through</option>
+                </select>
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Terminal SoC</span>
+                <select id="export-tariff-terminal" class="form-select" data-settings-input>
+                  <option value="tailMin" selected>tail min</option>
+                  <option value="zero">zero</option>
+                  <option value="min">min</option>
+                  <option value="avg">avg</option>
+                  <option value="max">max</option>
+                  <option value="custom">custom</option>
+                </select>
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Tail (h)</span>
+                <input id="export-tariff-tail" type="number" min="1" max="24" step="1" value="6"
+                  class="form-input disabled:opacity-50 disabled:cursor-not-allowed" data-settings-input />
+              </label>
+            </div>
+            <p class="text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Terminal SoC replaces the optimizer's own valuation only when the last planned slot is market-priced. Tail min values the end-of-plan charge at the lowest import price of the last hours (never below 0); custom uses the optimizer's custom price.
+            </p>
           </div>
         </section>
 

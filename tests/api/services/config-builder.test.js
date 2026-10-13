@@ -372,6 +372,192 @@ describe('buildSolverConfigFromSettings — cvPhase thresholds', () => {
 });
 
 
+describe('buildSolverConfigFromSettings — export tariff', () => {
+  const STEP_MS = 15 * 60_000;
+  // 2027-01-01 00:00 CET; the plan starts 4 slots (1 h) before it.
+  const SWITCH = '2027-01-01T00:00:00+01:00';
+  const SWITCH_MS = Date.parse('2026-12-31T23:00:00Z');
+  const START_MS = SWITCH_MS - 4 * STEP_MS;
+  const START = new Date(START_MS).toISOString();
+
+  const tariff = (overrides = {}) => ({
+    mode: 'auto',
+    effectiveFrom: SWITCH,
+    fee_cents_per_kWh: 0,
+    negativePrice: 'floorZero',
+    terminalSocValuation: 'tailMin',
+    terminalTail_h: 6,
+    ...overrides,
+  });
+
+  // 96 slots of 2026/2027 data; import ramps 20..115 c so the tail minimum is easy to read.
+  const makeTariffData = (overrides = {}) => ({
+    load: { start: START, step: 15, values: Array(96).fill(100) },
+    pv: { start: START, step: 15, values: Array(96).fill(0) },
+    importPrice: { start: START, step: 15, values: Array.from({ length: 96 }, (_, t) => 20 + t) },
+    exportPrice: { start: START, step: 15, values: Array(96).fill(30) },
+    soc: { timestamp: START, value: 50 },
+    ...overrides,
+  });
+  const marketSeries = (values, start = START) => ({ start, step: 15, values });
+  // Market prices posted to /data count only under API prices.
+  const apiSettings = { ...mockSettings, dataSources: { ...mockSettings.dataSources, prices: 'api' } };
+
+  it('leaves the config and LP untouched without the block, in netMetering, and in auto before the switch', () => {
+    const plainCfg = buildSolverConfigFromSettings(mockSettings, makeData(), NOW_MS);
+    const plain = buildLP(plainCfg);
+    expect(plainCfg.exportTariffInfo).toBeUndefined();
+
+    for (const exportTariff of [tariff({ mode: 'netMetering' }), tariff()]) {
+      const data = { ...makeData(), marketPrice: marketSeries(Array(96).fill(1), NOW_STRING) };
+      const cfg = buildSolverConfigFromSettings({ ...mockSettings, exportTariff }, data, NOW_MS);
+      // buildLP ignores the diagnostics field, so the string is byte-identical.
+      expect(buildLP(cfg)).toBe(plain);
+      expect(cfg.exportPrice).toEqual(plainCfg.exportPrice);
+      expect(cfg.terminalSocValuation).toBe('zero');
+      expect(cfg.exportTariffInfo).toEqual({
+        marketPricedSlots: 0,
+        fallbackSlots: 0,
+        missingMarketSource: false,
+        effectiveFrom: SWITCH,
+        terminalOverride: null,
+      });
+    }
+  });
+
+  it('switches per slot across the 2027-01-01 boundary and values the terminal SoC at the tail minimum', () => {
+    const settings = { ...apiSettings, exportTariff: tariff() };
+    const data = makeTariffData({ marketPrice: marketSeries(Array(96).fill(10)) });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.exportPrice).toEqual([30, 30, 30, 30, ...Array(92).fill(10)]);
+    // Last 6 h = last 24 slots (72..95) → import 92..115 → min 92.
+    expect(cfg.terminalSocValuation).toBe('custom');
+    expect(cfg.terminalSocCustomPrice_cents_per_kWh).toBe(92);
+    expect(cfg.exportTariffInfo).toEqual({
+      marketPricedSlots: 92,
+      fallbackSlots: 0,
+      missingMarketSource: false,
+      effectiveFrom: SWITCH,
+      terminalOverride: { terminalSocValuation: 'custom', terminalSocCustomPrice_cents_per_kWh: 92 },
+    });
+  });
+
+  it('uses a non-tailMin terminal valuation as is when the last slot is market-priced', () => {
+    const settings = {
+      ...apiSettings,
+      terminalSocCustomPrice_cents_per_kWh: 7,
+      exportTariff: tariff({ mode: 'marketPrice', terminalSocValuation: 'avg' }),
+    };
+    const data = makeTariffData({ marketPrice: marketSeries(Array(96).fill(10)) });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.exportPrice).toEqual(Array(96).fill(10));
+    expect(cfg.terminalSocValuation).toBe('avg');
+    expect(cfg.terminalSocCustomPrice_cents_per_kWh).toBe(7);
+    expect(cfg.exportTariffInfo.terminalOverride).toEqual({ terminalSocValuation: 'avg', terminalSocCustomPrice_cents_per_kWh: 7 });
+  });
+
+  it('a market series ending early falls back to 0 per slot without shortening the horizon, and still overrides the terminal value', () => {
+    const settings = { ...apiSettings, exportTariff: tariff() };
+    // Market covers only the first 40 slots; the last 56 fall back.
+    const data = makeTariffData({ marketPrice: marketSeries(Array(40).fill(10)) });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.load_W).toHaveLength(96);
+    expect(cfg.exportPrice).toEqual([30, 30, 30, 30, ...Array(36).fill(10), ...Array(56).fill(0)]);
+    expect(cfg.exportTariffInfo.marketPricedSlots).toBe(36);
+    expect(cfg.exportTariffInfo.fallbackSlots).toBe(56);
+    expect(cfg.terminalSocValuation).toBe('custom');
+    expect(cfg.terminalSocCustomPrice_cents_per_kWh).toBe(92);
+  });
+
+  it('an hourly market series is matched to the 15-minute slots by timestamp', () => {
+    const settings = { ...apiSettings, exportTariff: tariff({ mode: 'marketPrice' }) };
+    const data = makeTariffData({ marketPrice: { start: START, step: 60, values: Array.from({ length: 24 }, (_, h) => h) } });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.exportPrice).toEqual(Array.from({ length: 96 }, (_, t) => Math.floor(t / 4)));
+    expect(cfg.exportTariffInfo.fallbackSlots).toBe(0);
+  });
+
+  it('a market series starting after the plan does not reject the plan: its leading slots fall back', () => {
+    const settings = { ...apiSettings, exportTariff: tariff({ mode: 'marketPrice' }) };
+    const data = makeTariffData({ marketPrice: marketSeries(Array(94).fill(10), new Date(START_MS + 2 * STEP_MS).toISOString()) });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.exportPrice.slice(0, 3)).toEqual([0, 0, 10]);
+    expect(cfg.exportTariffInfo.fallbackSlots).toBe(2);
+  });
+
+  it('auto without a market series (VRM prices) keeps the source export and flags the missing source', () => {
+    const settings = { ...mockSettings, exportTariff: tariff() };
+
+    const cfg = buildSolverConfigFromSettings(settings, makeTariffData(), START_MS);
+
+    expect(cfg.exportPrice).toEqual(Array(96).fill(30));
+    expect(cfg.terminalSocValuation).toBe('zero');
+    expect(cfg.exportTariffInfo).toMatchObject({ marketPricedSlots: 0, missingMarketSource: true, terminalOverride: null });
+  });
+
+  it('a market series left in data.json under VRM prices is ignored: net metering stays, never a 0 c fallback', () => {
+    // E.g. stored while prices came from HA with an exportSensor, then switched to VRM.
+    const data = makeTariffData({ marketPrice: marketSeries(Array(8).fill(10), new Date(START_MS - 96 * STEP_MS).toISOString()) });
+
+    const auto = buildSolverConfigFromSettings({ ...mockSettings, exportTariff: tariff() }, data, START_MS);
+    expect(auto.exportPrice).toEqual(Array(96).fill(30));
+    expect(auto.terminalSocValuation).toBe('zero');
+    expect(auto.exportTariffInfo).toMatchObject({ fallbackSlots: 0, missingMarketSource: true, terminalOverride: null });
+
+    // marketPrice mode under VRM has no source: every slot falls back, the leftover series is not read.
+    const fresh = makeTariffData({ marketPrice: marketSeries(Array(96).fill(10)) });
+    const market = buildSolverConfigFromSettings({ ...mockSettings, exportTariff: tariff({ mode: 'marketPrice' }) }, fresh, START_MS);
+    expect(market.exportPrice).toEqual(Array(96).fill(0));
+    expect(market.exportTariffInfo.fallbackSlots).toBe(96);
+  });
+
+  it('API prices without a posted marketPrice keep net metering and flag the missing source', () => {
+    const cfg = buildSolverConfigFromSettings({ ...apiSettings, exportTariff: tariff() }, makeTariffData(), START_MS);
+
+    expect(cfg.exportPrice).toEqual(Array(96).fill(30));
+    expect(cfg.exportTariffInfo.missingMarketSource).toBe(true);
+  });
+
+  it("prices: 'ha' with an empty or missing exportSensor in 2027 keeps the source export and sets missingMarketSource", () => {
+    const haSources = { ...mockSettings.dataSources, prices: 'ha' };
+    // A stale market series is ignored: with HA prices only the sensor setting counts.
+    const data = makeTariffData({ marketPrice: marketSeries(Array(96).fill(10)) });
+    const haPriceConfig = { sensor: 'sensor.price', exportSensor: '  ' };
+
+    for (const extra of [{ haPriceConfig }, {}, { haPriceConfig: { sensor: 'sensor.price' } }]) {
+      const settings = { ...mockSettings, ...extra, dataSources: haSources, exportTariff: tariff() };
+      const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+      expect(cfg.exportPrice).toEqual(Array(96).fill(30));
+      expect(cfg.exportTariffInfo.missingMarketSource).toBe(true);
+    }
+  });
+
+  it("prices: 'ha' with an exportSensor set uses the market series", () => {
+    const settings = {
+      ...mockSettings,
+      dataSources: { ...mockSettings.dataSources, prices: 'ha' },
+      haPriceConfig: { sensor: 'sensor.price', exportSensor: 'sensor.market' },
+      exportTariff: tariff(),
+    };
+    const data = makeTariffData({ marketPrice: marketSeries(Array(96).fill(10)) });
+
+    const cfg = buildSolverConfigFromSettings(settings, data, START_MS);
+
+    expect(cfg.exportPrice.slice(3, 5)).toEqual([30, 10]);
+    expect(cfg.exportTariffInfo.missingMarketSource).toBe(false);
+  });
+});
+
 describe('buildSolverConfigFromSettings — EV', () => {
   beforeEach(() => {
     vi.useFakeTimers();

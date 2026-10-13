@@ -21,6 +21,7 @@ import {
   hydrateUI,
   updateTerminalCustomUI,
 } from "./src/state.js";
+import { updateExportTariffUI } from "./src/export-tariff.js";
 import { setupSettingsSubtabs } from "./src/settings-subtabs.js";
 
 // ---------- Helpers ----------
@@ -185,7 +186,10 @@ async function boot() {
     onTableDisplayChange: optimizer.onTableDisplayChange,
     onFlowsAggregationChange: optimizer.onFlowsAggregationChange,
     updateTerminalCustomUI: () => updateTerminalCustomUI(els),
+    updateExportTariffUI: () => updateExportTariffUI(els),
   });
+  // The export-tariff status changes with time (at the switch instant).
+  setInterval(() => updateExportTariffUI(els), 60_000);
 
   wireVrmSettingInput(els, {
     onRefresh: onRefreshVrmSettings,

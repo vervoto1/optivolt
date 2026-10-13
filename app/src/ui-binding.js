@@ -161,6 +161,17 @@ export function getElements() {
     haPriceValueKey: document.getElementById('ha-price-value-key'),
     haPriceMultiplier: document.getElementById('ha-price-multiplier'),
     haPriceImportEqualsExport: document.getElementById('ha-price-import-equals-export'),
+    haPriceExportSensor: document.getElementById('ha-price-export-sensor'),
+
+    // Export tariff
+    exportTariffMode: document.getElementById('export-tariff-mode'),
+    exportTariffEffectiveFrom: document.getElementById('export-tariff-effective-from'),
+    exportTariffEffectiveFromHint: document.getElementById('export-tariff-effective-from-hint'),
+    exportTariffFee: document.getElementById('export-tariff-fee'),
+    exportTariffNegativePrice: document.getElementById('export-tariff-negative-price'),
+    exportTariffTerminal: document.getElementById('export-tariff-terminal'),
+    exportTariffTail: document.getElementById('export-tariff-tail'),
+    exportTariffStatus: document.getElementById('export-tariff-status'),
 
     // EV summary (Optimizer tab)
     evSummaryBlock: $("#ev-summary-block"),
@@ -253,6 +264,7 @@ export function wireGlobalInputs(
     onTableDisplayChange = onRun,
     onFlowsAggregationChange,
     updateTerminalCustomUI,
+    updateExportTariffUI,
   }
 ) {
   // Auto-save only settings-owned controls.
@@ -265,6 +277,22 @@ export function wireGlobalInputs(
 
   els.terminal?.addEventListener("change", updateTerminalCustomUI);
   updateTerminalCustomUI();
+
+  // The export-tariff hint and status follow the controls they describe.
+  if (updateExportTariffUI) {
+    const tariffInputs = [
+      els.exportTariffMode,
+      els.exportTariffEffectiveFrom,
+      els.exportTariffTerminal,
+      els.sourcePrices,
+      els.haPriceExportSensor,
+    ];
+    for (const el of tariffInputs) {
+      el?.addEventListener("input", updateExportTariffUI);
+      el?.addEventListener("change", updateExportTariffUI);
+    }
+    updateExportTariffUI();
+  }
 
   // Manual recompute
   els.run?.addEventListener("click", onRun);
