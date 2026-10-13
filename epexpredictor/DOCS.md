@@ -33,19 +33,32 @@ key the add-on works, with somewhat lower accuracy.
 
 ## Connecting OptiVolt
 
-1. Start this add-on and wait for the first forecast. The first request trains
-   all models, which takes several minutes; the log shows the progress.
-2. Open the add-on's **Info** tab and note its hostname, normally
-   `601a68d0-epexpredictor`.
-3. In OptiVolt → Settings → Multi-day horizon, set **Forecast URL** to
-   `http://601a68d0-epexpredictor` (with your hostname) and keep the region.
+Nothing to do: start this add-on. With OptiVolt's **Forecast URL** on `auto`
+(the default from OptiVolt 0.7.73), OptiVolt finds this add-on through the
+Supervisor when it is installed and started, and uses it from its next
+forecast refresh (it checks again every 10 minutes). The status line on
+OptiVolt's Multi-day horizon card then says "forecast: local add-on". While
+this add-on is not installed or not started, OptiVolt uses the public server
+and shows a warning with the reason.
+
+The first request trains all models, which takes several minutes; the log
+shows the progress. Until then OptiVolt's requests fail, and it keeps its last
+forecast and retries.
+
+To pin this add-on instead of `auto`, open its **Info** tab, note its
+hostname (normally `601a68d0-epexpredictor`), and in OptiVolt → Settings →
+Multi-day horizon set **Forecast URL** to `http://601a68d0-epexpredictor`
+(with your hostname). Keep the region.
 
 The add-on is only reachable from other add-ons; no port is opened on your
 network. To try the API from a browser, map port 80 in the **Network** section
 and open `http://<home assistant>:<port>/docs`.
 
-If the add-on is stopped or fails, OptiVolt plans with published prices only
-(as without the multi-day horizon) and shows a warning.
+If the add-on is stopped, `auto` switches to the public server (within 10
+minutes) and shows a warning. If it fails while running, or when the Forecast
+URL is pinned to it, OptiVolt keeps its last forecast for up to 12 hours and
+then plans with published prices only (as without the multi-day horizon),
+with a warning.
 
 ## Resource use
 

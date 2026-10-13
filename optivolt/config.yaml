@@ -1,6 +1,6 @@
 name: Optivolt
 slug: optivolt
-version: "0.7.72"
+version: "0.7.73"
 description: Plan and control Victron ESS with forecasts & dynamic tariffs!
 url: https://github.com/vervoto1/optivolt
 image: "ghcr.io/vervoto1/{arch}-addon-optivolt"
@@ -17,6 +17,10 @@ ingress_port: 3000
 panel_title: Optivolt
 panel_icon: mdi:home-battery-outline
 homeassistant_api: true
+# Supervisor API with the default role: read-only add-on info only. Used by
+# extendedHorizon.forecastUrl "auto" to find the EpexPredictor add-on
+# (GET /addons/self/info and /addons/<slug>/info: its state and hostname).
+hassio_api: true
 
 ports:
   "3000/tcp": 3070

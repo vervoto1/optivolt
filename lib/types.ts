@@ -348,6 +348,13 @@ export interface PlanTotals {
 }
 
 /**
+ * Where a stored price forecast was fetched from: `configured` (a
+ * `forecastUrl` URL), `local` (`auto` found the EpexPredictor add-on) or
+ * `public` (`auto` fell back to the public server).
+ */
+export type PriceForecastSourceKind = 'configured' | 'local' | 'public';
+
+/**
  * Multi-day horizon status of a plan, for the UI (present only with
  * `extendedHorizon.mode` `on`).
  */
@@ -372,6 +379,8 @@ export interface ExtendedHorizonSummary {
   status: 'extended' | 'firmOnly';
   /** Why the plan is firm-only (absent when extended). */
   reason?: string;
+  /** Where the stored forecast was fetched from (absent for a forecast stored before 0.7.73, or none). */
+  forecastSource?: { source: PriceForecastSourceKind; url: string };
 }
 
 /**

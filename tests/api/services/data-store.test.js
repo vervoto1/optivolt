@@ -411,6 +411,9 @@ describe('priceForecast', () => {
   it('accepts a forecast with and without a fit', () => {
     expect(() => validateData(makeValidData({ priceForecast: forecast() }))).not.toThrow();
     expect(() => validateData(makeValidData({ priceForecast: forecast({ fit: fit() }) }))).not.toThrow();
+    for (const source of ['configured', 'local', 'public']) {
+      expect(() => validateData(makeValidData({ priceForecast: forecast({ source, url: 'http://h', sourceReason: 'not installed' }) }))).not.toThrow();
+    }
   });
 
   it('rejects malformed forecasts on write', () => {
@@ -433,6 +436,10 @@ describe('priceForecast', () => {
       [forecast({ fit: fit({ n: 1.5 }) }), 'priceForecast.fit.n: must be a whole number ≥ 0'],
       [forecast({ fit: fit({ n: -1 }) }), 'priceForecast.fit.n: must be a whole number ≥ 0'],
       [forecast({ fit: fit({ fittedAt: '' }) }), 'priceForecast.fit.fittedAt: must be a valid timestamp'],
+      [forecast({ source: 'auto' }), 'priceForecast.source: must be one of configured, local, public'],
+      [forecast({ url: '' }), 'priceForecast.url: must be a non-empty string'],
+      [forecast({ url: 42 }), 'priceForecast.url: must be a non-empty string'],
+      [forecast({ sourceReason: null }), 'priceForecast.sourceReason: must be a string'],
     ];
     for (const [pf, message] of cases) {
       expect(() => validateData(makeValidData({ priceForecast: pf })), message).toThrow(message);

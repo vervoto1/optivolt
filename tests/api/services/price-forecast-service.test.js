@@ -70,6 +70,7 @@ import {
   waitForPriceForecastRefresh,
 } from '../../../api/services/price-forecast-service.ts';
 import { updateData } from '../../../api/services/data-store.ts';
+import { resetForecastSourceCache } from '../../../api/services/forecast-source.ts';
 import { readJson, writeJson, _reset, _set, _get } from '../../../api/services/json-store.ts';
 
 const LOG_PATH = '/tmp/test-data/price-forecast-log.json';
@@ -126,12 +127,15 @@ beforeEach(() => {
   retryCalls.length = 0;
   _reset();
   resetPriceForecastServiceState();
+  resetForecastSourceCache();
+  vi.stubEnv('SUPERVISOR_TOKEN', '');
   dataState.current = { importPrice: importSeries(AFTER_TOMORROW) };
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   log = vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 afterEach(async () => {
   await waitForPriceForecastRefresh();
+  vi.unstubAllEnvs();
   warn.mockRestore();
   log.mockRestore();
 });
@@ -327,6 +331,49 @@ describe('refreshPriceForecast', () => {
     expect(dataState.current.soc).toEqual({ value: 50 });
     expect(dataState.current.priceForecast).toEqual(result.forecast);
     expect(dataState.current.priceForecast.series.values).toHaveLength(8);
+  });
+
+  it('records a configured URL as the source', async () => {
+    mockFetch.mockResolvedValue(ok(feedBody({ slots: 4, knownUntilMs: MIDNIGHT })));
+    const result = await refreshPriceForecast(cfg({ forecastUrl: 'http://192.0.2.10:8000' }), NOW);
+
+    expect(mockFetch.mock.calls[0][0]).toMatch(/^http:\/\/192\.0\.2\.10:8000\/prices\?/);
+    expect(result.forecast).toMatchObject({ source: 'configured', url: 'http://192.0.2.10:8000' });
+    expect(result.forecast).not.toHaveProperty('sourceReason');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('from http://192.0.2.10:8000;'));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('auto outside Home Assistant fetches from the public server, warns and stores why', async () => {
+    mockFetch.mockResolvedValue(ok(feedBody({ slots: 4, knownUntilMs: MIDNIGHT })));
+    await refreshPriceForecast(cfg({ forecastUrl: 'auto' }), NOW);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toMatch(/^https:\/\/epexpredictor\.batzill\.com\/prices\?/);
+    expect(dataState.current.priceForecast).toMatchObject({
+      source: 'public', url: 'https://epexpredictor.batzill.com', sourceReason: 'no Supervisor',
+    });
+    expect(warn).toHaveBeenCalledWith('[price-forecast] local EpexPredictor add-on not used (no Supervisor): fetching from the public server');
+  });
+
+  it('auto in Home Assistant fetches from the running add-on and drops a stored fallback reason', async () => {
+    vi.stubEnv('SUPERVISOR_TOKEN', 'sup-token');
+    dataState.current = { priceForecast: storedForecast({ source: 'public', url: 'https://epexpredictor.batzill.com', sourceReason: 'not installed' }) };
+    mockFetch.mockImplementation(async (url) => {
+      if (url === 'http://supervisor/addons/self/info') return ok({ result: 'ok', data: { slug: '601a68d0_optivolt' } });
+      if (url === 'http://supervisor/addons/601a68d0_epexpredictor/info') {
+        return ok({ result: 'ok', data: { state: 'started', hostname: '601a68d0-epexpredictor' } });
+      }
+      return ok(feedBody({ slots: 4, knownUntilMs: MIDNIGHT }));
+    });
+
+    const result = await refreshPriceForecast(cfg({ forecastUrl: 'auto' }), NOW);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch.mock.calls[2][0]).toBe('http://601a68d0-epexpredictor/prices?region=NL&unit=CT_PER_KWH&startTs=2026-10-12T22%3A00%3A00.000Z');
+    expect(dataState.current.priceForecast).toMatchObject({ source: 'local', url: 'http://601a68d0-epexpredictor' });
+    expect(dataState.current.priceForecast).not.toHaveProperty('sourceReason');
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('keeps the stored import fit for the same region and drops it for another', async () => {

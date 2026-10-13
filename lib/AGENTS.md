@@ -24,7 +24,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | `parse-solution.ts` | HiGHS solver output parser: `parseSolution()` reconstructs energy flows and SoC from solver columns |
 | `plan-summary.ts` | Plan KPI aggregation: `buildPlanSummary()` computes totals, tipping points, rebalance status |
 | `export-tariff.ts` | Export valuation around the end of net metering: `resolveExportPrices()` (per-slot net metering / market − fee / 0 fallback), `parseEffectiveFrom()`, `terminalTailMinPrice()` |
-| `price-forecast.ts` | Market price forecast feed (EpexPredictor): `buildPriceForecastUrl()`, `parsePriceForecastResponse()` (`knownUntil` → `publishedEnd`), `forecastUrlError()`, `PRICE_FORECAST_REGIONS` |
+| `price-forecast.ts` | Market price forecast feed (EpexPredictor): `buildPriceForecastUrl()`, `parsePriceForecastResponse()` (`knownUntil` → `publishedEnd`), `forecastUrlError()`, `forecastUrlSettingError()` / `isAutoForecastUrl()` (the `auto` setting), `PUBLIC_FORECAST_URL`, `PRICE_FORECAST_REGIONS` |
 | `forecast-pricing.ts` | Prices for the forecast slots of a multi-day horizon: `priceForecastSlots()` (resampling to the firm import's resolution, Theil–Sen import fit `a·m + b` with stored-fit fallback, export relation / market rule) |
 | `dess-mapper.ts` | Dynamic ESS strategy mapper: `mapRowsToDessV2()` assigns strategies per 15-minute slot (tipping points; rebalance hold window → proBattery hold) |
 

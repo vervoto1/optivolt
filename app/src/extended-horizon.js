@@ -9,7 +9,7 @@ import { fmtZonedHHMM, fmtZonedWeekday, withDisplayTimeZone } from "./time-zone.
 export const EXTENDED_HORIZON_DEFAULTS = Object.freeze({
   mode: "off",
   extraDays: 3,
-  forecastUrl: "https://epexpredictor.batzill.com",
+  forecastUrl: "auto",
   region: "NL",
   importVat_percent: 21,
   riskMargin_cents_per_kWh: 1.0,
@@ -47,11 +47,23 @@ function formatFit(fit) {
   return `; ${which} a ${a.toFixed(2)}, b ${b.toFixed(1)} c`;
 }
 
+// Where the stored forecast came from (summary.extendedHorizon.forecastSource):
+// "; forecast: local add-on", "; forecast: public server" or "; forecast: <url>".
+// Empty when the plan did not report it.
+export function formatForecastSource(forecastSource) {
+  const source = forecastSource?.source;
+  if (source === "local") return "; forecast: local add-on";
+  if (source === "public") return "; forecast: public server";
+  const url = typeof forecastSource?.url === "string" ? forecastSource.url.trim() : "";
+  return source === "configured" && url ? `; forecast: ${url}` : "";
+}
+
 /**
  * The status line for the multi-day horizon.
  * `mode` is the form's mode; `info` is the last plan's summary.extendedHorizon
  * ({ mode: "on", firmEndMs, endMs, extendedSlots, fit?: { a, b, source },
- * status: "extended" | "firmOnly", reason? }), or null. The server reports it
+ * status: "extended" | "firmOnly", reason?, forecastSource?: { source, url } }),
+ * or null. The server reports it
  * only in `on` mode, and a plan made before the form switched to `on` says
  * nothing about it yet.
  * → { text, tone } with tone one of neutral | ok | warn.
@@ -71,13 +83,14 @@ export function describeExtendedHorizonStatus({ mode, info }) {
   const endMs = Number(info.endMs);
   if (info.status !== "extended" || !Number.isFinite(firmEndMs) || !Number.isFinite(endMs) || endMs <= firmEndMs) {
     const reason = typeof info.reason === "string" ? info.reason.trim() : "";
-    return { tone: "warn", text: `Published prices only${reason ? `: ${reason}` : ""}` };
+    return { tone: "warn", text: `Published prices only${reason ? `: ${reason}` : ""}${formatForecastSource(info.forecastSource)}` };
   }
   // endMs is exclusive: the plan's last slot ends there.
   return {
     tone: "ok",
     text: `Planning through ${formatHorizonDay(endMs - 1)} `
-      + `(forecast prices after ${formatHorizonInstant(firmEndMs)}${formatFit(info.fit)})`,
+      + `(forecast prices after ${formatHorizonInstant(firmEndMs)}${formatFit(info.fit)})`
+      + formatForecastSource(info.forecastSource),
   };
 }
 

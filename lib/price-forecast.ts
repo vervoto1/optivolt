@@ -15,7 +15,7 @@
  * after it is the model's forecast.
  */
 
-import type { TimeSeries } from './types.ts';
+import type { TimeSeries, PriceForecastSourceKind } from './types.ts';
 
 /** Bidding zones the feed accepts (`PriceRegionName` in its OpenAPI schema). */
 export const PRICE_FORECAST_REGIONS = [
@@ -65,6 +65,34 @@ export function forecastUrlError(value: unknown): string | null {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'must use http or https';
   if (url.username !== '' || url.password !== '') return 'must not contain credentials';
   return null;
+}
+
+/** The public EpexPredictor server (its author's; free, fair use, no guarantees). */
+export const PUBLIC_FORECAST_URL = 'https://epexpredictor.batzill.com';
+
+/**
+ * The `forecastUrl` setting that picks the source itself: the EpexPredictor
+ * add-on from this repository when it is installed and started, else the
+ * public server (`api/services/forecast-source.ts`).
+ */
+export const AUTO_FORECAST_URL = 'auto';
+
+/** Values of a stored forecast's `source` (`PriceForecastSourceKind`). */
+export const PRICE_FORECAST_SOURCES: readonly PriceForecastSourceKind[] = ['configured', 'local', 'public'];
+
+/** Whether a `forecastUrl` setting is `auto` (trimmed, any case). */
+export function isAutoForecastUrl(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === AUTO_FORECAST_URL;
+}
+
+/**
+ * Why a `forecastUrl` setting is not acceptable, or null when it is: `auto`
+ * (any case) or a URL `forecastUrlError` accepts.
+ */
+export function forecastUrlSettingError(value: unknown): string | null {
+  if (isAutoForecastUrl(value)) return null;
+  const error = forecastUrlError(value);
+  return error === 'is not a valid URL' ? 'must be "auto" or a valid http(s) URL' : error;
 }
 
 /** Local (server time zone) midnight at the start of the day containing `nowMs`. */

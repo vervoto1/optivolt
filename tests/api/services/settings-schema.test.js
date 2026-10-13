@@ -1124,11 +1124,11 @@ describe('exportTariff and haPriceConfig.exportSensor', () => {
 describe('extendedHorizon', () => {
   const eh = (overrides = {}) => ({ ...EXTENDED_HORIZON_DEFAULTS, ...overrides });
 
-  it('defaults to off with 3 extra days on the public NL feed, mirrored in default-settings.json', () => {
+  it('defaults to off with 3 extra days on the auto-chosen NL feed, mirrored in default-settings.json', () => {
     expect(EXTENDED_HORIZON_DEFAULTS).toEqual({
       mode: 'off',
       extraDays: 3,
-      forecastUrl: 'https://epexpredictor.batzill.com',
+      forecastUrl: 'auto',
       region: 'NL',
       importVat_percent: 21,
       riskMargin_cents_per_kWh: 1,
@@ -1155,6 +1155,26 @@ describe('extendedHorizon', () => {
       expect(normalizeSettings({ ...validSettings(), extendedHorizon: custom }).extendedHorizon)
         .toEqual({ ...custom, forecastUrl: 'http://192.0.2.10:8000/epex' });
       expect(normalizeSettings(validSettings()).extendedHorizon).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('stores auto lower-case, whatever case and spacing it was written in', () => {
+      for (const auto of ['auto', ' AUTO ', 'Auto']) {
+        expect(normalizeSettings({ ...validSettings(), extendedHorizon: eh({ forecastUrl: auto }) }).extendedHorizon.forecastUrl).toBe('auto');
+      }
+      // A stored public URL (an install that saved settings on 0.7.72) is kept as it is.
+      expect(normalizeSettings({ ...validSettings(), extendedHorizon: eh({ forecastUrl: 'https://epexpredictor.batzill.com' }) })
+        .extendedHorizon.forecastUrl).toBe('https://epexpredictor.batzill.com');
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('stores auto lower-case, whatever case and spacing it was written in', () => {
+      for (const auto of ['auto', ' AUTO ', 'Auto']) {
+        expect(normalizeSettings({ ...validSettings(), extendedHorizon: eh({ forecastUrl: auto }) }).extendedHorizon.forecastUrl).toBe('auto');
+      }
+      // A stored public URL (an install that saved settings on 0.7.72) is kept as it is.
+      expect(normalizeSettings({ ...validSettings(), extendedHorizon: eh({ forecastUrl: 'https://epexpredictor.batzill.com' }) })
+        .extendedHorizon.forecastUrl).toBe('https://epexpredictor.batzill.com');
       expect(warn).not.toHaveBeenCalled();
     });
 
@@ -1234,11 +1254,13 @@ describe('extendedHorizon', () => {
       }
     });
 
-    it('requires an http(s) forecastUrl without credentials', () => {
+    it('requires auto or an http(s) forecastUrl without credentials', () => {
       expect(check({ forecastUrl: 'http://192.0.2.10:8000' })).not.toThrow();
+      for (const auto of ['auto', ' AUTO ', 'Auto']) expect(check({ forecastUrl: auto })).not.toThrow();
+      expect(check({ forecastUrl: 'automatic' })).toThrow('extendedHorizon.forecastUrl must be "auto" or a valid http(s) URL');
       expect(check({ forecastUrl: 'ftp://host' })).toThrow('extendedHorizon.forecastUrl must use http or https');
       expect(check({ forecastUrl: ['https://user', 'secret@host'].join(':') })).toThrow('extendedHorizon.forecastUrl must not contain credentials');
-      expect(check({ forecastUrl: 'host' })).toThrow('extendedHorizon.forecastUrl is not a valid URL');
+      expect(check({ forecastUrl: 'host' })).toThrow('extendedHorizon.forecastUrl must be "auto" or a valid http(s) URL');
       expect(check({ forecastUrl: '' })).toThrow('extendedHorizon.forecastUrl must be a non-empty string');
     });
 

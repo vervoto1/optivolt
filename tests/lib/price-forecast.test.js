@@ -1,9 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
+  AUTO_FORECAST_URL,
   PRICE_FORECAST_REGIONS,
   PRICE_FORECAST_MAX_SLOTS,
+  PRICE_FORECAST_SOURCES,
+  PUBLIC_FORECAST_URL,
   buildPriceForecastUrl,
   forecastUrlError,
+  forecastUrlSettingError,
+  isAutoForecastUrl,
   hourlyMeans,
   localMidnightMs,
   parsePriceForecastResponse,
@@ -50,6 +55,28 @@ describe('localMidnightMs', () => {
 
   it('follows DST: the day after the autumn change starts at 23:00 UTC', () => {
     expect(new Date(localMidnightMs(Date.parse('2026-10-26T12:00:00Z'))).toISOString()).toBe('2026-10-25T23:00:00.000Z');
+  });
+});
+
+describe('the forecastUrl setting', () => {
+  it('names the public server, auto and the stored sources', () => {
+    expect(PUBLIC_FORECAST_URL).toBe('https://epexpredictor.batzill.com');
+    expect(forecastUrlError(PUBLIC_FORECAST_URL)).toBeNull();
+    expect(AUTO_FORECAST_URL).toBe('auto');
+    expect(PRICE_FORECAST_SOURCES).toEqual(['configured', 'local', 'public']);
+  });
+
+  it('recognises auto trimmed and in any case', () => {
+    for (const auto of ['auto', ' AUTO ', 'Auto']) expect(isAutoForecastUrl(auto)).toBe(true);
+    for (const other of ['', 'autos', 'http://auto', null, 42]) expect(isAutoForecastUrl(other)).toBe(false);
+  });
+
+  it('accepts auto besides the URLs forecastUrlError accepts', () => {
+    expect(forecastUrlSettingError(' Auto ')).toBeNull();
+    expect(forecastUrlSettingError('http://192.0.2.10:8000')).toBeNull();
+    expect(forecastUrlSettingError('automatic')).toBe('must be "auto" or a valid http(s) URL');
+    expect(forecastUrlSettingError('ftp://host')).toBe('must use http or https');
+    expect(forecastUrlSettingError('')).toBe('must be a non-empty string');
   });
 });
 

@@ -191,6 +191,19 @@ describe('Settings route integration', () => {
     expect(JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).rebalanceHoldHours).toBe(12);
   });
 
+  it('POST /settings stores forecastUrl " AUTO " as "auto" and rejects a word that is not auto', async () => {
+    await writeSettings({});
+
+    const ok = await post(settingsRouter, '/', { extendedHorizon: { forecastUrl: ' AUTO ' } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.settings.extendedHorizon.forecastUrl).toBe('auto');
+    expect(JSON.parse(await fs.readFile(path.join(tempDir, 'settings.json'), 'utf8')).extendedHorizon.forecastUrl).toBe('auto');
+
+    const bad = await post(settingsRouter, '/', { extendedHorizon: { forecastUrl: 'automatic' } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('extendedHorizon.forecastUrl must be "auto" or a valid http(s) URL');
+  });
+
   describe('rebalance cycle reset on toggle', () => {
     const PENDING_SINCE_MS = Date.parse('2024-01-01T00:00:00Z');
     const dataPath = () => path.join(tempDir, 'data.json');

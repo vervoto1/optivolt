@@ -14,6 +14,7 @@ Business logic and external integration layer. Orchestrates the full pipeline: d
 | `planner-service.ts` | Orchestrates: load config, build LP, solve HiGHS, parse, map to DESS, optional MQTT write. Exports `computePlan`, `planAndMaybeWrite` |
 | `config-builder.ts` | Builds `SolverConfig` from Settings + Data + timing window. Exports `buildSolverConfigFromSettings`, `getSolverInputs`, `buildPlannerConfig`, and `buildExtendedSolverConfig` (firm config + forecast-priced slots, `firmSlots`, `socRef`; or a skip reason) |
 | `price-forecast-service.ts` | Background refresh of the market price forecast for `extendedHorizon` (`maybeRefreshPriceForecast`, never awaited by a solve), staleness (`getPriceForecastStatus`), and the daily accuracy log `DATA_DIR/price-forecast-log.json` |
+| `forecast-source.ts` | `resolveForecastSource()`: `extendedHorizon.forecastUrl` `auto` → the EpexPredictor add-on (Supervisor `/addons/self/info` + `/addons/<slug>/info`, started → `http://<hostname>`) or the public server with a reason; cached 10 min, never throws |
 | `settings-store.ts` | Persist/load Settings JSON (`DATA_DIR/settings.json`). Merges with defaults on load |
 | `data-store.ts` | Persist/load Data JSON (`DATA_DIR/data.json`). Validates timeseries structure and `priceForecast`; writes reject non-finite values in changed series (load is lenient and warns) |
 | `prediction-config-store.ts` | Persist/load prediction config (`DATA_DIR/prediction-config.json`) |
