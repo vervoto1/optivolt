@@ -42,8 +42,9 @@ this add-on is not installed or not started, OptiVolt uses the public server
 and shows a warning with the reason.
 
 The first request trains all models, which takes several minutes; the log
-shows the progress. Until then OptiVolt's requests fail, and it keeps its last
-forecast and retries.
+shows the progress. OptiVolt (0.7.74 and later) waits up to 5 minutes for this
+add-on, in the background, so the first forecast arrives as soon as training
+ends; the same applies when the add-on retrains after new prices arrive.
 
 To pin this add-on instead of `auto`, open its **Info** tab, note its
 hostname (normally `601a68d0-epexpredictor`), and in OptiVolt → Settings →

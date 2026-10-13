@@ -1,6 +1,32 @@
 # TODOS
 
-No open items. Everything the v0.7.54, v0.7.55 and v0.7.56 reviews found is closed below; the v0.7.56 review's remaining *plausible-only* findings (collapsing consecutive `failed` selector records, a consistent minute clamp in `normalizeClockTime`, running the solver-refresh gate through the full `getSolverInputs` pipeline) were judged cosmetic and dropped rather than carried. New findings go in a new section above the **Completed** line, using the **What / Why / Context / Effort / Priority / Depends on** shape.
+Open items are listed under **Open**. Everything the v0.7.54, v0.7.55 and v0.7.56 reviews found is closed below; the v0.7.56 review's remaining *plausible-only* findings (collapsing consecutive `failed` selector records, a consistent minute clamp in `normalizeClockTime`, running the solver-refresh gate through the full `getSolverInputs` pipeline) were judged cosmetic and dropped rather than carried. New findings go in a new section above the **Completed** line, using the **What / Why / Context / Effort / Priority / Depends on** shape.
+
+## Open
+
+### Load prediction learns battery and EV flows as house load
+
+- **Status:** to verify. The user reports that the large errors are no longer visible since about Sat 2026-10-10, so this may already be fixed (for example by the `Load without EV` derived sensor, or a config change around then). First compare the predictions tab's accuracy for the week before and after 2026-10-10, especially charge/discharge hours and EV sessions. Close the item if the error is gone; otherwise continue with the suspects below. Even then, suspect 1 (DC battery terms inside an AC balance) still adds a smaller bias proportional to battery throughput, so check it as well.
+- **What:** the historical load predictor's training series still contains battery charging/discharging and EV charging. Its accuracy is badly off in hours with large battery flows (e.g. the night grid-charge and evening discharge windows). The EV also does not appear to be removed.
+- **Why:**
+  - **Wrong plans:** the plan then sees house load that isn't real, so grid charging, discharge timing and carry-over are planned against it. That matters more now that the multi-day horizon (0.7.72) also plans days 2–5 from the same predictor.
+  - **Wrong tuning:** a skewed load series also skews the auto-selected strategy and the accuracy panel.
+- **Context:**
+  - **Production config (2026-10-13):** `historicalPredictor.sensor` is the derived `Load without EV`, defined as:
+    - `Total Load = Solar Generation + Grid Import + Battery Discharge − Grid Export − Battery Charge`
+    - `Load without EV = Total Load − EV Charging`
+    - `Solar Generation = Victron Solar + Enphase Solar`
+  - So the flows are already in the formula; something in how they cancel out is wrong.
+  - Suspects, to check against recorder data, worst hours first:
+    1. **AC vs DC.** `Battery Charge`/`Discharge` (Victron battery monitor) and `Victron Solar` (`system_dc_pv_energy`) are DC energies; the grid meter and Enphase are AC. Inverter/charger losses (~5–10 %) therefore show up as phantom load in proportion to battery throughput, in both charge and discharge hours. With ~30 kWh/day of throughput that is several kWh/day, concentrated exactly in the hours that look wrong.
+    2. **Counter timing.** The cumulative sensors update at different cadences (Victron MQTT, P1 meter, Enphase). Differencing per hour moves energy between hours when flows are large, giving large ± spikes around charge and discharge blocks.
+    3. **Enphase resolution.** `Enphase Solar` is lifetime production in **MWh**. If HA stores it with few decimals, hourly deltas are quantised to 1 kWh steps.
+    4. **EV not removed.** Check that `sensor.tesla_wall_connector_energy` is a lifetime `total_increasing` counter in kWh (not session energy that resets), that its hours line up with the grid meter, and that the same-name/derived merge actually subtracts it.
+  - **Likely fix direction:** learn from an AC-side consumption measurement instead of reconstructing it from DC terms. Victron's AC-loads/consumption energy (system `Ac/Consumption`, or AC-out plus AC-in loads on the Multi RS) avoids the battery and inverter terms entirely. Then subtract the EV only if the wall connector is on the measured side. Failing that: convert DC terms to AC with the measured efficiencies, and smooth or realign counters before differencing.
+  - **Tooling:** the predictions tab's validation and chart can show the per-hour error against the battery schedule in plan history, to confirm which suspect dominates.
+- **Effort:** M. Most of it is investigating recorder data. The code change is either a config change (a different sensor or formula) or a small per-term efficiency/alignment option in the derived-sensor pipeline.
+- **Priority:** P1 if the errors are still there, P3 (check the residual DC/AC bias) if they are gone.
+- **Depends on:** nothing.
 
 ## Completed
 
