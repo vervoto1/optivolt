@@ -97,6 +97,7 @@ export function buildLP({
   rebalanceTargetSoc_percent,
   rebalanceHoldSoc_percent,
   rebalanceMaxStartSlot,
+  rebalanceMinStartSlot,
 
   // EV charging
   evLoad_W,
@@ -108,12 +109,29 @@ export function buildLP({
   dischargePhaseThresholds,
 
   ev,
+
+  // Multi-day horizon (firm/forecast boundary and carry-over dead-band)
+  firmSlots,
+  socRef_Wh,
+  carryOverMargin_cents_per_kWh,
 }: SolverConfig): string {
   const T = load_W.length;
   // v8 ignore next — simple length check
   if (pv_W.length !== T || importPrice.length !== T || exportPrice.length !== T) {
     throw new Error("Arrays must have same length");
   }
+
+  // Multi-day horizon. Slots t >= F are priced with forecast prices and are
+  // never executed; slots t < F are the firm (published-price) part. With
+  // firmSlots absent (or >= T) F = T: no slot is a forecast slot and every
+  // gate below reduces to the single-horizon LP, byte for byte.
+  const F = resolveFirmSlots(firmSlots, T);
+  const extended = F < T;
+  const isForecastSlot = (t: number) => t >= F;
+  // Slot-indexed tie-breaks stop growing at the boundary: a forecast slot
+  // carries the last firm slot's tie-break, so the escalation never outgrows
+  // the real cost terms over a long horizon and adds no firm/forecast bias.
+  const tieSlot = (t: number) => Math.min(t, F - 1);
 
   // Effective load per slot: house load + EV load (uncontrollable)
   const effectiveLoad_W = new Array<number>(T);
@@ -146,6 +164,20 @@ export function buildLP({
     avoidCurtail: 1e-4, // otherwise prefer using/storing/exporting PV over curtailment
   }
   const softMinSocPenalty_cents_per_Wh = 0.05; // penalty to keep soc above minSoc when possible
+
+  // Carry-over dead-band (multi-day horizon only): the SoC at the end of the
+  // firm part may differ from socRef_Wh (the firm-only plan's SoC there) at a
+  // cost of r c€/kWh in either direction,
+  //   carry_dev_pos − carry_dev_neg = soc_{F−1} − socRef_Wh,
+  //   objective += r/1000 · (carry_dev_pos + carry_dev_neg)   [c€ per Wh],
+  // so carrying more charge over (or less) than today's plan must beat the
+  // forecast error by r. Two-sided hysteresis, no price shift. The names are
+  // deliberately not "soc_*" (parseSolution reads every soc_* column as SoC).
+  const carryOverActive = extended
+    && socRef_Wh != null && Number.isFinite(socRef_Wh)
+    && carryOverMargin_cents_per_kWh != null && carryOverMargin_cents_per_kWh > 0;
+  const carryDevPos = 'carry_dev_pos';
+  const carryDevNeg = 'carry_dev_neg';
 
   // Unit helpers
   const stepHours = stepSize_m / 60; // hours per slot
@@ -192,10 +224,11 @@ export function buildLP({
   const initialShortfall_Wh = Math.max(0, minSoc_Wh - initialSoc_Wh);
   const floorRatchetActive = initialShortfall_Wh > 0;
 
-  // Rebalancing MILP: number of slots remaining in the hold window.
-  // Truncate to integer to guard against fractional values from future callers.
-  // Clamp to [0, T] — D > T is unsatisfiable; D <= 0 means no rebalancing this solve.
-  const D = Math.min(T, Math.max(0, Math.trunc(rebalanceRemainingSlots ?? 0)));
+  // Rebalancing MILP: number of slots remaining in the hold window (D) and
+  // the allowed start positions [KMIN, KMAX]. See resolveRebalanceWindow: D
+  // is clamped to [0, T]; on a multi-day horizon a hold that does not fit in
+  // the firm part is deferred (D = 0, no hold variables this solve).
+  const { D, KMIN, KMAX } = resolveRebalanceWindow({ T, F, rebalanceRemainingSlots, rebalanceMaxStartSlot, rebalanceMinStartSlot });
   // Clamp target SoC to maxSoc_percent so the model is never forced above its own upper bound.
   const safeTargetSoc_percent = Math.min(rebalanceTargetSoc_percent ?? maxSoc_percent, maxSoc_percent);
   // The hold level the LP enforces: the target, or the lower reachable level
@@ -204,15 +237,6 @@ export function buildLP({
   const rebalanceTargetSoc_Wh = D > 0
     ? (holdSoc_percent / 100) * batteryCapacity_Wh
     : 0;
-  // Latest allowed start position of the window (inclusive). Defaults to T - D
-  // (any start that still fits); rebalanceMaxStartSlot caps it. config-builder
-  // sets 0 once the hold has started, so the solver cannot move a running hold
-  // later in the horizon while the wall-clock countdown keeps running. Clamped
-  // to >= 0 so at least start_balance_0 always exists.
-  const KMAX = Math.min(
-    T - D,
-    rebalanceMaxStartSlot != null ? Math.max(0, Math.trunc(rebalanceMaxStartSlot)) : Infinity,
-  );
   const startBalance = (k: number) => `start_balance_${k}`;
 
   // CV phase: sorted thresholds with decremental power reductions
@@ -226,6 +250,13 @@ export function buildLP({
     cvPowerSteps.push(prevPower - cvThresholds[k].maxChargePower_W);
   }
   const cvThresholdWh: number[] = cvThresholds.map(t => (t.soc_percent / 100) * batteryCapacity_Wh);
+  // Forecast slots relax the CV binaries to continuous cv_k_t in [0, 1] with
+  // the forward row only, which lets cv_k_t sit at max(0, (s − θ_k)/(maxSoc − θ_k)).
+  // The cap P0 − Σ Δ_k·cv_k_t is then concave in SoC only if every step
+  // Δ_k >= 0, so forecast rows use the running minimum of the threshold
+  // powers (a later threshold can never raise the cap). Firm rows keep the
+  // thresholds as given.
+  const cvPowerStepsForecast = runningMinSteps(maxChargePower_W, cvThresholds.map(th => th.maxChargePower_W));
 
   // Discharge phase: sorted thresholds (descending soc_percent) with decremental power reductions
   const dpThresholds = dischargePhaseThresholds ?? [];
@@ -236,6 +267,9 @@ export function buildLP({
     dpPowerSteps.push(prevPower - dpThresholds[k].maxDischargePower_W);
   }
   const dpThresholdWh: number[] = dpThresholds.map(t => (t.soc_percent / 100) * batteryCapacity_Wh);
+  // Same relaxation as the CV taper for forecast slots (continuous dp_k_t,
+  // forward row only, running-minimum powers).
+  const dpPowerStepsForecast = runningMinSteps(maxDischargePower_W, dpThresholds.map(th => th.maxDischargePower_W));
 
   // EV variable name helpers
   const gridToEv    = (t: number) => `grid_to_ev_${t}`;
@@ -259,14 +293,20 @@ export function buildLP({
   // so the plan lands ON the target instead of overshooting it (forced-rate chargers).
   const evTgtBin         = (t: number) => `ev_tgt_${t}`;
 
-  // EV derived constants (only used when ev is defined)
-  const evActive        = ev != null;
+  // EV derived constants (only used when ev is defined). On a multi-day
+  // horizon every EV index is resolved against the firm part: EV variables
+  // and rows exist for t < F only (evAt), the departure is clamped to F + 1
+  // (a deadline past the firm part enforces no target), and an EV whose
+  // earliest start is at or after F is not modelled at all.
+  const evActive        = isEvPlannedInLp({ load_W, firmSlots, ev });
+  const evAt            = (t: number) => evActive && t < F;
   const evCapacityWh    = ev?.evBatteryCapacity_Wh ?? 0;
   const evInitialWh     = (ev?.evInitialSoc_percent ?? 0) / 100 * evCapacityWh;
   const evTargetWh      = (ev?.evTargetSoc_percent  ?? 0) / 100 * evCapacityWh;
   const evMinPow_W      = ev?.evMinChargePower_W ?? 0;
   const evMaxPow_W      = ev?.evMaxChargePower_W ?? 0;
-  const evDepSlot       = ev?.evDepartureSlot ?? (T + 1);
+  const evDepSlotRaw    = ev?.evDepartureSlot ?? (T + 1);
+  const evDepSlot       = extended ? Math.min(evDepSlotRaw, F + 1) : evDepSlotRaw;
   const eta_ev          = (ev?.evChargeEfficiency_percent ?? 100) / 100;
   // Storage gained in EV battery per W of AC delivered to the EV charger over a slot.
   const evChargeWhPerW  = stepHours * eta_ev;
@@ -306,7 +346,7 @@ export function buildLP({
     ? (ev.evOpportunisticType2Cap_percent / 100) * evCapacityWh : 0;
   // Opportunistic bands are only meaningful when there is a hard departure slot
   // (the band SoC is measured at depSlot-1) and a cap above target.
-  const evHasDepConstraint = evActive && evDepSlot <= T && evDepSlot > 0;
+  const evHasDepConstraint = evActive && evDepSlot <= F && evDepSlot > 0;
   const evOppActive  = evHasDepConstraint && evOppCapWh  > evTargetWh + 1e-6;
   const evOppActive2 = evOppActive && evOppCap2Wh > evOppCapWh + 1e-6;
   const evContinuous = !!ev?.evContinuous && evActive;
@@ -350,7 +390,7 @@ export function buildLP({
   let maxAbsPriceCoeff = 0;
   let minChargeCostPerWh = Number.POSITIVE_INFINITY;
   if (evActive) {
-    for (let t = 0; t < T; t++) {
+    for (let t = 0; t < F; t++) {
       const a = Math.max(Math.abs(importPrice[t]), Math.abs(exportPrice[t])) * priceCoeff;
       if (a > maxAbsPriceCoeff) maxAbsPriceCoeff = a;
       // Cheapest per-Wh charge cost among slots that can actually charge.
@@ -407,11 +447,11 @@ export function buildLP({
 
     // Aggregate coefficients for each variable
     const gridToLoadCoeff = importCoeff_cents + TIEBREAK.avoidGridRoundTrip; // import cost + tiny nudge to prefer battery→load when prices are equal
-    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + TIEBREAK.gridToBattery + t * TIEBREAK.preferEarlierCharging; // import cost + battery cost + prefer DC PV charging + slight preference for earlier charging
+    const gridToBatteryCoeff = importCoeff_cents + batteryCost_cents + TIEBREAK.gridToBattery + tieSlot(t) * TIEBREAK.preferEarlierCharging; // import cost + battery cost + prefer DC PV charging + slight preference for earlier charging
     const pvToGridCoeff = -acExportCoeff_cents + TIEBREAK.avoidExport; // export revenue (post-inverter) + slight penalty to prefer using PV locally
-    const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents + t * TIEBREAK.preferEarlierDischarge; // export revenue (post-inverter) + battery cost + slight preference for earlier export (symmetry-break for equal-price drain windows)
+    const batteryToGridCoeff = -acExportCoeff_cents + batteryCost_cents + tieSlot(t) * TIEBREAK.preferEarlierDischarge; // export revenue (post-inverter) + battery cost + slight preference for earlier export (symmetry-break for equal-price drain windows)
     const batteryToLoadCoeff = batteryCost_cents; // battery cost
-    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery + t * TIEBREAK.preferEarlierPvCharging; // battery cost + tiny routing tiebreak + slight preference for charging from the earliest PV surplus
+    const pvToBatteryCoeff = batteryCost_cents + TIEBREAK.pvToBattery + tieSlot(t) * TIEBREAK.preferEarlierPvCharging; // battery cost + tiny routing tiebreak + slight preference for charging from the earliest PV surplus
     const socShortfallCoeff = softMinSocPenalty_cents_per_Wh; // penalty for being below minSoc
     const pvCurtailCoeff =
       importPrice[t] < 0 || exportPrice[t] < 0
@@ -428,7 +468,7 @@ export function buildLP({
     if (pvToBatteryCoeff !== 0) objTerms.push(` + ${toNum(pvToBatteryCoeff)} ${pvToBattery(t)}`);
     objTerms.push(` + ${toNum(pvCurtailCoeff)} ${pvCurtail(t)}`);
     /* v8 ignore end */
-    if (evActive) {
+    if (evAt(t)) {
       // Per-slot escalating tiebreak added equally to every EV charge flow so it
       // front-loads charging within an equal-price window WITHOUT disturbing the
       // grid/pv/battery routing preferences (those are constant offsets, preserved
@@ -436,7 +476,7 @@ export function buildLP({
       // below is too small to survive the production MIP gap; this rides on the
       // continuous flow variables, which the simplex resolves to dual-feasibility
       // precision — so it actually biases placement earlier.
-      const evEarlier = t * TIEBREAK.preferEarlierEvCharging;
+      const evEarlier = tieSlot(t) * TIEBREAK.preferEarlierEvCharging;
       /* v8 ignore next — v8 statement counter artifact inside covered if-block */
       const gridToEvCoeff = importCoeff_cents + TIEBREAK.preferPvForEv + evEarlier;
       const pvToEvCoeff = TIEBREAK.preferPvForEv + TIEBREAK.pvLoadOverEv + evEarlier;
@@ -472,7 +512,7 @@ export function buildLP({
     }
   }
   if (evContinuous) {
-    for (let t = 1; t < T; t++) {
+    for (let t = 1; t < F; t++) {
       objTerms.push(` + ${toNum(evContWeight)} ${evTrans(t)}`);
     }
   }
@@ -482,9 +522,13 @@ export function buildLP({
   }
   // Rebalancing symmetry-breaking: escalating penalty prefers earlier windows when cost-equivalent.
   if (D > 0) {
-    for (let k = 0; k <= KMAX; k++) {
+    for (let k = KMIN; k <= KMAX; k++) {
       objTerms.push(` + ${toNum(TIEBREAK.rebalanceStartPerSlot * (k + 1))} ${startBalance(k)}`);
     }
+  }
+  if (carryOverActive) {
+    const carryCoeff = carryOverMargin_cents_per_kWh / 1000;
+    objTerms.push(` + ${toNum(carryCoeff)} ${carryDevPos} + ${toNum(carryCoeff)} ${carryDevNeg}`);
   }
   lines.push(objTerms.join(""));
   lines.push("");
@@ -504,7 +548,7 @@ export function buildLP({
 
   // PV split (DC W from PV bus). pv_to_load/grid/ev are DC W consumed; pv_curtail discards DC.
   for (let t = 0; t < T; t++) {
-    const pvEvTerm = evActive
+    const pvEvTerm = evAt(t)
       ? ` + ${pvToEv(t)}${evFloorActive ? ` + ${pvToEvFloor(t)}` : ''}`
       : '';
     lines.push(` c_pv_split_${t}: ${pvToLoad(t)} + ${pvToBattery(t)} + ${pvToGrid(t)} + ${pvCurtail(t)}${pvEvTerm} = ${pv_W[t]}`);
@@ -516,7 +560,7 @@ export function buildLP({
   //        + chargeWhPerW_grid * grid_to_battery_t       (AC→DC→bat: η_inv * η_bc)
   //        - dischargeWhPerW * (battery_to_load + battery_to_grid + battery_to_ev)  (DC bus drain → 1/η_bd)
   const evBatTerm = (t: number) => {
-    if (!evActive) return '';
+    if (!evAt(t)) return '';
     let s = ` + ${toNum(dischargeWhPerW)} ${batteryToEv(t)}`;
     // Floor flow also drains the home battery — count it in the SoC evolution.
     if (evFloorActive) s += ` + ${toNum(dischargeWhPerW)} ${batteryToEvFloor(t)}`;
@@ -532,17 +576,17 @@ export function buildLP({
     // DC-side battery charge cap. pv_to_battery is DC; grid_to_battery (AC) becomes η_inv DC.
     // With CV phase binaries, the effective limit decreases as SoC rises.
     if (cvK > 0) {
-      const cvTerms = cvPowerSteps.map((step, k) => ` + ${toNum(step)} ${cvBin(k, t)}`).join('');
+      const cvTerms = (isForecastSlot(t) ? cvPowerStepsForecast : cvPowerSteps).map((step, k) => ` + ${toNum(step)} ${cvBin(k, t)}`).join('');
       lines.push(` c_charge_cap_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)}${cvTerms} <= ${maxChargePower_W}`);
     } else {
       lines.push(` c_charge_cap_${t}: ${pvToBattery(t)} + ${toNum(eta_inv)} ${gridToBattery(t)} <= ${maxChargePower_W}`);
     }
     // DC-side battery discharge cap. battery_to_X variables are DC W on bus.
-    const batEvTerm = evActive
+    const batEvTerm = evAt(t)
       ? ` + ${batteryToEv(t)}${evFloorActive ? ` + ${batteryToEvFloor(t)}` : ''}`
       : '';
     if (dpK > 0) {
-      const dpTerms = dpPowerSteps.map((step, k) => ` + ${toNum(step)} ${dpBin(k, t)}`).join('');
+      const dpTerms = (isForecastSlot(t) ? dpPowerStepsForecast : dpPowerSteps).map((step, k) => ` + ${toNum(step)} ${dpBin(k, t)}`).join('');
       lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm}${dpTerms} <= ${maxDischargePower_W}`);
     } else {
       lines.push(` c_discharge_cap_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} <= ${maxDischargePower_W}`);
@@ -550,7 +594,7 @@ export function buildLP({
 
     // Grid import cap (AC). Unchanged: every grid_to_X is already AC.
     // The floor flow's grid leg is counted here too (no free import headroom).
-    const gridEvTerm = evActive
+    const gridEvTerm = evAt(t)
       ? ` + ${gridToEv(t)}${evFloorActive ? ` + ${gridToEvFloor(t)}` : ''}`
       : '';
     lines.push(` c_grid_import_cap_${t}: ${gridToLoad(t)} + ${gridToBattery(t)}${gridEvTerm} <= ${maxGridImport_W}`);
@@ -571,12 +615,32 @@ export function buildLP({
     //   floor_recovered = 1:  shortfall + soc >= minSoc  (full floor)
     if (floorRatchetActive) {
       const allowance_Wh = initialShortfall_Wh + idleDrain_Wh * (t + 1);
-      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(allowance_Wh)} ${floorRecovered(t)} >= ${toNum(minSoc_Wh - allowance_Wh)}`);
-      // Latch: SoC above the floor forces floor_recovered = 1 (M spans the
-      // remaining SoC range above the floor); monotonicity keeps it there.
-      lines.push(` c_floor_rec_${t}: ${soc(t)} - ${toNum(maxSoc_Wh - minSoc_Wh)} ${floorRecovered(t)} <= ${toNum(minSoc_Wh)}`);
-      if (t > 0) {
-        lines.push(` c_floor_rec_mono_${t}: ${floorRecovered(t)} - ${floorRecovered(t - 1)} >= 0`);
+      // Forecast slots carry no latch of their own: the allowance keeps
+      // growing with idle drain (holding a level past the boundary needs no
+      // made-up trickle charge and pulls no grid charging into firm slots)
+      // and is gated by the last firm slot's latch:
+      //   shortfall + soc >= minSoc − allowance(t)·(1 − floor_recovered_{F−1})
+      // Known limitation: when the firm part does not recover, a recovery on
+      // a forecast day does not restore the full floor, so later forecast
+      // slots may plan below minSoc (down to the no-intervention trajectory)
+      // without penalty. A continuous latch (floor_recovered_t in [0, 1],
+      // monotone, forced up by soc_t > minSoc) does not fix that: it is the
+      // convex hull of the binary latch, which raises the floor only in
+      // proportion to (soc − minSoc)/(maxSoc − minSoc), so after a partial
+      // recovery it still plans below minSoc and rewards charging less to
+      // keep the floor low (tests/lib/build-lp-firm-slots.test.js compares it
+      // with a binary latch). Forecast slots are never executed; a recovery
+      // that is executed happens in the firm part of a later solve, under the
+      // binary latch.
+      const latch = isForecastSlot(t) ? floorRecovered(F - 1) : floorRecovered(t);
+      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(allowance_Wh)} ${latch} >= ${toNum(minSoc_Wh - allowance_Wh)}`);
+      if (!isForecastSlot(t)) {
+        // Latch: SoC above the floor forces floor_recovered = 1 (M spans the
+        // remaining SoC range above the floor); monotonicity keeps it there.
+        lines.push(` c_floor_rec_${t}: ${soc(t)} - ${toNum(maxSoc_Wh - minSoc_Wh)} ${floorRecovered(t)} <= ${toNum(minSoc_Wh)}`);
+        if (t > 0) {
+          lines.push(` c_floor_rec_mono_${t}: ${floorRecovered(t)} - ${floorRecovered(t - 1)} >= 0`);
+        }
       }
     } else {
       lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} >= ${minSoc_Wh}`);
@@ -601,6 +665,9 @@ export function buildLP({
       } else {
         // Slot t>0: start-of-slot SoC is soc_{t-1}
         lines.push(` c_cv_${k}_${t}: ${soc(t - 1)} - ${toNum(tightM)} ${cvBin(k, t)} <= ${toNum(cvThresholdWh[k])}`);
+        // Forecast slots (t >= F >= 1, always this branch): continuous cv,
+        // forward row only (see cvPowerStepsForecast).
+        if (isForecastSlot(t)) continue;
         // Reverse: threshold * cv <= soc_{t-1} (cv=1 only if soc >= threshold)
         lines.push(` c_cv_rev_${k}_${t}: ${toNum(cvThresholdWh[k])} ${cvBin(k, t)} - ${soc(t - 1)} <= 0`);
       }
@@ -639,6 +706,8 @@ export function buildLP({
         //   Cleaner: soc_{t-1} + tightM * dp >= threshold
         //   LP form: -soc_{t-1} - tightM * dp <= -threshold
         lines.push(` c_dp_${k}_${t}: - ${soc(t - 1)} - ${toNum(tightM)} ${dpBin(k, t)} <= ${toNum(-dpThresholdWh[k])}`);
+        // Forecast slots: continuous dp, forward row only.
+        if (isForecastSlot(t)) continue;
         // Reverse: (maxSoc - threshold) * dp <= maxSoc - soc_{t-1}
         //   rearranged: (maxSoc - threshold) * dp + soc_{t-1} <= maxSoc
         const revM = maxSoc_Wh - dpThresholdWh[k];
@@ -651,14 +720,14 @@ export function buildLP({
   if (D > 0) {
     // Exactly-one-start constraint: exactly one window starting position is chosen
     const startVars: string[] = [];
-    for (let k = 0; k <= KMAX; k++) {
+    for (let k = KMIN; k <= KMAX; k++) {
       startVars.push(startBalance(k));
     }
     lines.push(` c_balance_start: ${startVars.join(' + ')} = 1`);
 
     // Per-slot SoC forcing: soc_t >= rebalanceTargetSoc_Wh when slot t is in the chosen window
     for (let t = 0; t < T; t++) {
-      const kLow = Math.max(0, t - D + 1);
+      const kLow = Math.max(KMIN, t - D + 1);
       const kHigh = Math.min(t, KMAX);
       if (kLow > kHigh) continue; // no valid start position covers this slot
       const terms: string[] = [];
@@ -667,6 +736,10 @@ export function buildLP({
       }
       lines.push(` c_rebalance_${t}: ${soc(t)}${terms.join('')} >= 0`);
     }
+  }
+
+  if (carryOverActive) {
+    lines.push(` c_carry_over: ${soc(F - 1)} - ${carryDevPos} + ${carryDevNeg} = ${toNum(socRef_Wh)}`);
   }
 
   // EV charging constraints (MILP).
@@ -680,7 +753,7 @@ export function buildLP({
       ? ` - ${toNum(evChargeWhPerW)} ${gridToEvFloor(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEvFloor(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEvFloor(t)}`
       : '';
 
-    for (let t = 0; t < T; t++) {
+    for (let t = 0; t < F; t++) {
       // Min relaxes by the SAME taper step as the max (see c_ev_taper below). The
       // term is additive on a >= constraint, so when ev_on=0 (flow pinned to 0) it
       // only loosens the bound — never infeasible. When charging near full it lets
@@ -742,7 +815,7 @@ export function buildLP({
     // pv_to_ev / battery_to_ev (DC) → η_inv * evChargeWhPerW factor.
     // Floor flows add to the same accumulation (mask-exempt sourced charging).
     lines.push(` c_ev_soc_0: ${evSocVar(0)} - ${toNum(evChargeWhPerW)} ${gridToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(0)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(0)}${evSocFloorTerms(0)} = ${toNum(evInitialWh)}`);
-    for (let t = 1; t < T; t++) {
+    for (let t = 1; t < F; t++) {
       lines.push(` c_ev_soc_${t}: ${evSocVar(t)} - ${evSocVar(t - 1)} - ${toNum(evChargeWhPerW)} ${gridToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${pvToEv(t)} - ${toNum(evChargeWhPerW_dc)} ${batteryToEv(t)}${evSocFloorTerms(t)} = 0`);
     }
 
@@ -759,7 +832,7 @@ export function buildLP({
     // reached ASAP. Soft ⇒ never infeasible even when house-load balance / grid
     // cap make the floor physically unreachable.
     if (evFloorActive) {
-      const floorLimit = Math.min(evDepSlot, T);
+      const floorLimit = Math.min(evDepSlot, F);
       for (let t = 0; t < floorLimit; t++) {
         lines.push(` c_ev_floor_${t}: ${evSocVar(t)} + ${evFloorShortfall(t)} >= ${toNum(evMinFloorWh)}`);
       }
@@ -791,7 +864,7 @@ export function buildLP({
     // Continuity bias: ev_trans_t >= |ev_on_t - ev_on_{t-1}| (penalized) ⇒ fewer
     // on/off transitions ⇒ a single contiguous block is preferred.
     if (evContinuous) {
-      for (let t = 1; t < T; t++) {
+      for (let t = 1; t < F; t++) {
         lines.push(` c_ev_trans_a_${t}: ${evTrans(t)} - ${evOn(t)} + ${evOn(t - 1)} >= 0`);
         lines.push(` c_ev_trans_b_${t}: ${evTrans(t)} + ${evOn(t)} - ${evOn(t - 1)} >= 0`);
       }
@@ -830,7 +903,15 @@ export function buildLP({
     // minSoc handled via soft constraint
     lines.push(` ${soc(t)} <= ${toNum(maxSoc_Wh)}`);
     lines.push(` ${socShortfall(t)} >= 0`);
-    if (evActive) {
+    if (isForecastSlot(t)) {
+      // Forecast slots carry no binaries: the direction indicator and the
+      // CV/DP phase indicators are continuous in [0, 1] (the convex hull of
+      // the binary model).
+      lines.push(` 0 <= ${batteryCharging(t)} <= 1`);
+      for (let k = 0; k < cvK; k++) lines.push(` 0 <= ${cvBin(k, t)} <= 1`);
+      for (let k = 0; k < dpK; k++) lines.push(` 0 <= ${dpBin(k, t)} <= 1`);
+    }
+    if (evAt(t)) {
       // Masked slots (before earliest-start, after departure, or above the price
       // ceiling) pin the NORMAL EV flows to 0 — which forces ev_on=0 via c_ev_min.
       // grid_to_ev is AC into the charger. pv_to_ev / battery_to_ev are DC; AC into charger = η_inv * variable,
@@ -858,56 +939,60 @@ export function buildLP({
     if (evOppActive2) lines.push(` 0 <= ${evOppBand2} <= ${toNum(evOppCap2Wh - evOppCapWh)}`);
   }
   if (evContinuous) {
-    for (let t = 1; t < T; t++) lines.push(` 0 <= ${evTrans(t)} <= 1`);
+    for (let t = 1; t < F; t++) lines.push(` 0 <= ${evTrans(t)} <= 1`);
+  }
+  if (carryOverActive) {
+    lines.push(` ${carryDevPos} >= 0`);
+    lines.push(` ${carryDevNeg} >= 0`);
   }
   lines.push("");
 
   const hasBinaries = T > 0 || D > 0 || cvK > 0 || dpK > 0 || evActive;
   if (hasBinaries) {
     lines.push("Binaries");
-    // Battery direction binaries
-    for (let t = 0; t < T; t++) {
+    // Battery direction binaries (firm slots only; forecast slots are continuous)
+    for (let t = 0; t < F; t++) {
       lines.push(` ${batteryCharging(t)}`);
     }
     // Rebalancing binaries
     if (D > 0) {
-      for (let k = 0; k <= KMAX; k++) {
+      for (let k = KMIN; k <= KMAX; k++) {
         lines.push(` start_balance_${k}`);
       }
     }
     // CV phase binaries
     for (let k = 0; k < cvK; k++) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${cvBin(k, t)}`);
       }
     }
     // Discharge phase binaries
     for (let k = 0; k < dpK; k++) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${dpBin(k, t)}`);
       }
     }
     // Floor-ratchet recovery latches (only when starting below the minSoc floor)
     if (floorRatchetActive) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${floorRecovered(t)}`);
       }
     }
     // EV on/off binaries
     if (evActive) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${evOn(t)}`);
       }
     }
     // EV charge-acceptance taper binaries (only when learned thresholds are present)
     for (let k = 0; k < evCvK; k++) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${evCvBin(k, t)}`);
       }
     }
     // EV target-landing relaxation binaries
     if (evTgtRelaxActive) {
-      for (let t = 0; t < T; t++) {
+      for (let t = 0; t < F; t++) {
         lines.push(` ${evTgtBin(t)}`);
       }
     }
@@ -917,6 +1002,108 @@ export function buildLP({
   lines.push("End");
 
   return lines.join("\n");
+}
+
+/**
+ * The firm/forecast boundary buildLP uses for a horizon of T slots: slots
+ * `t < F` are firm (published prices, executable), slots `t >= F` are forecast
+ * slots. `firmSlots` absent or non-finite means T (no forecast slots); other
+ * values are truncated and clamped to [1, T] (the firm part is never empty).
+ */
+export function resolveFirmSlots(firmSlots: number | undefined, T: number): number {
+  if (firmSlots == null || !Number.isFinite(firmSlots)) return T;
+  return Math.min(T, Math.max(1, Math.trunc(firmSlots)));
+}
+
+/**
+ * The rebalance hold window buildLP emits for a horizon of T slots with F
+ * firm slots:
+ *   D     — hold slots this solve, `rebalanceRemainingSlots` truncated and
+ *           clamped to [0, T] (D > T is unsatisfiable; 0 means no hold);
+ *   KMAX  — latest allowed start (inclusive): `T − D`, capped by
+ *           `rebalanceMaxStartSlot` (clamped to >= 0, so `start_balance_0`
+ *           always exists) and, on a multi-day horizon (F < T), by `F − D`
+ *           so the hold lies in the firm part;
+ *   deferred — F < T, the hold does not fit in the firm part (F − D < 0) and
+ *           it is not pinned to slot 0: no hold variables are emitted (D = 0).
+ *           A slot-0 pin (`rebalanceMaxStartSlot <= 0`: a started hold, or
+ *           config-builder's "hold from now" cap within the start tolerance)
+ *           is kept and the hold may run on past the boundary.
+ *   KMIN  — earliest allowed start (inclusive): `rebalanceMinStartSlot`
+ *           truncated and clamped to [0, KMAX] (0 when absent). Setting it
+ *           equal to `rebalanceMaxStartSlot` fixes the start: the extended
+ *           solve inherits the firm-only plan's start that way, so it never
+ *           searches the window (a cap alone leaves KMAX + 1 starts to branch on).
+ * config-builder sets the slot-0 pin once a hold has started, so the solver
+ * cannot move a running hold later in the horizon while the wall-clock
+ * countdown keeps running.
+ */
+export function resolveRebalanceWindow({ T, F = T, rebalanceRemainingSlots, rebalanceMaxStartSlot, rebalanceMinStartSlot }: {
+  T: number;
+  F?: number;
+  rebalanceRemainingSlots?: number;
+  rebalanceMaxStartSlot?: number;
+  rebalanceMinStartSlot?: number;
+}): { D: number; KMIN: number; KMAX: number; deferred: boolean } {
+  const D = Math.min(T, Math.max(0, Math.trunc(rebalanceRemainingSlots ?? 0)));
+  const pinCap = rebalanceMaxStartSlot != null ? Math.max(0, Math.trunc(rebalanceMaxStartSlot)) : Infinity;
+  const resolved = (KMAX: number, deferred = false) => ({
+    D: deferred ? 0 : D,
+    KMIN: Math.min(KMAX, Math.max(0, Math.trunc(rebalanceMinStartSlot ?? 0))),
+    KMAX,
+    deferred,
+  });
+  if (F < T && D > 0) {
+    if (F - D >= 0) return resolved(Math.min(T - D, pinCap, F - D));
+    if (pinCap === 0) return resolved(0);
+    return resolved(Math.min(T, pinCap), true);
+  }
+  return resolved(Math.min(T - D, pinCap));
+}
+
+/**
+ * True when buildLP(cfg) emits no rebalance hold because the hold does not fit
+ * in the firm part of a multi-day horizon (see resolveRebalanceWindow). The
+ * planner keeps the pending rebalance (its `pendingSinceMs`) in that case and
+ * does not switch rebalancing off.
+ */
+export function isRebalanceHoldDeferred(cfg: Pick<SolverConfig, 'load_W' | 'firmSlots' | 'rebalanceRemainingSlots' | 'rebalanceMaxStartSlot'>): boolean {
+  const T = cfg.load_W.length;
+  return resolveRebalanceWindow({
+    T,
+    F: resolveFirmSlots(cfg.firmSlots, T),
+    rebalanceRemainingSlots: cfg.rebalanceRemainingSlots,
+    rebalanceMaxStartSlot: cfg.rebalanceMaxStartSlot,
+  }).deferred;
+}
+
+/**
+ * True when buildLP(cfg) models the EV: `cfg.ev` is present and, on a
+ * multi-day horizon, its earliest start lies inside the firm part. An EV whose
+ * start is at or after `firmSlots` has no LP variables (it is not planned in
+ * forecast slots), so parseSolution reports it as idle at its initial SoC.
+ */
+export function isEvPlannedInLp(cfg: Pick<SolverConfig, 'load_W' | 'firmSlots' | 'ev'>): boolean {
+  if (cfg.ev == null) return false;
+  const T = cfg.load_W.length;
+  const F = resolveFirmSlots(cfg.firmSlots, T);
+  return !(F < T && Math.max(0, Math.trunc(cfg.ev.evStartSlot ?? 0)) >= F);
+}
+
+/**
+ * Decremental power steps from `basePower` through the running minimum of
+ * `powers`: every step is >= 0, so Σ step_k·x_k with x_k in [0, 1] can only
+ * lower the cap (used for the continuous CV/DP taper of forecast slots).
+ */
+function runningMinSteps(basePower: number, powers: number[]): number[] {
+  const steps: number[] = [];
+  let prev = basePower;
+  for (const p of powers) {
+    const next = Math.min(prev, p);
+    steps.push(prev - next);
+    prev = next;
+  }
+  return steps;
 }
 
 function selectTerminalPriceCentsPerKWh(mode: TerminalSocValuation, prices: number[], customPrice_cents_per_kWh = 0): number {

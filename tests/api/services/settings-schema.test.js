@@ -8,6 +8,8 @@ import {
   REBALANCE_HOLD_HOURS_LIMITS,
   EXPORT_TARIFF_DEFAULTS,
   EXPORT_TARIFF_TAIL_HOURS_LIMITS,
+  EXTENDED_HORIZON_DEFAULTS,
+  EXTENDED_HORIZON_LIMITS,
   sanitizeSettingsResponse, DESS_PRICE_REFRESH_LIMITS } from '../../../api/services/settings-schema.ts';
 
 const defaultSettings = JSON.parse(fs.readFileSync(new URL('../../../api/defaults/default-settings.json', import.meta.url), 'utf8'));
@@ -1114,6 +1116,150 @@ describe('exportTariff and haPriceConfig.exportSensor', () => {
       }
       for (const good of [1, 6, 12.5, 24]) {
         expect(() => validateSettingsPatch({ exportTariff: { terminalTail_h: good } })).not.toThrow();
+      }
+    });
+  });
+});
+
+describe('extendedHorizon', () => {
+  const eh = (overrides = {}) => ({ ...EXTENDED_HORIZON_DEFAULTS, ...overrides });
+
+  it('defaults to off with 3 extra days on the public NL feed, mirrored in default-settings.json', () => {
+    expect(EXTENDED_HORIZON_DEFAULTS).toEqual({
+      mode: 'off',
+      extraDays: 3,
+      forecastUrl: 'https://epexpredictor.batzill.com',
+      region: 'NL',
+      importVat_percent: 21,
+      riskMargin_cents_per_kWh: 1,
+      refreshMinutes: 60,
+    });
+    expect(defaultSettings.extendedHorizon).toEqual(EXTENDED_HORIZON_DEFAULTS);
+    expect(EXTENDED_HORIZON_LIMITS).toEqual({
+      extraDays: { min: 1, max: 4 },
+      importVat_percent: { min: 0, max: 100 },
+      refreshMinutes: { min: 30, max: 600 },
+    });
+  });
+
+  describe('normalizeSettings — lenient extendedHorizon', () => {
+    let warn;
+    beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+    afterEach(() => { warn.mockRestore(); });
+
+    it('keeps a valid block (trimming the URL) and leaves an absent block absent', () => {
+      const custom = eh({
+        mode: 'on', extraDays: 4, forecastUrl: ' http://192.0.2.10:8000/epex ', region: 'BE',
+        importVat_percent: 6, riskMargin_cents_per_kWh: 0, refreshMinutes: 600,
+      });
+      expect(normalizeSettings({ ...validSettings(), extendedHorizon: custom }).extendedHorizon)
+        .toEqual({ ...custom, forecastUrl: 'http://192.0.2.10:8000/epex' });
+      expect(normalizeSettings(validSettings()).extendedHorizon).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('fills missing fields with the defaults without warning', () => {
+      expect(normalizeSettings({ ...validSettings(), extendedHorizon: { mode: 'collect' } }).extendedHorizon)
+        .toEqual(eh({ mode: 'collect' }));
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('replaces each invalid stored field with its default and warns, instead of throwing', () => {
+      const result = normalizeSettings({
+        ...validSettings(),
+        extendedHorizon: {
+          mode: 'yes',
+          extraDays: 2.5,
+          forecastUrl: ['https://u', 'p@host'].join(':'),
+          region: 'nl',
+          importVat_percent: 101,
+          riskMargin_cents_per_kWh: -1,
+          refreshMinutes: 29,
+        },
+      });
+      expect(result.extendedHorizon).toEqual(EXTENDED_HORIZON_DEFAULTS);
+      expect(warn).toHaveBeenCalledTimes(7);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid extendedHorizon.forecastUrl'));
+    });
+
+    it('replaces a stored refreshMinutes over the 600 limit (e.g. 720) with the default', () => {
+      const result = normalizeSettings({ ...validSettings(), extendedHorizon: eh({ refreshMinutes: 720 }) });
+      expect(result.extendedHorizon.refreshMinutes).toBe(EXTENDED_HORIZON_DEFAULTS.refreshMinutes);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid extendedHorizon.refreshMinutes'));
+    });
+
+    it('falls back to the whole default block when the stored value is not an object', () => {
+      expect(normalizeSettings({ ...validSettings(), extendedHorizon: 'on' }).extendedHorizon).toEqual(EXTENDED_HORIZON_DEFAULTS);
+      expect(warn).toHaveBeenCalledWith('[settings] extendedHorizon is not an object; using the defaults');
+    });
+  });
+
+  describe('mergeSettings — extendedHorizon', () => {
+    it('merges a partial patch field by field, keeping the other fields', () => {
+      const base = { ...validSettings(), extendedHorizon: eh() };
+      const merged = mergeSettings(base, { extendedHorizon: { mode: 'collect' } });
+      expect(merged.extendedHorizon).toEqual(eh({ mode: 'collect' }));
+      expect(normalizeSettings(merged).extendedHorizon).toEqual(eh({ mode: 'collect' }));
+      expect(mergeSettings(base, {}).extendedHorizon).toBe(base.extendedHorizon);
+    });
+  });
+
+  describe('validateSettingsPatch — extendedHorizon', () => {
+    const check = (value) => () => validateSettingsPatch({ extendedHorizon: value });
+
+    it('accepts the defaults, a partial block and every mode and region', () => {
+      expect(check(eh())).not.toThrow();
+      expect(check({})).not.toThrow();
+      for (const mode of ['off', 'collect', 'on']) expect(check({ mode })).not.toThrow();
+      for (const region of ['DE', 'AT', 'BE', 'FR', 'NL', 'SE1', 'SE2', 'SE3', 'SE4', 'DK1', 'DK2', 'ES', 'PT']) {
+        expect(check({ region })).not.toThrow();
+      }
+    });
+
+    it('rejects a non-object block', () => {
+      for (const bad of [null, 'on', [], 1]) {
+        expect(check(bad)).toThrow('extendedHorizon must be an object');
+      }
+    });
+
+    it('rejects a bad mode or region', () => {
+      expect(check({ mode: 'On' })).toThrow('extendedHorizon.mode must be one of: off, collect, on');
+      expect(check({ region: 'nl' })).toThrow('extendedHorizon.region must be one of: DE, AT, BE, FR, NL');
+    });
+
+    it('bounds extraDays to whole numbers 1–4', () => {
+      for (const good of [1, 2, 3, 4]) expect(check({ extraDays: good })).not.toThrow();
+      for (const bad of [0, 5, 2.5, '3', Number.NaN, null]) {
+        expect(check({ extraDays: bad })).toThrow('extendedHorizon.extraDays must be a whole number between 1 and 4');
+      }
+    });
+
+    it('requires an http(s) forecastUrl without credentials', () => {
+      expect(check({ forecastUrl: 'http://192.0.2.10:8000' })).not.toThrow();
+      expect(check({ forecastUrl: 'ftp://host' })).toThrow('extendedHorizon.forecastUrl must use http or https');
+      expect(check({ forecastUrl: ['https://user', 'secret@host'].join(':') })).toThrow('extendedHorizon.forecastUrl must not contain credentials');
+      expect(check({ forecastUrl: 'host' })).toThrow('extendedHorizon.forecastUrl is not a valid URL');
+      expect(check({ forecastUrl: '' })).toThrow('extendedHorizon.forecastUrl must be a non-empty string');
+    });
+
+    it('bounds importVat_percent to 0–100', () => {
+      for (const good of [0, 21, 100]) expect(check({ importVat_percent: good })).not.toThrow();
+      for (const bad of [-1, 100.5, '21', Number.POSITIVE_INFINITY]) {
+        expect(check({ importVat_percent: bad })).toThrow('extendedHorizon.importVat_percent must be a number between 0 and 100');
+      }
+    });
+
+    it('requires a finite riskMargin ≥ 0', () => {
+      for (const good of [0, 1, 2.5]) expect(check({ riskMargin_cents_per_kWh: good })).not.toThrow();
+      for (const bad of [-0.1, Number.NaN, '1']) {
+        expect(check({ riskMargin_cents_per_kWh: bad })).toThrow('extendedHorizon.riskMargin_cents_per_kWh must be a finite number ≥ 0');
+      }
+    });
+
+    it('requires refreshMinutes between 30 and 600 (a refresh is due before the 12 h staleness)', () => {
+      for (const good of [30, 60, 600]) expect(check({ refreshMinutes: good })).not.toThrow();
+      for (const bad of [29, 601, 720, 0, '60']) {
+        expect(check({ refreshMinutes: bad })).toThrow('extendedHorizon.refreshMinutes must be a number between 30 and 600');
       }
     });
   });

@@ -279,6 +279,60 @@ describe('loadSettings — exportTariff merge', () => {
   });
 });
 
+describe('loadSettings — extendedHorizon merge', () => {
+  beforeEach(() => {
+    _reset();
+  });
+
+  const defaultBlock = {
+    mode: 'off',
+    extraDays: 3,
+    forecastUrl: 'https://epexpredictor.batzill.com',
+    region: 'NL',
+    importVat_percent: 21,
+    riskMargin_cents_per_kWh: 1,
+    refreshMinutes: 60,
+  };
+
+  it('gives a settings file from before the block the default (off)', async () => {
+    _set(getDefaultPath(), makeDefaults({ extendedHorizon: defaultBlock }));
+    _set('/tmp/test-data/settings.json', { batteryCost_cent_per_kWh: 7 });
+
+    expect((await loadSettings()).extendedHorizon).toEqual(defaultBlock);
+  });
+
+  it('merges a partial stored block field by field with the defaults', async () => {
+    _set(getDefaultPath(), makeDefaults({ extendedHorizon: defaultBlock }));
+    _set('/tmp/test-data/settings.json', { extendedHorizon: { mode: 'collect', extraDays: 2 } });
+
+    expect((await loadSettings()).extendedHorizon).toEqual({ ...defaultBlock, mode: 'collect', extraDays: 2 });
+  });
+
+  it('falls back to the default for an invalid stored field instead of failing the load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _set(getDefaultPath(), makeDefaults({ extendedHorizon: defaultBlock }));
+    _set('/tmp/test-data/settings.json', { extendedHorizon: { mode: 'always', refreshMinutes: 120 } });
+
+    expect((await loadSettings()).extendedHorizon).toEqual({ ...defaultBlock, refreshMinutes: 120 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('extendedHorizon.mode'));
+    warn.mockRestore();
+  });
+
+  it('leaves extendedHorizon absent when neither the defaults nor the file have it', async () => {
+    _set(getDefaultPath(), makeDefaults());
+    _set('/tmp/test-data/settings.json', {});
+
+    expect((await loadSettings()).extendedHorizon).toBeUndefined();
+  });
+
+  it('ships the block in default-settings.json', async () => {
+    const { EXTENDED_HORIZON_DEFAULTS } = await import('../../../api/services/settings-schema.ts');
+    const { readFile } = await import('node:fs/promises');
+    const shipped = JSON.parse(await readFile(getDefaultPath(), 'utf8'));
+    expect(shipped.extendedHorizon).toEqual(EXTENDED_HORIZON_DEFAULTS);
+  });
+});
+
 describe('loadSettings — essConfig is defaults-authoritative', () => {
   beforeEach(() => {
     _reset();

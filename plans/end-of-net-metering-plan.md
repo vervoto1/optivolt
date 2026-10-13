@@ -275,9 +275,10 @@ afternoon. `TIEBREAK.preferEarlierPvCharging` (2e-7 per slot on
 `pv_to_battery`, mirroring `preferEarlierCharging`) makes it charge from the
 earliest surplus and export only once the battery is full, so a PV forecast
 that falls short in the afternoon still finds a full battery. It only breaks
-ties (at most about 0.08 c/kWh over a 48 h horizon), grows more slowly than
-the grid-charging tie-break so PV keeps beating grid charging, and stays below
-the curtailment penalty. It applies under net metering too. Tested in
+ties (at most about 0.15 c/kWh over a 48 h horizon, 0.11 c/kWh at today's
+longest 36 h horizon), grows more slowly than the grid-charging tie-break so
+PV keeps beating grid charging, and stays below the curtailment penalty. It
+applies under net metering too. Tested in
 `tests/lib/build-lp-export-tariff.test.js`, which fails with the tie-break at
 0.
 

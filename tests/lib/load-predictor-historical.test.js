@@ -7,6 +7,7 @@ import {
   validate,
   buildPredictIndex,
   generateAllConfigs,
+  historicalSampleCounts,
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
 import { buildForecastSeries } from '../../lib/time-series-utils.ts';
@@ -481,5 +482,47 @@ describe('buildForecastSeriesRange', () => {
     const mapped = predictions.map(p => ({ time: p.time, value: p.predicted ?? 0 }));
     const { values } = buildForecastSeries(mapped, startIso, endIso);
     expect(values[20]).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// historicalSampleCounts
+// ---------------------------------------------------------------------------
+
+describe('historicalSampleCounts', () => {
+  const record = (iso, sensor = 'load', value = 100) => {
+    const d = new Date(iso);
+    return { date: d.toISOString(), time: d.getTime(), hour: d.getUTCHours(), dayOfWeek: d.getUTCDay(), sensor, value };
+  };
+  const target = iso => {
+    const d = new Date(iso);
+    return { date: d.toISOString(), time: d.getTime(), hour: d.getUTCHours(), dayOfWeek: d.getUTCDay(), value: null };
+  };
+  // History at 10:00Z on Tue 6 … Tue 13 Oct 2026 (plus another sensor's noise).
+  const data = [];
+  for (let day = 6; day <= 13; day++) {
+    data.push(record(`2026-10-${String(day).padStart(2, '0')}T10:00:00Z`));
+    data.push(record(`2026-10-${String(day).padStart(2, '0')}T10:00:00Z`, 'other'));
+  }
+  const cfg = (lookbackWeeks, dayFilter) => ({ sensor: 'load', lookbackWeeks, dayFilter, aggregation: 'mean' });
+
+  it('counts the values predict() aggregates next to the complete-history count', () => {
+    const fri = target('2026-10-16T10:00:00Z');
+    const sat = target('2026-10-17T10:00:00Z');
+    // all, 1 week before Fri 16: Thu 15 and Wed 14 are still in the future.
+    expect(historicalSampleCounts(data, cfg(1, 'all'), [fri])).toEqual([{ samples: 5, possible: 7 }]);
+    // same weekday, 2 weeks: Fri 9 is in the history, Fri 2 is not.
+    expect(historicalSampleCounts(data, cfg(2, 'same'), [fri])).toEqual([{ samples: 1, possible: 2 }]);
+    // weekend bucket for Sat 17: Sun 11 and Sat 10.
+    expect(historicalSampleCounts(data, cfg(1, 'weekday-weekend'), [sat])).toEqual([{ samples: 2, possible: 2 }]);
+    // Saturday on its own: one day per week at most.
+    expect(historicalSampleCounts(data, cfg(1, 'weekday-sat-sun'), [sat])).toEqual([{ samples: 1, possible: 1 }]);
+  });
+
+  it('agrees with predict(): no samples is a null prediction', () => {
+    const far = target('2026-10-30T10:00:00Z');
+    const counts = historicalSampleCounts(data, cfg(1, 'all'), [far]);
+    expect(counts).toEqual([{ samples: 0, possible: 7 }]);
+    expect(predict(data, cfg(1, 'all'), [far])[0].predicted).toBeNull();
   });
 });

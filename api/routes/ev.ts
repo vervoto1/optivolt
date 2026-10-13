@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { HttpError } from '../http-errors.ts';
 import { getLastPlan, getLastEvPreview } from '../services/planner-service.ts';
 import { loadSettings, updateSettings } from '../services/settings-store.ts';
-import { computeEvDecision } from '../services/ev-decision-service.ts';
+import { computeEvDecision, currentRow } from '../services/ev-decision-service.ts';
 import { getLastActuation, runActuatorTick } from '../services/ev-actuator-service.ts';
 import type { EvOverrideMode } from '../types.ts';
 
@@ -34,9 +34,11 @@ router.get('/schedule', async (req: Request, res: Response, next: NextFunction) 
 
     const slots = sourceRows.map(row => {
       // Advisory: the mode this slot would take under the reactive overrides,
-      // given the forecast price. The planned charge stays the LP result.
+      // given the slot's price. The planned charge stays the LP result. A
+      // forecast-priced slot (multi-day horizon) is never acted on, and its
+      // price is a forecast, so it never shows the low-price override.
       let override_mode = row.ev_charge > 0 ? (row.ev_plan_mode ?? 'planned') : 'idle';
-      if (lowPriceOn && row.ic <= lowPriceLevel) override_mode = 'low_price';
+      if (lowPriceOn && row.ic <= lowPriceLevel && !row.priceForecast) override_mode = 'low_price';
       return {
         timestampMs: row.timestampMs,
         ev_charge_W: row.ev_charge,
@@ -47,8 +49,12 @@ router.get('/schedule', async (req: Request, res: Response, next: NextFunction) 
         g2ev_W: row.g2ev,
         pv2ev_W: row.pv2ev,
         b2ev_W: row.b2ev,
+        // null on a forecast row: the EV is not modelled past the firm part.
         ev_soc_percent: row.ev_soc_percent,
         price_cents_per_kWh: row.ic,
+        // Multi-day horizon: a forecast-priced slot (never acted on). Absent
+        // on firm slots, so a single-horizon payload is unchanged.
+        ...(row.priceForecast ? { priceForecast: true } : {}),
       };
     });
 
@@ -85,16 +91,30 @@ router.get('/current', async (req: Request, res: Response, next: NextFunction) =
     const settings = await loadSettings();
     const decision = await computeEvDecision(settings, plan);
 
-    // Plan-derived flow split for context (the slot covering now).
-    const nowMs = Date.now();
-    const rows = plan.rows;
-    let row = rows[0];
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].timestampMs <= nowMs) { row = rows[i]; break; }
-    }
+    // Plan-derived flow split for context (the slot covering now), looked up
+    // like the decision does: a forecast-priced row (multi-day horizon, a
+    // stale plan) is no current slot, so the plan fields are null.
+    const row = currentRow(plan.rows, Date.now());
+    const planned = row
+      ? {
+          planned_ev_charge_W: row.ev_charge,
+          planned_ev_charge_mode: row.ev_charge_mode,
+          g2ev_W: row.g2ev,
+          pv2ev_W: row.pv2ev,
+          b2ev_W: row.b2ev,
+          ev_soc_percent: row.ev_soc_percent,
+        }
+      : {
+          planned_ev_charge_W: null,
+          planned_ev_charge_mode: null,
+          g2ev_W: null,
+          pv2ev_W: null,
+          b2ev_W: null,
+          ev_soc_percent: null,
+        };
 
     res.json({
-      timestampMs: row.timestampMs,
+      timestampMs: row ? row.timestampMs : null,
       mode: decision.mode,
       reason: decision.reason,
       is_charging: decision.is_charging,
@@ -107,12 +127,7 @@ router.get('/current', async (req: Request, res: Response, next: NextFunction) =
       targetMet: decision.targetMet,
       readyBy: decision.readyBy,
       // Plan-derived split (the LP's view of this slot).
-      planned_ev_charge_W: row.ev_charge,
-      planned_ev_charge_mode: row.ev_charge_mode,
-      g2ev_W: row.g2ev,
-      pv2ev_W: row.pv2ev,
-      b2ev_W: row.b2ev,
-      ev_soc_percent: row.ev_soc_percent,
+      ...planned,
     });
   } catch (err) {
     next(err);

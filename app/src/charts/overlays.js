@@ -1,6 +1,6 @@
 import { fmtKwh } from '../chart-tooltip.js';
 import { getBuyPriceColor, toRGBA, SOLUTION_COLORS } from './colors.js';
-import { fmtHHMM } from './core.js';
+import { fmtHHMM, getChartTheme } from './core.js';
 
 export const BUY_PRICE_STRIP_HEIGHT = 7;
 export const BUY_PRICE_STRIP_GAP = 4;
@@ -35,6 +35,55 @@ export function makeRebalancingPlugin(startIdx, endIdx) {
       ctx.fillText('Rebalancing', (x0 + x1) / 2, chartArea.bottom - 8);
       ctx.restore();
     }
+  };
+}
+
+/**
+ * Index of the first row priced from the forecast, or -1 when every row has
+ * a published price. Forecast rows always follow the firm ones.
+ */
+export function firstForecastIndex(rows) {
+  if (!Array.isArray(rows)) return -1;
+  return rows.findIndex(r => r?.priceForecast === true);
+}
+
+/**
+ * A dashed vertical marker where the forecast-priced part of the plan
+ * begins, labelled "forecast". On an offset (bar) axis it sits between the
+ * last firm bar and the first forecast bar; on a line axis at the first
+ * forecast point, where a stepped price line starts drawing that slot.
+ * Returns null when there is no boundary inside the chart.
+ */
+export function makeForecastBoundaryPlugin(boundaryIdx) {
+  if (!Number.isInteger(boundaryIdx) || boundaryIdx <= 0) return null;
+  return {
+    id: 'forecastBoundary',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      const xScale = scales?.x;
+      if (!chartArea || !xScale) return;
+      const x = xScale.options?.offset
+        ? (xScale.getPixelForValue(boundaryIdx - 1) + xScale.getPixelForValue(boundaryIdx)) / 2
+        : xScale.getPixelForValue(boundaryIdx);
+      if (!Number.isFinite(x) || x < chartArea.left || x > chartArea.right) return;
+
+      const color = getChartTheme().majorGridColor;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.font = '500 10px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('forecast \u2192', x + 4, chartArea.top + 2);
+      ctx.restore();
+    },
   };
 }
 

@@ -110,3 +110,19 @@ export function isZonedMidnight(value) {
   const p = zonedParts(value);
   return p.hour === 0 && p.minute === 0;
 }
+
+// Short weekday name ("Wed") of an instant in the display zone.
+export function fmtZonedWeekday(value) {
+  const ms = value instanceof Date ? value.getTime() : Number(value);
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms).toLocaleDateString("en-GB", withDisplayTimeZone({ weekday: "short" }));
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// True when the instants cover more than 24 hours, so the same clock time
+// occurs twice and a label needs its weekday to say which day it is.
+export function spansMultipleDays(timestampsMs) {
+  if (!Array.isArray(timestampsMs) || timestampsMs.length < 2) return false;
+  return Number(timestampsMs[timestampsMs.length - 1]) - Number(timestampsMs[0]) > DAY_MS;
+}

@@ -11,7 +11,8 @@ import {
 import type { TemperaturePredictConfig } from '../../lib/load-predictor-temperature.ts';
 import type { PredictConfig } from '../../lib/load-predictor-historical.ts';
 import { formatStrategy } from '../../lib/strategy-selector.ts';
-import type { ForecastRunResult } from './load-prediction-service.ts';
+import type { ForecastRunResult, LoadForecastRunConfig } from './load-prediction-service.ts';
+import { extendedHorizonOf, firstNonFiniteIndex } from '../../lib/time-series-utils.ts';
 import { runPvForecast } from './pv-prediction-service.ts';
 import { hasPvCoordinates } from './pv-coordinates.ts';
 import type { PvForecastRunResult } from './pv-prediction-service.ts';
@@ -20,9 +21,15 @@ import { loadSettings } from './settings-store.ts';
 import { applyPredictionAdjustmentsToSeries, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { loadActiveAdjustmentsAndPrune } from './prediction-adjustment-store.ts';
 
-export async function buildPredictionRunConfig(): Promise<PredictionRunConfig> {
+/**
+ * The stored prediction config plus the HA connection and, when set, the
+ * settings' `extendedHorizon` block, which sets the window the load and PV
+ * forecasts cover (`resolvePlanningWindow`).
+ */
+export async function buildPredictionRunConfig(): Promise<LoadForecastRunConfig> {
   const [config, settings] = await Promise.all([loadPredictionConfig(), loadSettings()]);
-  return { ...config, haUrl: settings.haUrl, haToken: settings.haToken };
+  const extendedHorizon = extendedHorizonOf(settings);
+  return { ...config, haUrl: settings.haUrl, haToken: settings.haToken, ...(extendedHorizon ? { extendedHorizon } : {}) };
 }
 
 /**
@@ -84,7 +91,7 @@ export async function executeTemperatureStrategyPredictions(config: PredictionRu
  * merely viewing the tab never changes what the planner reads.
  */
 export async function runCombinedPredictionForecast(
-  config: PredictionRunConfig,
+  config: LoadForecastRunConfig,
   endpoint: string,
   { persist = true }: { persist?: boolean } = {},
 ) {
@@ -109,7 +116,7 @@ export async function runCombinedPredictionForecast(
   };
 }
 
-export async function executeLoadForecast(config: PredictionRunConfig, logLabel: string): Promise<ForecastRunResult> {
+export async function executeLoadForecast(config: LoadForecastRunConfig, logLabel: string): Promise<ForecastRunResult> {
   assertCondition(config.activeType != null, 400, 'activeType is required');
   if (config.activeType === 'historical') {
     assertHaConnection(config);
@@ -146,7 +153,7 @@ export async function executeLoadForecast(config: PredictionRunConfig, logLabel:
   }
 }
 
-export async function executePvForecast(config: PredictionRunConfig, logLabel: string): Promise<PvForecastRunResult | null> {
+export async function executePvForecast(config: LoadForecastRunConfig, logLabel: string): Promise<PvForecastRunResult | null> {
   // No usable site location (blank, non-finite or the 0,0 sentinel): skip
   // rather than forecast for the wrong place.
   if (!hasPvCoordinates(config.pvConfig)) {
@@ -156,7 +163,27 @@ export async function executePvForecast(config: PredictionRunConfig, logLabel: s
   return runWithHaGuards(config, logLabel + ' (pv)', { pvConfig: config.pvConfig }, () => runPvForecast(config));
 }
 
-export async function persistForecastData(updates: { load?: TimeSeries; pv?: TimeSeries }) {
+type ForecastUpdates = { load?: TimeSeries; pv?: TimeSeries };
+
+/**
+ * The updates without a series that holds a non-finite value: the data store
+ * rejects such a series on write, which would also drop the other series (and
+ * an adjustment prune) with it. The stored series is kept, with a warning.
+ */
+function withFiniteSeriesOnly(updates: ForecastUpdates): ForecastUpdates {
+  const out: ForecastUpdates = {};
+  for (const key of ['load', 'pv'] as const) {
+    const series = updates[key];
+    if (!series?.values) continue;
+    const bad = firstNonFiniteIndex(series.values);
+    if (bad === -1) out[key] = series;
+    else console.warn(`[predict] ${key} forecast has a non-finite value at slot ${bad}; keeping the stored series`);
+  }
+  return out;
+}
+
+export async function persistForecastData(rawUpdates: ForecastUpdates) {
+  const updates = withFiniteSeriesOnly(rawUpdates);
   if (!updates.load?.values && !updates.pv?.values) return;
   const settings = await loadSettings();
   const setLoad = !!updates.load?.values && settings.dataSources.load === 'api';
@@ -170,7 +197,8 @@ export async function persistForecastData(updates: { load?: TimeSeries; pv?: Tim
   }));
 }
 
-async function persistForecastAndPrune(updates: { load?: TimeSeries; pv?: TimeSeries }) {
+async function persistForecastAndPrune(rawUpdates: ForecastUpdates) {
+  const updates = withFiniteSeriesOnly(rawUpdates);
   const settings = await loadSettings();
   const setLoad = !!updates.load?.values && settings.dataSources.load === 'api';
   const setPv   = !!updates.pv?.values   && settings.dataSources.pv   === 'api';

@@ -380,3 +380,77 @@ describe('parseSolution — solver status guard', () => {
     expect(rows[1].g2l).toBe(600);
   });
 });
+
+describe('parseSolution — multi-day horizon (firmSlots)', () => {
+  const T = 4;
+  const cfg = {
+    load_W: Array(T).fill(100),
+    pv_W: Array(T).fill(0),
+    importPrice: [10, 20, 30, 40],
+    exportPrice: [5, 5, 5, 5],
+    batteryCapacity_Wh: 1000,
+    inverterEfficiency_percent: 100,
+  };
+  const ev = {
+    evMinChargePower_W: 1000,
+    evMaxChargePower_W: 2000,
+    evBatteryCapacity_Wh: 10000,
+    evInitialSoc_percent: 30,
+    evTargetSoc_percent: 50,
+    evDepartureSlot: 2,
+    evChargeEfficiency_percent: 100,
+  };
+  const opts = { startMs: 0, stepMin: 60 };
+  const columns = {
+    soc_0: { Primal: 500 }, soc_1: { Primal: 400 }, soc_2: { Primal: 300 }, soc_3: { Primal: 200 },
+    grid_to_ev_0: { Primal: 1000 }, ev_soc_0: { Primal: 4000 },
+    grid_to_ev_1: { Primal: 1000 }, ev_soc_1: { Primal: 5000 },
+    ev_target_shortfall: { Primal: 0 },
+    // Dead-band columns carry no slot index and are not SoC.
+    carry_dev_pos: { Primal: 123 }, carry_dev_neg: { Primal: 0 },
+  };
+
+  it('adds no priceForecast key and keeps numeric EV SoC without firmSlots', () => {
+    const rows = parseSolution({ Status: 'Optimal', Columns: columns }, { ...cfg, ev }, opts);
+    for (const r of rows) {
+      expect('priceForecast' in r).toBe(false);
+      expect(typeof r.ev_soc_percent).toBe('number');
+    }
+    expect(rows[3].ev_plan_mode).toBe('planned');
+  });
+
+  it('flags forecast rows and nulls their EV SoC; firm rows are unchanged', () => {
+    const plain = parseSolution({ Status: 'Optimal', Columns: columns }, { ...cfg, ev }, opts);
+    const rows = parseSolution({ Status: 'Optimal', Columns: columns }, { ...cfg, ev, firmSlots: 2, socRef_Wh: 400, carryOverMargin_cents_per_kWh: 1 }, opts);
+    expect(rows.slice(0, 2)).toEqual(plain.slice(0, 2));
+    expect(rows[1].ev_target_met).toBe(true);
+    expect(rows[1].ev_soc_percent).toBe(50);
+    for (const r of rows.slice(2)) {
+      expect(r.priceForecast).toBe(true);
+      expect(r.ev_soc_percent).toBeNull();
+      expect(r.ev_plan_mode).toBeUndefined();
+      expect(r.ev_charge).toBe(0);
+      expect(r.ev_charge_mode).toBe('off');
+    }
+    // SoC is still read from soc_* only (carry_dev_* is ignored).
+    expect(rows.map(r => r.soc)).toEqual([500, 400, 300, 200]);
+  });
+
+  it('nulls the EV SoC on forecast rows without an EV too', () => {
+    const rows = parseSolution({ Status: 'Optimal', Columns: columns }, { ...cfg, firmSlots: 3 }, opts);
+    expect(rows[2].ev_soc_percent).toBe(0);
+    expect(rows[3].ev_soc_percent).toBeNull();
+    expect(rows[3].priceForecast).toBe(true);
+  });
+
+  it('reports an EV that starts past the firm part as idle at its initial SoC', () => {
+    const lateEv = { ...ev, evStartSlot: 2, evDepartureSlot: 4 };
+    const rows = parseSolution({ Status: 'Optimal', Columns: { soc_0: { Primal: 1 }, soc_1: { Primal: 1 }, soc_2: { Primal: 1 }, soc_3: { Primal: 1 } } },
+      { ...cfg, ev: lateEv, firmSlots: 2 }, opts);
+    expect(rows[0].ev_soc_percent).toBe(30);
+    expect(rows[1].ev_soc_percent).toBe(30);
+    expect(rows[0].ev_plan_mode).toBeUndefined();
+    expect(rows[1].ev_target_met).toBeUndefined();
+    expect(rows[2].ev_soc_percent).toBeNull();
+  });
+});

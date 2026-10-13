@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapRowsToDessV2, effectiveChargeCap_W, Strategy, Restrictions, FeedIn } from '../../lib/dess-mapper.ts';
+import { mapRowsToDessV2, effectiveChargeCap_W, countFirmRows, forecastSentinelSlot, Strategy, Restrictions, FeedIn } from '../../lib/dess-mapper.ts';
 
 describe('mapRowsToDessV2 — flags field', () => {
   const cfg = {
@@ -946,5 +946,68 @@ describe('mapRowsToDessV2 — rebalance hold window', () => {
     ];
     expect(mapRowsToDessV2(rows, cfg, { rebalanceWindow: undefined })).toEqual(mapRowsToDessV2(rows, cfg));
     expect(mapRowsToDessV2(rows, cfg, {})).toEqual(mapRowsToDessV2(rows, cfg));
+  });
+});
+
+describe('mapRowsToDessV2 — multi-day forecast rows', () => {
+  const cfg = {
+    stepSize_m: 15,
+    minSoc_percent: 10,
+    maxSoc_percent: 90,
+    maxChargePower_W: 1000,
+    maxDischargePower_W: 1000,
+    maxGridImport_W: 5000,
+    maxGridExport_W: 5000,
+    initialSoc_percent: 50,
+  };
+  const row = (overrides = {}) => ({
+    g2l: 0, g2b: 0, pv2l: 0, pv2b: 0, pv2g: 0, b2l: 0, b2g: 0,
+    soc: 5000, soc_percent: 50, load: 500, pv: 0, ev_charge: 0,
+    ic: 20, ec: 10,
+    ...overrides,
+  });
+  // Firm: grid charging at 10 c, export at 30 c. Forecast: charging at 40 c and
+  // a deeper battery export at 5 c, which would move every tipping point.
+  const firm = [
+    row({ g2b: 500, ic: 10, soc_percent: 55 }),
+    row({ b2g: 500, ec: 30, soc_percent: 50 }),
+    row({ b2g: 500, ec: 30, soc_percent: 45 }),
+  ];
+  const forecast = [
+    row({ b2g: 500, ec: 30, soc_percent: 40, priceForecast: true }),
+    row({ g2b: 500, ic: 40, soc_percent: 60, priceForecast: true }),
+    row({ b2g: 800, ec: 5, soc_percent: 30, priceForecast: true }),
+  ];
+
+  it('maps the firm rows exactly as without the forecast rows', () => {
+    const alone = mapRowsToDessV2(firm, cfg);
+    const withForecast = mapRowsToDessV2([...firm, ...forecast], cfg);
+    expect(withForecast.perSlot.slice(0, 3)).toEqual(alone.perSlot);
+    expect(withForecast.diagnostics).toEqual(alone.diagnostics);
+    expect(withForecast.diagnostics.gridChargeTippingPoint_cents_per_kWh).toBe(10);
+    expect(withForecast.diagnostics.batteryExportTippingPoint_cents_per_kWh).toBe(30);
+    // The export run's target stops at the boundary (the last firm row's SoC).
+    expect(withForecast.perSlot[1].socTarget_percent).toBe(45);
+  });
+
+  it('gives forecast rows the never-written sentinel', () => {
+    const { perSlot } = mapRowsToDessV2([...firm, ...forecast], cfg);
+    expect(perSlot).toHaveLength(6);
+    perSlot.slice(3).forEach((slot, i) => {
+      expect(slot).toEqual({
+        feedin: FeedIn.blocked,
+        restrictions: Restrictions.unknown,
+        strategy: Strategy.unknown,
+        flags: 0,
+        socTarget_percent: forecast[i].soc_percent,
+      });
+    });
+  });
+
+  it('countFirmRows counts the rows before the first forecast row', () => {
+    expect(countFirmRows([...firm, ...forecast])).toBe(3);
+    expect(countFirmRows(firm)).toBe(3);
+    expect(countFirmRows([])).toBe(0);
+    expect(forecastSentinelSlot({ soc_percent: 12 }).socTarget_percent).toBe(12);
   });
 });

@@ -16,9 +16,11 @@ import type {
   EssBatteryConfig,
   EssSystemConfig,
   ExportTariffConfig,
+  ExtendedHorizonConfig,
 } from '../types.ts';
 import { HttpError } from '../http-errors.ts';
 import { parseEffectiveFrom } from '../../lib/export-tariff.ts';
+import { PRICE_FORECAST_REGIONS, forecastUrlError } from '../../lib/price-forecast.ts';
 import {
   assertObject,
   clampInt,
@@ -37,6 +39,7 @@ export type SettingsPatch = Partial<Settings> & {
   shoreOptimizer?: Partial<ShoreOptimizerConfig>;
   pvCurtailment?: Partial<PvCurtailmentConfig>;
   exportTariff?: Partial<ExportTariffConfig>;
+  extendedHorizon?: Partial<ExtendedHorizonConfig>;
   cvPhase?: Partial<CvPhaseConfig>;
   batteryChargeControl?: Partial<BatteryChargeControlConfig>;
   batteryBalanceControl?: Partial<BatteryBalanceControlConfig>;
@@ -95,6 +98,33 @@ export const EXPORT_TARIFF_TAIL_HOURS_LIMITS = { min: 1, max: 24 } as const;
 const EXPORT_TARIFF_MODES = ['auto', 'netMetering', 'marketPrice'] as const;
 const EXPORT_NEGATIVE_PRICE_RULES = ['floorZero', 'passThrough'] as const;
 const EXPORT_TERMINAL_VALUATIONS = ['tailMin', 'zero', 'min', 'avg', 'max', 'custom'] as const;
+/**
+ * The `extendedHorizon` defaults (mirrored in default-settings.json). As with
+ * `exportTariff`, a stored field that fails validation falls back to its
+ * default here, with a warning; a POST with a bad value is rejected.
+ */
+export const EXTENDED_HORIZON_DEFAULTS: Readonly<ExtendedHorizonConfig> = {
+  mode: 'off',
+  extraDays: 3,
+  forecastUrl: 'https://epexpredictor.batzill.com',
+  region: 'NL',
+  importVat_percent: 21,
+  riskMargin_cents_per_kWh: 1.0,
+  refreshMinutes: 60,
+};
+/**
+ * Bounds for the `extendedHorizon` numbers. `extraDays` is a whole number;
+ * the refresh floor keeps the public feed's fair-use terms, and its ceiling
+ * keeps the forecast younger than the 12 h after which it counts as missing.
+ */
+export const EXTENDED_HORIZON_LIMITS = {
+  extraDays: { min: 1, max: 4 },
+  importVat_percent: { min: 0, max: 100 },
+  // At most 10 h: a refresh is then due well before the 12 h staleness
+  // (price-forecast-service MAX_REFRESH_AGE_MS).
+  refreshMinutes: { min: 30, max: 600 },
+} as const;
+const EXTENDED_HORIZON_MODES = ['off', 'collect', 'on'] as const;
 const HA_WS_URL = /^wss?:\/\/[^/]+(?::\d+)?\/api\/websocket\/?$/i;
 const MAX_SAFE_SHORE_A = 25;
 
@@ -194,6 +224,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     shoreOptimizer: patch.shoreOptimizer ? { ...base.shoreOptimizer, ...patch.shoreOptimizer } as ShoreOptimizerConfig : base.shoreOptimizer,
     pvCurtailment: patch.pvCurtailment ? { ...base.pvCurtailment, ...patch.pvCurtailment } as PvCurtailmentConfig : base.pvCurtailment,
     exportTariff: patch.exportTariff ? { ...base.exportTariff, ...patch.exportTariff } as ExportTariffConfig : base.exportTariff,
+    extendedHorizon: patch.extendedHorizon ? { ...base.extendedHorizon, ...patch.extendedHorizon } as ExtendedHorizonConfig : base.extendedHorizon,
     cvPhase: patch.cvPhase ? { ...base.cvPhase, ...patch.cvPhase } as CvPhaseConfig : base.cvPhase,
     batteryChargeControl: patch.batteryChargeControl ? { ...base.batteryChargeControl, ...patch.batteryChargeControl } as BatteryChargeControlConfig : base.batteryChargeControl,
     batteryBalanceControl: patch.batteryBalanceControl ? { ...base.batteryBalanceControl, ...patch.batteryBalanceControl } as BatteryBalanceControlConfig : base.batteryBalanceControl,
@@ -350,6 +381,9 @@ export function normalizeSettings(settings: Settings, options: NormalizeSettings
   }
   if (normalized.exportTariff) {
     normalized.exportTariff = normalizeExportTariff(normalized.exportTariff);
+  }
+  if (normalized.extendedHorizon) {
+    normalized.extendedHorizon = normalizeExtendedHorizon(normalized.extendedHorizon);
   }
   if (normalized.cvPhase) {
     normalized.cvPhase = normalizeCvPhase(normalized.cvPhase);
@@ -626,6 +660,74 @@ function validateExportTariffPatch(value: unknown): void {
   if (has('terminalTail_h') && !isValidTailHours(value.terminalTail_h)) {
     const { min, max } = EXPORT_TARIFF_TAIL_HOURS_LIMITS;
     throw new HttpError(400, `exportTariff.terminalTail_h must be a number between ${min} and ${max}`);
+  }
+}
+
+const isNumberIn = ({ min, max }: { min: number; max: number }) => (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+const isValidExtraDays = (value: unknown): value is number =>
+  Number.isInteger(value) && isNumberIn(EXTENDED_HORIZON_LIMITS.extraDays)(value);
+const isValidVat = isNumberIn(EXTENDED_HORIZON_LIMITS.importVat_percent);
+const isValidRefreshMinutes = isNumberIn(EXTENDED_HORIZON_LIMITS.refreshMinutes);
+const isValidRegion = (value: unknown): boolean =>
+  typeof value === 'string' && (PRICE_FORECAST_REGIONS as readonly string[]).includes(value);
+
+/**
+ * Lenient on purpose, like `normalizeExportTariff`: this runs on load, so an
+ * invalid stored field falls back to its default with a warning (a missing
+ * one silently); `validateSettingsPatch` rejects bad values on save.
+ */
+function normalizeExtendedHorizon(extendedHorizon: unknown): ExtendedHorizonConfig {
+  const source = isObject(extendedHorizon) ? extendedHorizon : {};
+  if (source !== extendedHorizon) {
+    console.warn('[settings] extendedHorizon is not an object; using the defaults');
+  }
+  const pick = <K extends keyof ExtendedHorizonConfig>(
+    key: K,
+    valid: (value: unknown) => boolean,
+  ): ExtendedHorizonConfig[K] => {
+    const value = source[key];
+    if (value === undefined) return EXTENDED_HORIZON_DEFAULTS[key];
+    if (valid(value)) return (typeof value === 'string' ? value.trim() : value) as ExtendedHorizonConfig[K];
+    console.warn(`[settings] invalid extendedHorizon.${key} (${JSON.stringify(value)}); using the default ${JSON.stringify(EXTENDED_HORIZON_DEFAULTS[key])}`);
+    return EXTENDED_HORIZON_DEFAULTS[key];
+  };
+
+  return {
+    mode: pick('mode', value => typeof value === 'string' && (EXTENDED_HORIZON_MODES as readonly string[]).includes(value)),
+    extraDays: pick('extraDays', isValidExtraDays),
+    forecastUrl: pick('forecastUrl', value => forecastUrlError(value) === null),
+    region: pick('region', isValidRegion),
+    importVat_percent: pick('importVat_percent', isValidVat),
+    riskMargin_cents_per_kWh: pick('riskMargin_cents_per_kWh', isValidFee),
+    refreshMinutes: pick('refreshMinutes', isValidRefreshMinutes),
+  };
+}
+
+/** Strict `extendedHorizon` checks for a `POST /settings` patch (only the keys it carries). */
+function validateExtendedHorizonPatch(value: unknown): void {
+  assertObject(value, 'extendedHorizon');
+  const has = (key: string) => value[key] !== undefined;
+  if (has('mode')) expectEnum(value.mode, EXTENDED_HORIZON_MODES, 'extendedHorizon.mode');
+  if (has('extraDays') && !isValidExtraDays(value.extraDays)) {
+    const { min, max } = EXTENDED_HORIZON_LIMITS.extraDays;
+    throw new HttpError(400, `extendedHorizon.extraDays must be a whole number between ${min} and ${max}`);
+  }
+  if (has('forecastUrl')) {
+    const error = forecastUrlError(value.forecastUrl);
+    if (error) throw new HttpError(400, `extendedHorizon.forecastUrl ${error}`);
+  }
+  if (has('region')) expectEnum(value.region, PRICE_FORECAST_REGIONS, 'extendedHorizon.region');
+  if (has('importVat_percent') && !isValidVat(value.importVat_percent)) {
+    const { min, max } = EXTENDED_HORIZON_LIMITS.importVat_percent;
+    throw new HttpError(400, `extendedHorizon.importVat_percent must be a number between ${min} and ${max}`);
+  }
+  if (has('riskMargin_cents_per_kWh') && !isValidFee(value.riskMargin_cents_per_kWh)) {
+    throw new HttpError(400, 'extendedHorizon.riskMargin_cents_per_kWh must be a finite number ≥ 0');
+  }
+  if (has('refreshMinutes') && !isValidRefreshMinutes(value.refreshMinutes)) {
+    const { min, max } = EXTENDED_HORIZON_LIMITS.refreshMinutes;
+    throw new HttpError(400, `extendedHorizon.refreshMinutes must be a number between ${min} and ${max}`);
   }
 }
 
@@ -938,6 +1040,7 @@ export function validateSettingsPatch(patch: Record<string, unknown>): void {
   }
 
   if (has('exportTariff')) validateExportTariffPatch(patch.exportTariff);
+  if (has('extendedHorizon')) validateExtendedHorizonPatch(patch.extendedHorizon);
 }
 
 export function sanitizeSettingsResponse(settings: Settings): Omit<Settings, 'haToken'> & { hasHaToken: boolean } {

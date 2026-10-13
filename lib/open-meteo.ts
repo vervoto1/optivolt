@@ -259,6 +259,60 @@ export function expandHourlyTo15Min(records: IrradianceRecord[]): IrradianceReco
   return expanded;
 }
 
+// ----------------------------- Splicing ------------------------------------
+
+/** The model used after the ICON D2 range (~45 h) when the planning window is extended. */
+export const EXTENDED_FORECAST_MODEL = 'icon_seamless';
+
+/**
+ * Interval-start times (ms, aligned exactly as `parseForecastResponse`
+ * aligns them) whose shortwave radiation is null or missing. The parsers read
+ * those as 0 W/m², which is right at night but wrong past the end of a
+ * model's range, so the splice and the truncation rule need them.
+ */
+export function forecastNullTimes(data: unknown, resolution: 15 | 60): number[] {
+  const block = resolution === 15
+    ? (data as OpenMeteoMinutely15Response).minutely_15
+    : (data as OpenMeteoHourlyResponse).hourly;
+  const shiftMs = resolution === 15 ? 0 : 3600000;
+  const times: number[] = [];
+  for (let i = 0; i < block.time.length; i++) {
+    const value = block.shortwave_radiation[i];
+    if (typeof value === 'number' && Number.isFinite(value)) continue;
+    times.push(new Date(block.time[i] + 'Z').getTime() - shiftMs);
+  }
+  return times;
+}
+
+export interface SplicedIrradiance {
+  records: IrradianceRecord[];
+  /** Interval starts in `records` with no radiation value (null in the source). */
+  nullTimes: number[];
+}
+
+/**
+ * Keep `primary` (ICON D2) up to its last record with a radiation value and
+ * continue with `secondary` (ICON seamless) after it. The primary part is
+ * kept record for record, so the slots it covers come out identical.
+ */
+export function spliceIrradiance(primary: SplicedIrradiance, secondary: SplicedIrradiance): SplicedIrradiance {
+  const primaryNulls = new Set(primary.nullTimes);
+  let lastValidMs = -Infinity;
+  for (const rec of primary.records) {
+    if (!primaryNulls.has(rec.time) && rec.time > lastValidMs) lastValidMs = rec.time;
+  }
+  return {
+    records: [
+      ...primary.records.filter(rec => rec.time <= lastValidMs),
+      ...secondary.records.filter(rec => rec.time > lastValidMs),
+    ],
+    nullTimes: [
+      ...primary.nullTimes.filter(t => t <= lastValidMs),
+      ...secondary.nullTimes.filter(t => t > lastValidMs),
+    ],
+  };
+}
+
 /**
  * Dispatch to the appropriate parser based on resolution.
  */

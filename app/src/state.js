@@ -2,6 +2,7 @@ import { SOLUTION_COLORS } from "./charts.js";
 import { parseQuickSettingSelection, writeQuickSettingSelection } from "./optimizer-quick-settings.js";
 import { fmtZonedDDMM, fmtZonedHHMM, withDisplayTimeZone } from "./time-zone.js";
 import { EXPORT_TARIFF_DEFAULT_EFFECTIVE_FROM, updateExportTariffUI } from "./export-tariff.js";
+import { EXTENDED_HORIZON_DEFAULTS, updateExtendedHorizonUI } from "./extended-horizon.js";
 
 // ---------- UI <-> settings snapshot ----------
 /* v8 ignore start — all optional-chaining (?.) branches are untestable when els is always a complete DOM element map */
@@ -157,6 +158,17 @@ const SETTINGS_FIELDS = {
     terminalTail_h: num(els.exportTariffTail?.value) ?? 6,
   }),
 
+  // Multi-day horizon — always send complete object (shallow merge safe)
+  extendedHorizon: (els) => ({
+    mode: els.extendedHorizonMode?.value || EXTENDED_HORIZON_DEFAULTS.mode,
+    extraDays: num(els.extendedHorizonExtraDays?.value) ?? EXTENDED_HORIZON_DEFAULTS.extraDays,
+    forecastUrl: (els.extendedHorizonForecastUrl?.value ?? EXTENDED_HORIZON_DEFAULTS.forecastUrl).trim(),
+    region: els.extendedHorizonRegion?.value || EXTENDED_HORIZON_DEFAULTS.region,
+    importVat_percent: num(els.extendedHorizonVat?.value) ?? EXTENDED_HORIZON_DEFAULTS.importVat_percent,
+    riskMargin_cents_per_kWh: num(els.extendedHorizonRiskMargin?.value) ?? EXTENDED_HORIZON_DEFAULTS.riskMargin_cents_per_kWh,
+    refreshMinutes: num(els.extendedHorizonRefresh?.value) ?? EXTENDED_HORIZON_DEFAULTS.refreshMinutes,
+  }),
+
   // EV CHARGING
   evEnabled: (els) => !!els.evEnabled?.checked,
   evMinChargeCurrent_A: (els) => num(els.evMinChargeCurrent?.value),
@@ -269,6 +281,7 @@ export function hydrateSettingsKeys(els, settings, keys) {
   updateTerminalCustomUI(els);
   updateEvChargingSpeedHint(els, settings);
   updateExportTariffUI(els);
+  updateExtendedHorizonUI(els);
 }
 
 export function hydrateUI(els, obj = {}) {
@@ -455,6 +468,16 @@ export function hydrateUI(els, obj = {}) {
   if (els.exportTariffTerminal) els.exportTariffTerminal.value = tariff.terminalSocValuation ?? 'tailMin';
   if (els.exportTariffTail) els.exportTariffTail.value = tariff.terminalTail_h ?? 6;
 
+  // Multi-day horizon
+  const horizon = { ...EXTENDED_HORIZON_DEFAULTS, ...(obj.extendedHorizon ?? {}) };
+  if (els.extendedHorizonMode) els.extendedHorizonMode.value = horizon.mode;
+  if (els.extendedHorizonExtraDays) els.extendedHorizonExtraDays.value = horizon.extraDays;
+  if (els.extendedHorizonForecastUrl) els.extendedHorizonForecastUrl.value = horizon.forecastUrl;
+  if (els.extendedHorizonRegion) els.extendedHorizonRegion.value = horizon.region;
+  if (els.extendedHorizonVat) els.extendedHorizonVat.value = horizon.importVat_percent;
+  if (els.extendedHorizonRiskMargin) els.extendedHorizonRiskMargin.value = horizon.riskMargin_cents_per_kWh;
+  if (els.extendedHorizonRefresh) els.extendedHorizonRefresh.value = horizon.refreshMinutes;
+
   // UI-only
   if (els.tableKwh && obj.tableShowKwh != null) {
     els.tableKwh.checked = !!obj.tableShowKwh;
@@ -462,6 +485,7 @@ export function hydrateUI(els, obj = {}) {
 
   updateTerminalCustomUI(els);
   updateExportTariffUI(els);
+  updateExtendedHorizonUI(els);
   updateRebalanceNudgeUI(els, obj.rebalanceNudge);
 }
 
@@ -511,6 +535,7 @@ export function updateSummaryUI(els, summary) {
     updateRebalanceStatus(els, null);
     updateEvSummary(els, null);
     updateHorizonWarnings(els, null);
+    updateExtendedHorizonUI(els, null);
 
     // reset mini bars
     const loadSplitBar = document.getElementById("load-split-bar");
@@ -571,6 +596,7 @@ export function updateSummaryUI(els, summary) {
   updateRebalanceStatus(els, summary.rebalanceStatus);
   updateEvSummary(els, summary);
   updateHorizonWarnings(els, summary.horizonWarnings);
+  updateExtendedHorizonUI(els, summary.extendedHorizon ?? null);
 
   // --- Energy Flow Bar ---
   const g2b = Number(summary.gridToBattery_kWh) || 0;

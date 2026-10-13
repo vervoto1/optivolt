@@ -267,9 +267,16 @@ export function effectiveChargeCap_W(cfg: SolverConfig, startSoc_percent: number
  * battery) or clamp a saturated charge slot to maxSoc − 1 (which misses
  * Victron's keep-charged path for a target of 100).
  */
-export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: DessMapperOptions = {}): DessResult {
+export function mapRowsToDessV2(allRows: PlanRow[], cfg: SolverConfig, options: DessMapperOptions = {}): DessResult {
+  // Multi-day horizon: only the firm rows (before the first `priceForecast`
+  // row) are mapped — segments, tipping points, the export-run look-ahead and
+  // the diagnostics never read a forecast price. Forecast rows get the
+  // never-written sentinel (see forecastSentinelSlot). Without forecast rows
+  // `rows` is `allRows` and the mapping is unchanged.
+  const firmCount = countFirmRows(allRows);
+  const rows = firmCount === allRows.length ? allRows : allRows.slice(0, firmCount);
   const segments = buildSegments(rows, cfg);
-  const perSlot = new Array<DessSlot>(rows.length);
+  const perSlot = new Array<DessSlot>(allRows.length);
 
   // Precompute tipping points once per segment (avoids O(T²) re-scanning)
   const segTps = new Map<Segment, SegmentTippingPoints>();
@@ -398,7 +405,35 @@ export function mapRowsToDessV2(rows: PlanRow[], cfg: SolverConfig, options: Des
     };
   }
 
+  for (let t = firmCount; t < allRows.length; t++) {
+    perSlot[t] = forecastSentinelSlot(allRows[t]);
+  }
+
   const diagnostics = computeDessDiagnostics(rows, segments, cfg);
 
   return { perSlot, diagnostics };
+}
+
+/**
+ * Number of firm rows: the index of the first `priceForecast` row (forecast
+ * rows always follow the firm part), or every row when there is none.
+ */
+export function countFirmRows(rows: ReadonlyArray<Pick<PlanRow, 'priceForecast'>>): number {
+  const i = rows.findIndex(r => r.priceForecast === true);
+  return i < 0 ? rows.length : i;
+}
+
+/**
+ * The `dess` of a forecast row: never written to Victron (the planner writes
+ * firm slots only), but every PlanRowWithDess carries one: unknown strategy
+ * and restrictions, feed-in blocked and the planned SoC as the target.
+ */
+export function forecastSentinelSlot(row: Pick<PlanRow, 'soc_percent'>): DessSlot {
+  return {
+    feedin: FeedIn.blocked,
+    restrictions: Restrictions.unknown,
+    strategy: Strategy.unknown,
+    flags: 0,
+    socTarget_percent: row.soc_percent,
+  };
 }

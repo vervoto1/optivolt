@@ -4,9 +4,12 @@
  *  - load served from grid / battery / PV
  *  - import energy & energy-weighted avg import price
  *  - tipping point from DESS diagnostics
+ * On a multi-day plan the totals cover the firm rows only, and the forecast
+ * rows' totals are reported separately as `forecast`.
  */
 
-import type { PlanRow, SolverConfig, DessDiagnostics, PlanSummary } from './types.ts';
+import type { PlanRow, SolverConfig, DessDiagnostics, PlanSummary, PlanTotals } from './types.ts';
+import { countFirmRows } from './dess-mapper.ts';
 
 export function buildPlanSummary(
   rows: PlanRow[],
@@ -53,6 +56,43 @@ export function buildPlanSummary(
   const stepMinutes = cfg.stepSize_m;
   const stepHours =
     Number.isFinite(stepMinutes) && stepMinutes > 0 ? stepMinutes / 60 : 0.25;
+
+  // Multi-day horizon: the totals cover the firm rows (as before); forecast
+  // rows are summed separately into `forecast`, present only when they exist.
+  const firmCount = countFirmRows(rows);
+  const firm = firmCount === rows.length ? rows : rows.slice(0, firmCount);
+
+  // Key order as before the split (the /calculate payload stays identical).
+  const { evChargeTotal_kWh, evChargeFromGrid_kWh, evChargeFromPv_kWh, evChargeFromBattery_kWh, ...energy } = sumPlanTotals(firm, stepHours);
+  return {
+    ...energy,
+    gridBatteryTippingPoint_cents_per_kWh:
+      Number.isFinite(dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh)
+        ? dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh!
+        : null,
+    gridChargeTippingPoint_cents_per_kWh:
+      Number.isFinite(dessDiagnostics.gridChargeTippingPoint_cents_per_kWh)
+        ? dessDiagnostics.gridChargeTippingPoint_cents_per_kWh!
+        : null,
+    batteryExportTippingPoint_cents_per_kWh:
+      Number.isFinite(dessDiagnostics.batteryExportTippingPoint_cents_per_kWh)
+        ? dessDiagnostics.batteryExportTippingPoint_cents_per_kWh!
+        : null,
+    pvExportTippingPoint_cents_per_kWh:
+      Number.isFinite(dessDiagnostics.pvExportTippingPoint_cents_per_kWh)
+        ? dessDiagnostics.pvExportTippingPoint_cents_per_kWh!
+        : null,
+    rebalanceStatus,
+    evChargeTotal_kWh,
+    evChargeFromGrid_kWh,
+    evChargeFromPv_kWh,
+    evChargeFromBattery_kWh,
+    ...(firmCount < rows.length ? { forecast: sumPlanTotals(rows.slice(firmCount), stepHours) } : {}),
+  };
+}
+
+/** Energy and cost totals of `rows` (the PlanTotals fields of the summary). */
+function sumPlanTotals(rows: PlanRow[], stepHours: number): PlanTotals {
   const W2kWh = (x: number) => x * stepHours / 1000;
 
   let loadTotal = 0;
@@ -124,23 +164,6 @@ export function buildPlanSummary(
     exportCost_cents: exportCost,
     netGridCost_cents: importCost - exportCost,
     avgImportPrice_cents_per_kWh: avgImportPrice,
-    gridBatteryTippingPoint_cents_per_kWh:
-      Number.isFinite(dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh)
-        ? dessDiagnostics.gridBatteryTippingPoint_cents_per_kWh!
-        : null,
-    gridChargeTippingPoint_cents_per_kWh:
-      Number.isFinite(dessDiagnostics.gridChargeTippingPoint_cents_per_kWh)
-        ? dessDiagnostics.gridChargeTippingPoint_cents_per_kWh!
-        : null,
-    batteryExportTippingPoint_cents_per_kWh:
-      Number.isFinite(dessDiagnostics.batteryExportTippingPoint_cents_per_kWh)
-        ? dessDiagnostics.batteryExportTippingPoint_cents_per_kWh!
-        : null,
-    pvExportTippingPoint_cents_per_kWh:
-      Number.isFinite(dessDiagnostics.pvExportTippingPoint_cents_per_kWh)
-        ? dessDiagnostics.pvExportTippingPoint_cents_per_kWh!
-        : null,
-    rebalanceStatus,
     evChargeTotal_kWh:       evFromGrid + evFromPv + evFromBat,
     evChargeFromGrid_kWh:    evFromGrid,
     evChargeFromPv_kWh:      evFromPv,

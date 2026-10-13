@@ -45,6 +45,8 @@ vi.mock('../../../app/src/charts/overlays.js', () => ({
   makeBuyPriceStripPlugin: vi.fn(() => ({ id: 'buyPriceStrip' })),
   makeNegativePriceInjectionPlugin: vi.fn(() => ({ id: 'negInjection' })),
   makeRebalancingPlugin: vi.fn(() => ({ id: 'rebalance' })),
+  firstForecastIndex: vi.fn((rows) => rows.findIndex((r) => r?.priceForecast === true)),
+  makeForecastBoundaryPlugin: vi.fn((idx) => (idx > 0 ? { id: 'forecastBoundary', idx } : null)),
 }));
 
 import { SOLUTION_COLORS, toRGBA } from '../../../app/src/charts/colors.js';
@@ -55,6 +57,7 @@ import {
 } from '../../../app/src/charts/ev-annotations.js';
 import {
   makeBuyPriceStripPlugin,
+  makeForecastBoundaryPlugin,
   makeNegativePriceInjectionPlugin,
   makeRebalancingPlugin,
 } from '../../../app/src/charts/overlays.js';
@@ -65,6 +68,8 @@ import {
   drawLoadPvGrouped,
   drawPricesStepLines,
   drawSocChart,
+  FORECAST_BAR_ALPHA,
+  forecastSegmentDash,
 } from '../../../app/src/charts/solution-charts.js';
 
 function canvas() {
@@ -701,5 +706,94 @@ describe('drawLoadPvGrouped', () => {
 
     // No title and no dataPoints -> empty header, no rows.
     expect(external(0, {})).toBe('H[|]');
+  });
+});
+
+describe('forecast-priced rows (multi-day horizon)', () => {
+  const firm = (i, extra = {}) => ({
+    timestampMs: T0 + i * 15 * MIN, soc_percent: 50, ic: 10, ec: 5, g2l: 1000, ...extra,
+  });
+  const forecast = (i, extra = {}) => firm(i, { priceForecast: true, ic: 20, ev_soc_percent: null, ...extra });
+  const rows = [firm(0), firm(1), forecast(2), forecast(3)];
+
+  it('forecastSegmentDash dashes the segments that draw forecast slots', () => {
+    const dash = forecastSegmentDash(2);
+    expect(dash({ p0DataIndex: 0, p1DataIndex: 1 })).toBeUndefined();
+    expect(dash({ p0DataIndex: 1, p1DataIndex: 2 })).toBeUndefined();
+    expect(dash({ p0DataIndex: 2, p1DataIndex: 3 })).toEqual([5, 4]);
+    expect(forecastSegmentDash(3, [2, 2])({ p0DataIndex: 3 })).toEqual([2, 2]);
+    expect(forecastSegmentDash(-1)({ p0DataIndex: 5 })).toBeUndefined();
+  });
+
+  it('the price lines are dashed from the boundary on, with a boundary marker and a tooltip note', () => {
+    drawPricesStepLines(canvas(), rows);
+    const cfg = lastRenderConfig();
+    for (const ds of cfg.data.datasets) {
+      expect(ds.segment.borderDash({ p0DataIndex: 1 })).toBeUndefined();
+      expect(ds.segment.borderDash({ p0DataIndex: 2 })).toEqual([5, 4]);
+    }
+    expect(makeForecastBoundaryPlugin).toHaveBeenCalledWith(2);
+    expect(cfg.plugins.map((p) => p.id)).toEqual(['priceZeroLine', 'forecastBoundary']);
+    const external = cfg.options.overrides.plugins.tooltip.external;
+    expect(external(2, { title: ['Wed 10:30'] })).toBe('H[Wed 10:30|forecast price]');
+    expect(external(1, { title: ['Wed 10:15'] })).toBe('H[Wed 10:15|]');
+  });
+
+  it('firm-only price lines have no segment styling and no marker', () => {
+    drawPricesStepLines(canvas(), [firm(0), firm(1)]);
+    const cfg = lastRenderConfig();
+    expect(cfg.data.datasets[0].segment).toBeUndefined();
+    expect(cfg.plugins).toHaveLength(1);
+  });
+
+  it('forecast bars are fainter and the flows chart gets the boundary marker', () => {
+    drawFlowsBarStackSigned(canvas(), rows, 15);
+    const cfg = lastRenderConfig();
+    const ds = cfg.data.datasets[0];
+    const color = SOLUTION_COLORS.g2l;
+    expect(ds.backgroundColor).toEqual([color, color, toRGBA(color, FORECAST_BAR_ALPHA), toRGBA(color, FORECAST_BAR_ALPHA)]);
+    expect(ds.hoverBackgroundColor[0]).toBe(toRGBA(color, 0.6));
+    expect(ds.hoverBackgroundColor[3]).toBe(toRGBA(color, FORECAST_BAR_ALPHA * 0.6));
+    expect(cfg.plugins.at(-1)).toEqual({ id: 'forecastBoundary', idx: 2 });
+    const external = cfg.options.overrides.plugins.tooltip.external;
+    expect(external(2, { title: ['t'] })).toContain('SoC <strong>50%</strong> · forecast price');
+    expect(external(0, { title: ['t'] })).not.toContain('forecast price');
+  });
+
+  it('firm-only flows keep plain colours and no marker', () => {
+    drawFlowsBarStackSigned(canvas(), [firm(0), firm(1)], 15);
+    const cfg = lastRenderConfig();
+    expect(cfg.data.datasets[0].backgroundColor).toBeUndefined(); // the dsBar mock sets `color` only
+    expect(cfg.plugins.map((p) => p.id)).not.toContain('forecastBoundary');
+  });
+
+  it('hourly aggregation marks a bucket holding any forecast slot', () => {
+    const quarter = [firm(0), firm(1), firm(2), firm(3), firm(4), firm(5), forecast(6), forecast(7)];
+    const agg = aggregateRows(quarter, 15, 60);
+    expect(agg.map((b) => b.priceForecast === true)).toEqual([false, true]);
+    expect(agg[1].ev_soc_percent).toBeNull();
+  });
+
+  it('the SoC chart leaves a gap in the EV line on forecast rows and marks the boundary', () => {
+    const evRows = [firm(0, { ev_soc_percent: 40 }), firm(1, { ev_soc_percent: 45 }), forecast(2), forecast(3)];
+    drawSocChart(canvas(), evRows, 15, { departureTime: null, targetSoc_percent: 80 });
+    const cfg = lastRenderConfig();
+    expect(cfg.data.datasets[1].data).toEqual([40, 45, null, null]);
+    expect(cfg.plugins.map((p) => p.id)).toEqual(['evTarget', 'forecastBoundary']);
+    const external = cfg.options.overrides.plugins.tooltip.external;
+    const html = external(2, {
+      title: ['t'],
+      dataPoints: [
+        { dataset: { borderColor: 'B', label: 'Battery SoC (%)' }, raw: 61.6 },
+        { dataset: { borderColor: 'E', label: 'EV SoC (%)' }, raw: null },
+      ],
+    });
+    expect(html).toBe('H[t|]R[B|Battery SoC (%)|62%]');
+  });
+
+  it('a firm row without EV SoC still plots 0', () => {
+    drawSocChart(canvas(), [firm(0, { ev_soc_percent: 30 }), firm(1)], 15);
+    expect(lastRenderConfig().data.datasets[1].data).toEqual([30, 0]);
+    expect(lastRenderConfig().plugins).toEqual([]);
   });
 });

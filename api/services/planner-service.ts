@@ -2,14 +2,18 @@
 // @ts-ignore — no .d.ts alongside the vendor build artifact; type is asserted via HighsInstance below
 import highsFactory from '../../vendor/highs-build/highs.js';
 /* v8 ignore end */
-import { mapRowsToDessV2 } from '../../lib/dess-mapper.ts';
+import { mapRowsToDessV2, countFirmRows } from '../../lib/dess-mapper.ts';
 import { annotatePvCurtailmentSlots } from '../../lib/pv-curtailment.ts';
-import { buildLP } from '../../lib/build-lp.ts';
-import { solveOptionsFor } from '../../lib/solve-options.ts';
+import { buildLP, isRebalanceHoldDeferred } from '../../lib/build-lp.ts';
+import { solveOptionsFor, extendedSolveOptions } from '../../lib/solve-options.ts';
 import { parseSolution, assertUsableSolution, type HighsSolution } from '../../lib/parse-solution.ts';
 import { buildPlanSummary } from '../../lib/plan-summary.ts';
-import type { SolverConfig, PlanSummary, PlanRow, TimeSeries, ExportTariffInfo } from '../../lib/types.ts';
-import { getSolverInputs, buildPlannerConfig, isMarketSourceConfigured, REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT } from './config-builder.ts';
+import type { SolverConfig, PlanSummary, PlanRow, TimeSeries, ExportTariffInfo, ExtendedHorizonSummary } from '../../lib/types.ts';
+import {
+  getSolverInputs, buildPlannerConfig, isMarketSourceConfigured, buildExtendedSolverConfig, persistPriceForecastFit,
+  REBALANCE_PENDING_GIVE_UP_MS, REBALANCE_START_TOLERANCE_PERCENT,
+  type ExtendedHorizonInfo,
+} from './config-builder.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { updateSettings, loadSettings } from './settings-store.ts';
 // Aliased: computePlan's `updateData` option means "refresh the series first".
@@ -18,7 +22,7 @@ import { refreshSeriesFromVrmAndPersist } from './vrm-refresh.ts';
 import { readVictronSocPercent, setDynamicEssSchedule } from './mqtt-service.ts';
 import { getRebalanceNudge, recordCompletedRebalanceHold, type RebalanceNudge } from './rebalance-nudge.ts';
 import { HttpError } from '../http-errors.ts';
-import { getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
+import { extendedWindowEndMs, getNextQuarterStart, getForecastTimeRange, getSeriesEndMs } from '../../lib/time-series-utils.ts';
 import { savePlanSnapshot } from './plan-history-store.ts';
 import { updatePvCurtailmentPlan } from './pv-curtailment.ts';
 import type { PlanRowWithDess, PlanSnapshot, Data, Settings } from '../types.ts';
@@ -50,6 +54,34 @@ function computeHorizonWarnings(data: Data, nowMs: number, settings: Settings): 
   // the price source cannot produce (left from an earlier one) is ignored, as
   // in the config.
   if (isMarketSourceConfigured(settings, data)) check('Market prices', data.marketPrice);
+  return warnings;
+}
+
+const HORIZON_TOLERANCE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Multi-day horizon (mode `on`): load and PV series the planner's own
+ * predictors produce (`api` sources) are expected to reach the end the
+ * extended solve uses (`extendedWindowEndMs` of this plan's firm end), which
+ * the STALE DATA check above (the old window) does not look at. VRM and HA
+ * series are not extended (the extension is then cut short at their end,
+ * reported with the extended-solve warnings). `firmEndMs` is undefined when
+ * the mode is not `on`.
+ */
+function computeExtendedSeriesWarnings(data: Data, settings: Settings, firmEndMs: number | undefined): string[] {
+  if (firmEndMs === undefined) return [];
+  const expectedEndMs = extendedWindowEndMs(settings, firmEndMs);
+  const warnings: string[] = [];
+  const check = (label: string, source: string, s: TimeSeries) => {
+    if (source !== 'api') return;
+    const gapMs = expectedEndMs - getSeriesEndMs(s);
+    if (gapMs > HORIZON_TOLERANCE_MS) {
+      const hours = Math.round(gapMs / (60 * 60 * 1000));
+      warnings.push(`${label} ends ${hours}h short of the multi-day horizon — the extension is cut short there`);
+    }
+  };
+  check('Load forecast', settings.dataSources.load, data.load);
+  check('PV forecast', settings.dataSources.pv, data.pv);
   return warnings;
 }
 
@@ -97,6 +129,7 @@ export interface RebalanceWindow {
 }
 
 export interface ComputePlanResult {
+  /** The config the plan's rows were solved from (the extended config on a multi-day plan). */
   cfg: SolverConfig;
   data: Data;
   timing: { startMs: number; stepMin: number };
@@ -223,7 +256,8 @@ export function getCurrentSlotMode(nowMs = Date.now()): ShoreOptimizerSlotMode {
 
   const stepMs = Math.max(1, plan.cfg.stepSize_m) * 60_000;
   const row = plan.rows.find(r => nowMs >= r.timestampMs && nowMs < r.timestampMs + stepMs);
-  if (!row) return 'unknown';
+  // A forecast-priced row (multi-day horizon) is never acted on.
+  if (!row || row.priceForecast) return 'unknown';
 
   if (row.g2b > 0) return 'grid_charge';
   if (row.b2l + row.b2g + (row.b2ev ?? 0) > 0) return 'discharge';
@@ -558,6 +592,149 @@ async function recordRebalanceProgress(
   return { ...data, rebalanceState };
 }
 
+/** The extended plan that replaces the firm-only one. */
+interface ExtendedPlan {
+  cfg: SolverConfig;
+  result: HighsSolution;
+  rows: PlanRow[];
+  rebalanceWindow?: RebalanceWindow;
+}
+
+interface ExtendedHorizonOutcome {
+  /** Set only when the extended solve was Optimal: the plan to use. */
+  plan?: ExtendedPlan;
+  summary: ExtendedHorizonSummary;
+  /** Warnings for the UI (logged with an [extended-horizon] prefix). */
+  warnings: string[];
+}
+
+interface ExtendedHorizonInput {
+  /** The firm-only config exactly as solved (after any pin relaxation). */
+  firmCfg: SolverConfig;
+  firmResult: HighsSolution;
+  firmRows: PlanRow[];
+  firmRebalanceWindow: RebalanceWindow | undefined;
+  settings: Settings;
+  data: Data;
+  timing: { startMs: number; stepMin: number };
+}
+
+/**
+ * Warning for an extension that ends before the planning window: the
+ * forecast (or its pricing) or an uncontrollable evLoad ran out, or a load/PV
+ * source the planner does not extend (VRM, HA) ends there. An `api` load/PV
+ * series that ends early is reported by computeExtendedSeriesWarnings instead.
+ */
+function extensionCutShortWarning(info: ExtendedHorizonInfo, settings: Settings): string | null {
+  const reason = info.endReason;
+  if (reason === 'window') return null;
+  if ((reason === 'load' || reason === 'pv') && settings.dataSources[reason] === 'api') return null;
+  if (reason === 'fitYear') {
+    return `Multi-day horizon cut short at ${info.end}: the import fit is on this year's published prices and does not price next year's slots (taxes change on 1 January)`;
+  }
+  const what = {
+    load: `the ${settings.dataSources.load.toUpperCase()} load forecast`,
+    pv: `the ${settings.dataSources.pv.toUpperCase()} PV forecast`,
+    evLoad: 'the EV load series',
+    forecast: 'the price forecast',
+  }[reason];
+  return `Multi-day horizon cut short at ${info.end}: ${what} does not reach further`;
+}
+
+/**
+ * `firmObjective` for the summary: the firm-only solve's objective, when it
+ * reported a finite one. With an extended plan, `result.ObjectiveValue` (and
+ * `/calculate`'s `objectiveValue`) is the extended solve's objective, which
+ * includes the forecast slots and the carry-over dead-band.
+ */
+function firmObjectiveOf(firmResult: HighsSolution): { firmObjective?: number } {
+  const value = firmResult.ObjectiveValue;
+  return typeof value === 'number' && Number.isFinite(value) ? { firmObjective: value } : {};
+}
+
+/**
+ * Multi-day horizon, `extendedHorizon.mode` `on`: extend the Optimal
+ * firm-only plan with forecast-priced slots and solve that once (fixed
+ * rebalance start, extendedSolveOptions). The firm-only plan stays the plan
+ * unless this solve is Optimal; every other outcome (a skip, a non-Optimal or
+ * failed solve) returns a warning and the firm-only status.
+ */
+function solveExtendedHorizon(highs: HighsInstance, input: ExtendedHorizonInput): ExtendedHorizonOutcome {
+  const { firmCfg, firmResult, firmRows, firmRebalanceWindow, settings, data, timing } = input;
+  const firmSlots = firmCfg.load_W.length;
+  const stepMs = firmCfg.stepSize_m * 60_000;
+  const firmEndMs = timing.startMs + firmSlots * stepMs;
+  const firmObjective = firmObjectiveOf(firmResult);
+  const firmOnly = (reason: string, fit?: ExtendedHorizonSummary['fit']): ExtendedHorizonOutcome => ({
+    summary: { mode: 'on', firmEndMs, endMs: firmEndMs, extendedSlots: 0, ...firmObjective, ...(fit ? { fit } : {}), status: 'firmOnly', reason },
+    warnings: [`Multi-day horizon not used: ${reason} — planning with published prices only`],
+  });
+
+  const built = buildExtendedSolverConfig({
+    firmCfg,
+    settings,
+    data,
+    nowMs: timing.startMs,
+    firmResult: {
+      objective: firmResult.ObjectiveValue,
+      socAtFirmEnd_Wh: firmRows[firmSlots - 1].soc,
+      ...(firmRebalanceWindow ? { rebalanceStartSlot: firmRebalanceWindow.startIdx } : {}),
+    },
+  });
+  if ('skipped' in built) return firmOnly(built.message);
+
+  const { cfg, info } = built;
+  // The fresh accepted fit becomes the stored fallback (never throws).
+  if (info.newFit) void persistPriceForecastFit(info.newFit, info.region);
+  const fit = { a: info.fit.a, b: info.fit.b, source: info.fit.source };
+  const rebalanceDeferred = isRebalanceHoldDeferred(cfg);
+
+  const t0 = performance.now();
+  let result: HighsSolution;
+  try {
+    result = highs.solve(buildLP(cfg), extendedSolveOptions({ firmObjective: firmResult.ObjectiveValue ?? NaN }));
+  } catch (err) {
+    // A throwing WASM solve: same recovery as solveWithPinnedHoldFallback
+    // (drop the instance so the next lookup builds a fresh one).
+    highsPromise = undefined;
+    console.error('[extended-horizon] extended solve threw:', (err as Error).message);
+    return firmOnly('the extended solve failed', fit);
+  }
+  console.log('[extended-horizon] solve', {
+    status: result.Status,
+    firmSlots,
+    extendedSlots: info.extendedSlots,
+    end: info.end,
+    endReason: info.endReason,
+    fit: { a: fit.a, b: fit.b, source: fit.source },
+    rebalanceDeferred,
+    solveMs: Math.round(performance.now() - t0),
+  });
+  if (result.Status !== 'Optimal') {
+    return firmOnly(`the extended solve ended with status "${result.Status}"`, fit);
+  }
+  if (rebalanceDeferred) {
+    console.log('[extended-horizon] the rebalance hold does not fit in the published-price part; it stays pending');
+  }
+
+  const rows = attachOriginalPredictionValues(parseSolution(result, cfg, timing), data);
+  const rebalanceWindow = extractRebalanceWindow(result.Columns ?? {}, cfg.rebalanceRemainingSlots ?? 0);
+  const cutShort = extensionCutShortWarning(info, settings);
+  return {
+    plan: { cfg, result, rows, ...(rebalanceWindow ? { rebalanceWindow } : {}) },
+    summary: {
+      mode: 'on',
+      firmEndMs,
+      endMs: firmEndMs + info.extendedSlots * stepMs,
+      extendedSlots: info.extendedSlots,
+      ...firmObjective,
+      fit,
+      status: 'extended',
+    },
+    warnings: cutShort ? [cutShort] : [],
+  };
+}
+
 export async function computePlan({ updateData = false } = {}): Promise<ComputePlanResult> {
   if (updateData) {
     try {
@@ -613,14 +790,36 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
     solveMs: Math.round(solveMs),
   });
 
-  const rows = attachOriginalPredictionValues(parseSolution(result, cfg, timing), data);
+  const firmRows = attachOriginalPredictionValues(parseSolution(result, cfg, timing), data);
 
   // The hold window the solver chose; the mapper turns its slots into a DESS
   // hold (proBattery, grid charging allowed, target = rebalance target).
-  const rebalanceWindow = extractRebalanceWindow(
+  const firmRebalanceWindow = extractRebalanceWindow(
     result.Columns ?? {},
     cfg.rebalanceRemainingSlots ?? 0,
   );
+
+  // Multi-day horizon: the Optimal firm-only plan above is the fallback and
+  // the reference; the extended plan replaces it only when its solve is
+  // Optimal. With the mode off or collect nothing below changes.
+  let rows = firmRows;
+  let rebalanceWindow = firmRebalanceWindow;
+  let extended: ExtendedHorizonOutcome | undefined;
+  const firmCfg = cfg;
+  if (settings.extendedHorizon?.mode === 'on') {
+    if (result.Status === 'Optimal') {
+      extended = solveExtendedHorizon(highs, { firmCfg: cfg, firmResult: result, firmRows, firmRebalanceWindow, settings, data, timing });
+      if (extended.plan) {
+        ({ cfg, result, rows, rebalanceWindow } = extended.plan);
+      }
+    } else {
+      const firmEndMs = timing.startMs + cfg.load_W.length * cfg.stepSize_m * 60_000;
+      extended = {
+        summary: { mode: 'on', firmEndMs, endMs: firmEndMs, extendedSlots: 0, ...firmObjectiveOf(result), status: 'firmOnly', reason: 'the published-price plan is not Optimal' },
+        warnings: [],
+      };
+    }
+  }
 
   const { perSlot, diagnostics } = mapRowsToDessV2(rows, cfg, {
     blockFeedInOnNegativePrices: settings.blockFeedInOnNegativePrices !== false,
@@ -650,6 +849,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
 
   const summary = buildPlanSummary(rowsWithDess, cfg, diagnostics, rebalanceCtx);
   if (relaxedMaxStartSlot !== undefined) summary.rebalanceHoldMaxStartSlot = relaxedMaxStartSlot;
+  if (extended) summary.extendedHorizon = extended.summary;
 
   const horizonWarnings = computeHorizonWarnings(data, timing.startMs, settings);
   for (const w of horizonWarnings) {
@@ -659,8 +859,15 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   for (const w of exportTariffWarnings) {
     console.warn(`[export-tariff] ${w}`);
   }
-  if (horizonWarnings.length + exportTariffWarnings.length > 0) {
-    summary.horizonWarnings = [...horizonWarnings, ...exportTariffWarnings];
+  const extendedWarnings = [
+    ...computeExtendedSeriesWarnings(data, settings, extended?.summary.firmEndMs),
+    ...(extended?.warnings ?? []),
+  ];
+  for (const w of extendedWarnings) {
+    console.warn(`[extended-horizon] ${w}`);
+  }
+  if (horizonWarnings.length + exportTariffWarnings.length + extendedWarnings.length > 0) {
+    summary.horizonWarnings = [...horizonWarnings, ...exportTariffWarnings, ...extendedWarnings];
   }
 
   const rebalanceNudge = getRebalanceNudge(data);
@@ -687,7 +894,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
   // plugged in now (seeded from the live SoC). Display-only — never written to
   // Victron, never cached as lastPlan, never used for actuation.
   lastEvPreview = null;
-  if (!cfg.ev && resolveEvMode(settings) === 'native' && evState?.soc_percent != null) {
+  if (!firmCfg.ev && resolveEvMode(settings) === 'native' && evState?.soc_percent != null) {
     const liveSoc = evState.soc_percent;
     try {
       // Same assembly as the main plan (adjustments + calibration + EV taper).
@@ -701,7 +908,9 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         // Same solve policy as the main plan (pinned-hold fallback; a throwing
         // WASM solve drops the instance). A SolverStatusError from parsing the
         // preview below is not a solver fault and leaves the instance alone.
-        const preview = solveWithPinnedHoldFallback(highs, previewCfg, { startHint: relaxedMaxStartSlot, quiet: true });
+        // Firm-only, like the main plan's first solve (never extended).
+        // A fresh lookup: a throwing extended solve drops the cached instance.
+        const preview = solveWithPinnedHoldFallback(await getHighsInstance(), previewCfg, { startHint: relaxedMaxStartSlot, quiet: true });
         // Throws SolverStatusError (caught below) when the preview has no usable solution.
         const previewRows = parseSolution(preview.result, preview.cfg, timing);
         lastEvPreview = {
@@ -716,7 +925,7 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
         // No valid charge window (e.g. departure already elapsed): surface the
         // live SoC as a flat track so the chart still shows the real battery %.
         lastEvPreview = {
-          rows: rows.map(r => ({ ...r, ev_charge: 0, ev_charge_A: 0, ev_charge_mode: 'off', ev_soc_percent: liveSoc })),
+          rows: firmRows.map(r => ({ ...r, ev_charge: 0, ev_charge_A: 0, ev_charge_mode: 'off', ev_soc_percent: liveSoc })),
           timing,
           liveSoc_percent: liveSoc,
           hasSchedule: false,
@@ -739,10 +948,13 @@ export async function computePlan({ updateData = false } = {}): Promise<ComputeP
       // Start-of-slot EV SoC, same shift as the battery. Only meaningful on
       // EV-active solves; otherwise left undefined so the EV calibrator ignores it.
       predictedEvSoc_percent: cfg.ev
-        ? (index === 0 ? cfg.ev.evInitialSoc_percent : rowsWithDess[index - 1].ev_soc_percent)
+        // (null past a multi-day firm boundary: unknown, so left undefined too)
+        ? (index === 0 ? cfg.ev.evInitialSoc_percent : rowsWithDess[index - 1].ev_soc_percent ?? undefined)
         : undefined,
     }))
-    .filter(({ row }) => row.timestampMs >= snapshotStartMs)
+    // Firm slots only: forecast-priced rows are never executed, so the
+    // calibrator must not compare them with actuals.
+    .filter(({ row }) => row.timestampMs >= snapshotStartMs && !row.priceForecast)
     .map(({ row, predictedSoc_percent, predictedEvSoc_percent }) => ({
       timestampMs: row.timestampMs,
       // soc_percent from the solver is end-of-slot (after flows); shift back
@@ -796,7 +1008,9 @@ function dessFingerprint(rows: PlanRowWithDess[], slotCount: number): string {
 }
 
 export async function writePlanToVictron(rows: PlanRowWithDess[], { force = false } = {}): Promise<void> {
-  const nSlots = Math.min(DESS_SLOTS, rows.length);
+  // Firm slots only: a forecast-priced row (multi-day horizon) never reaches
+  // Victron, and the fingerprint covers the same slots.
+  const nSlots = Math.min(DESS_SLOTS, countFirmRows(rows));
   const fp = dessFingerprint(rows, nSlots);
 
   if (!force && fp === lastDessFingerprint) {

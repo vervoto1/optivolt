@@ -105,6 +105,68 @@ export function buildPredictIndex(
   return { sensor, valueByDate, pastDatesByTarget };
 }
 
+/** The history values `predict()` aggregates for one target. */
+function matchingPastValues(
+  entry: PredictTarget,
+  entryDate: Date,
+  entryBucket: string | number,
+  valueByDate: Map<string, StatRecord>,
+  lookbackWeeks: number,
+  dayFilter: DayFilter,
+  chain?: string[],
+): number[] {
+  const historicalValues: number[] = [];
+  const maxDays = lookbackWeeks * 7;
+
+  for (let d = 1; d <= maxDays; d++) {
+    const pastISO = chain && d <= chain.length ? chain[d - 1] : isoDaysBefore(entryDate, d);
+    const pastEntry = valueByDate.get(pastISO);
+
+    if (!pastEntry) continue;
+
+    if (dayFilter === 'same') {
+      if (pastEntry.dayOfWeek !== entry.dayOfWeek) continue;
+    } else {
+      const pastBucket = getDayBucket(pastEntry.dayOfWeek, dayFilter);
+      if (entryBucket !== pastBucket) continue;
+    }
+
+    historicalValues.push(pastEntry.value);
+  }
+  return historicalValues;
+}
+
+export interface HistoricalSampleCount {
+  /** History values `predict()` found for the target. */
+  samples: number;
+  /** Values the strategy reads for that target when the whole lookback is in the past and complete. */
+  possible: number;
+}
+
+/**
+ * How many history values `predict()` aggregates for each target, next to
+ * how many the strategy could read with a complete history. A target days
+ * ahead loses the lookback days that are still in the future, so its count
+ * drops even when its prediction is not null.
+ */
+export function historicalSampleCounts(
+  data: StatRecord[],
+  { sensor, lookbackWeeks, dayFilter }: PredictConfig,
+  targets: PredictTarget[],
+): HistoricalSampleCount[] {
+  const valueByDate = new Map(data.filter(d => d.sensor === sensor).map(d => [d.date, d]));
+  const maxDays = lookbackWeeks * 7;
+  return targets.map(entry => {
+    const entryBucket = getDayBucket(entry.dayOfWeek, dayFilter);
+    const samples = matchingPastValues(entry, new Date(entry.date), entryBucket, valueByDate, lookbackWeeks, dayFilter).length;
+    let possible = 0;
+    for (let d = 1; d <= maxDays; d++) {
+      if (getDayBucket((((entry.dayOfWeek - d) % 7) + 7) % 7, dayFilter) === entryBucket) possible++;
+    }
+    return { samples, possible };
+  });
+}
+
 /**
  * Compute predictions for specific target points using history data.
  * Pass a `PredictIndex` (built for the same sensor and targets) when scoring
@@ -130,24 +192,7 @@ export function predict(
     const entryBucket = getDayBucket(entry.dayOfWeek, dayFilter);
     const chain = useIndex ? index.pastDatesByTarget.get(entry.date) : undefined;
 
-    const historicalValues: number[] = [];
-    const maxDays = lookbackWeeks * 7;
-
-    for (let d = 1; d <= maxDays; d++) {
-      const pastISO = chain && d <= chain.length ? chain[d - 1] : isoDaysBefore(entryDate, d);
-      const pastEntry = valueByDate.get(pastISO);
-
-      if (!pastEntry) continue;
-
-      if (dayFilter === 'same') {
-        if (pastEntry.dayOfWeek !== entry.dayOfWeek) continue;
-      } else {
-        const pastBucket = getDayBucket(pastEntry.dayOfWeek, dayFilter);
-        if (entryBucket !== pastBucket) continue;
-      }
-
-      historicalValues.push(pastEntry.value);
-    }
+    const historicalValues = matchingPastValues(entry, entryDate, entryBucket, valueByDate, lookbackWeeks, dayFilter, chain);
 
     results.push({
       date: entry.date,

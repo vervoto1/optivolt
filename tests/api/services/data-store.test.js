@@ -331,3 +331,154 @@ describe('loadDefaultData', () => {
     expect(data.soc.value).toBe(30);
   });
 });
+
+describe('finite series values', () => {
+  const DATA_PATH = '/tmp/test-data/data.json';
+  let warn;
+  beforeEach(() => {
+    _reset();
+    writeJson.mockClear();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  it('rejects a non-finite value in every series on write', () => {
+    for (const key of ['load', 'pv', 'importPrice', 'exportPrice', 'evLoad']) {
+      for (const bad of [null, Number.NaN, Number.POSITIVE_INFINITY, '5', undefined]) {
+        const data = makeValidData({ [key]: { start: NOW_STRING, step: 15, values: [1, bad] } });
+        expect(() => validateData(data), `${key} ${bad}`).toThrow(`Invalid ${key}: values[1] is not a finite number`);
+      }
+    }
+  });
+
+  it('accepts null — the "no price" marker — but not NaN or strings in marketPrice', () => {
+    expect(() => validateData(makeValidData({ marketPrice: { start: NOW_STRING, step: 15, values: [8, null] } }))).not.toThrow();
+    expect(() => validateData(makeValidData({ marketPrice: { start: NOW_STRING, step: 15, values: [Number.NaN] } })))
+      .toThrow('Invalid marketPrice: values[0] is not a finite number');
+    expect(() => validateData(makeValidData({ marketPrice: { start: NOW_STRING, step: 15, values: ['8'] } })))
+      .toThrow('Invalid marketPrice: values[0] is not a finite number ("8")');
+  });
+
+  it('loads a stored file with a null value (pre-0.7.72) and warns once per series', async () => {
+    const legacy = makeValidData({ load: { start: '2024-01-01T01:00:00.000Z', step: 15, values: [500, null, 500] } });
+    _set(DATA_PATH, legacy);
+    expect((await loadData()).load.values).toEqual([500, null, 500]);
+    await loadData();
+    const loadWarnings = warn.mock.calls.filter(([m]) => m.includes('Invalid load: values[1]'));
+    expect(loadWarnings).toEqual([['[data-store] Invalid load: values[1] is not a finite number (null); kept as stored']]);
+  });
+
+  it('lets an unrelated write through a legacy series, but rejects a write that changes it to a bad one', async () => {
+    _set(DATA_PATH, makeValidData({ pv: { start: '2024-01-01T02:00:00.000Z', step: 15, values: [null] } }));
+    const result = await updateData(current => ({ ...current, soc: { timestamp: NOW_STRING, value: 66 } }));
+    expect(result.soc.value).toBe(66);
+    expect(result.pv.values).toEqual([null]);
+
+    await expect(updateData(current => ({ ...current, pv: { start: NOW_STRING, step: 15, values: [1, null] } })))
+      .rejects.toThrow('Invalid pv: values[1] is not a finite number');
+    await expect(updateData(current => ({ ...current, pv: { start: NOW_STRING, step: 15, values: [1, 2] } })))
+      .resolves.toMatchObject({ pv: { values: [1, 2] } });
+  });
+
+  it('checks a series that is still the loaded object only structurally (unchangedFrom)', () => {
+    const current = makeValidData({ evLoad: { start: NOW_STRING, step: 15, values: [null] } });
+    expect(() => validateData({ ...current }, { unchangedFrom: current })).not.toThrow();
+    expect(() => validateData({ ...current, evLoad: { ...current.evLoad } }, { unchangedFrom: current }))
+      .toThrow('Invalid evLoad: values[0] is not a finite number');
+    expect(() => validateData({ ...current, evLoad: { start: 'x', values: [] } }, { unchangedFrom: current }))
+      .toThrow(/evLoad.*start/);
+  });
+});
+
+describe('priceForecast', () => {
+  const DATA_PATH = '/tmp/test-data/data.json';
+  const forecast = (overrides = {}) => ({
+    fetchedAt: '2024-01-01T10:00:00.000Z',
+    publishedEnd: '2024-01-02T23:00:00.000Z',
+    region: 'NL',
+    series: { start: '2023-12-31T23:00:00.000Z', step: 15, values: [10, 11.5, -2] },
+    ...overrides,
+  });
+  const fit = (overrides = {}) => ({ a: 1.21, b: 14.3, n: 48, mad: 0.3, fittedAt: '2024-01-01T10:00:00.000Z', ...overrides });
+
+  let warn;
+  beforeEach(() => {
+    _reset();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  it('accepts a forecast with and without a fit', () => {
+    expect(() => validateData(makeValidData({ priceForecast: forecast() }))).not.toThrow();
+    expect(() => validateData(makeValidData({ priceForecast: forecast({ fit: fit() }) }))).not.toThrow();
+  });
+
+  it('rejects malformed forecasts on write', () => {
+    const cases = [
+      [null, 'priceForecast: must be an object'],
+      [[], 'priceForecast: must be an object'],
+      [forecast({ fetchedAt: 'soon' }), 'priceForecast.fetchedAt: must be a valid timestamp'],
+      [forecast({ fetchedAt: 1 }), 'priceForecast.fetchedAt: must be a valid timestamp'],
+      [forecast({ publishedEnd: undefined }), 'priceForecast.publishedEnd: must be a valid timestamp'],
+      [forecast({ region: 'XX' }), 'priceForecast.region: must be one of'],
+      [forecast({ series: null }), 'priceForecast.series: must be an object'],
+      [forecast({ series: { start: '2024-01-01T00:00:00Z', step: 60, values: [1] } }), "priceForecast.series: 'step' must be 15"],
+      [forecast({ series: { start: '2024-01-01T00:00:00Z', values: [1] } }), "priceForecast.series: 'step' must be 15"],
+      [forecast({ series: { start: '2024-01-01T00:00:00Z', step: 15, values: [1, null] } }), 'priceForecast.series: values[1] is not a finite number'],
+      [forecast({ fit: null }), 'priceForecast.fit: must be an object'],
+      [forecast({ fit: [] }), 'priceForecast.fit: must be an object'],
+      [forecast({ fit: fit({ a: Number.NaN }) }), 'priceForecast.fit.a: must be a finite number'],
+      [forecast({ fit: fit({ b: '1' }) }), 'priceForecast.fit.b: must be a finite number'],
+      [forecast({ fit: fit({ mad: null }) }), 'priceForecast.fit.mad: must be a finite number'],
+      [forecast({ fit: fit({ n: 1.5 }) }), 'priceForecast.fit.n: must be a whole number ≥ 0'],
+      [forecast({ fit: fit({ n: -1 }) }), 'priceForecast.fit.n: must be a whole number ≥ 0'],
+      [forecast({ fit: fit({ fittedAt: '' }) }), 'priceForecast.fit.fittedAt: must be a valid timestamp'],
+    ];
+    for (const [pf, message] of cases) {
+      expect(() => validateData(makeValidData({ priceForecast: pf })), message).toThrow(message);
+    }
+  });
+
+  it('drops an invalid stored forecast on load with a warning instead of failing', async () => {
+    _set(DATA_PATH, makeValidData({ priceForecast: forecast({ region: 'XX' }) }));
+    const data = await loadData();
+    expect(data.priceForecast).toBeUndefined();
+    expect(data.soc.value).toBe(50);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropping the stored price forecast'));
+  });
+
+  it('round-trips a valid forecast through updateData', async () => {
+    _set(DATA_PATH, makeValidData());
+    await updateData(current => ({ ...current, priceForecast: forecast({ fit: fit() }) }));
+    expect((await loadData()).priceForecast).toEqual(forecast({ fit: fit() }));
+  });
+});
+
+describe('importPricePublishedUntil', () => {
+  const DATA_PATH = '/tmp/test-data/data.json';
+  let warn;
+  beforeEach(() => {
+    _reset();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  it('accepts an absent or ISO value', () => {
+    expect(() => validateData(makeValidData())).not.toThrow();
+    expect(() => validateData(makeValidData({ importPricePublishedUntil: '2024-01-02T23:00:00.000Z' }))).not.toThrow();
+  });
+
+  it('rejects a non-timestamp on write', () => {
+    for (const value of ['later', 5, null]) {
+      expect(() => validateData(makeValidData({ importPricePublishedUntil: value })))
+        .toThrow('Invalid importPricePublishedUntil: must be a valid timestamp');
+    }
+  });
+
+  it('drops an invalid stored value on load with a warning', async () => {
+    _set(DATA_PATH, makeValidData({ importPricePublishedUntil: 'later' }));
+    const data = await loadData();
+    expect(data.importPricePublishedUntil).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('importPricePublishedUntil'));
+  });
+});

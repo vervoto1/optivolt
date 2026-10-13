@@ -1,6 +1,6 @@
 import { SOLUTION_COLORS } from "./charts.js";
 import { escapeHtml, findEvTargetRow } from "./utils.js";
-import { fmtZonedDDMM, fmtZonedHHMM, isZonedMidnight } from "./time-zone.js";
+import { fmtZonedDDMM, fmtZonedHHMM, fmtZonedWeekday, isZonedMidnight, spansMultipleDays } from "./time-zone.js";
 
 /**
  * Render the results table and unit label.
@@ -34,13 +34,29 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
       ? rows.findIndex(r => r.timestampMs >= departureMs)
       : -1;
 
-  const timesDisp = rows.map((row) => {
+  // Past 24 hours a clock time repeats: midnight rows then name the weekday
+  // and every time cell says its day on hover.
+  const multiDay = spansMultipleDays(rows.map(r => r.timestampMs));
+  const midnightRows = rows.map(row => isZonedMidnight(row.timestampMs));
+  const timesDisp = rows.map((row, ri) => {
     // If minutes and hours are 0, it's midnight -> show Date
-    if (isZonedMidnight(row.timestampMs)) {
-      return fmtZonedDDMM(row.timestampMs);
+    if (midnightRows[ri]) {
+      const date = fmtZonedDDMM(row.timestampMs);
+      return multiDay ? `${fmtZonedWeekday(row.timestampMs)} ${date}` : date;
     }
     return fmtZonedHHMM(row.timestampMs);
   });
+  const timeTips = rows.map(row => {
+    const tip = multiDay
+      ? `${fmtZonedWeekday(row.timestampMs)} ${fmtZonedDDMM(row.timestampMs)} ${fmtZonedHHMM(row.timestampMs)}`
+      : "";
+    return row.priceForecast ? `${tip ? `${tip} · ` : ""}forecast price, not sent to Victron` : tip;
+  });
+
+  // Forecast-priced rows have no DESS decision and no PV-curtailment
+  // decision: their columns show an em dash.
+  const NOT_SENT = { text: "—", tip: "Forecast price: not sent to Victron" };
+  const isForecast = (ri) => rows[ri]?.priceForecast === true;
 
   const hasEv = rows.some(r => (Number(r.ev_charge) || 0) > 0 || (Number(r.ev_soc_percent) || 0) > 0);
 
@@ -64,7 +80,7 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     {
       key: "pv_control",
       headerHtml: "PV<br>ctrl",
-      fmt: (_, ri) => fmtPvControl(rows[ri]?.pvControl),
+      fmt: (_, ri) => (isForecast(ri) ? NOT_SENT : fmtPvControl(rows[ri]?.pvControl)),
       tip: "PV disable decision",
       cellTip: true,
     },
@@ -114,14 +130,14 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
       {
         key: "dess_strategy",
         headerHtml: "DESS<br>strategy",
-        fmt: (_, ri) => fmtDessStrategy(rows[ri]?.dess?.strategy),
+        fmt: (_, ri) => (isForecast(ri) ? NOT_SENT : fmtDessStrategy(rows[ri]?.dess?.strategy)),
         tip: 'DESS strategy: TS=Target SoC, SC=Self-consumption, PB=Pro battery, PG=Pro grid',
         cellTip: true,
       },
       {
         key: "dess_restrictions",
         headerHtml: "Restr.",
-        fmt: (_, ri) => fmtDessRestrictions(rows[ri]?.dess?.restrictions),
+        fmt: (_, ri) => (isForecast(ri) ? NOT_SENT : fmtDessRestrictions(rows[ri]?.dess?.restrictions)),
         tip: 'Grid↔battery restrictions',
         cellTip: true,
       },
@@ -129,6 +145,7 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
         key: "dess_feedin",
         headerHtml: "Feed-in",
         fmt: (_, ri) => {
+          if (isForecast(ri)) return "—";
           const d = rows[ri]?.dess;
           return fmtDessFeedin(d?.feedin);
         },
@@ -139,6 +156,7 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
       key: "dess_soc_target",
       headerHtml: "Soc→",
       fmt: (_, ri) => {
+        if (isForecast(ri)) return "—";
         const targetPct = rows[ri]?.dess?.socTarget_percent;
         return intThin(targetPct) + "%";
       },
@@ -152,16 +170,24 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     "g2b", "b2g", "ev_charge", "imp", "exp", "importCost_cents", "exportCost_cents",
   ]);
 
-  const totals = {};
-  for (const key of SUMMABLE_KEYS) {
-    totals[key] = rows.reduce((sum, r) => sum + (Number(r[key]) || 0), 0);
-  }
+  // The Σ row adds up the firm (published-price) rows; forecast-priced rows
+  // get their own Σ line, so plan costs are never mixed with estimates.
+  const sumRows = (subset) => {
+    const totals = {};
+    for (const key of SUMMABLE_KEYS) {
+      totals[key] = subset.reduce((sum, r) => sum + (Number(r[key]) || 0), 0);
+    }
+    return totals;
+  };
+  const forecastRows = rows.filter(r => r.priceForecast === true);
+  const hasForecast = forecastRows.length > 0;
+  const firmTotals = sumRows(hasForecast ? rows.filter(r => r.priceForecast !== true) : rows);
 
-  const totalsRow = cols.map((c, ci) => {
+  const totalsRow = (totals, { badgeTitle, badgeCls }) => cols.map((c, ci) => {
     const baseCls = "px-2 py-1.5 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900";
     // Time column: Σ badge
     if (ci === 0) {
-      return `<th class="${baseCls}" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200/80 dark:bg-slate-700/60 text-[9px] font-bold text-slate-400 dark:text-slate-500" title="Column totals">Σ</span></th>`;
+      return `<th class="${baseCls}" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full ${badgeCls} text-[9px] font-bold text-slate-400 dark:text-slate-500" title="${badgeTitle}">Σ</span></th>`;
     }
     if (!SUMMABLE_KEYS.has(c.key)) {
       return `<th class="${baseCls}"></th>`;
@@ -184,6 +210,18 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     return `<th class="${baseCls} text-right font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400" scope="col">${displayVal}</th>`;
   }).join("");
 
+  const FIRM_BADGE = "bg-slate-200/80 dark:bg-slate-700/60";
+  const firmTotalsRow = totalsRow(firmTotals, {
+    badgeTitle: hasForecast ? "Column totals, published prices" : "Column totals",
+    badgeCls: FIRM_BADGE,
+  });
+  const forecastTotalsRow = hasForecast
+    ? totalsRow(sumRows(forecastRows), {
+      badgeTitle: "Column totals, forecast prices",
+      badgeCls: "border border-dashed border-slate-400 dark:border-slate-500",
+    })
+    : "";
+
   const thead = `
     <thead>
       <tr class="align-bottom">
@@ -191,20 +229,23 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     `<th class="px-2 py-2 border-b text-[10px] font-semibold uppercase tracking-wider text-right align-bottom border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900 text-slate-400 dark:text-slate-500" ${c.tip ? `title="${escapeHtml(c.tip)}"` : ""}>${c.headerHtml}</th>`
   ).join("")}
       </tr>
-      <tr class="border-t border-slate-100 dark:border-slate-800/60">${totalsRow}</tr>
+      <tr class="border-t border-slate-100 dark:border-slate-800/60">${firmTotalsRow}</tr>
+      ${hasForecast ? `<tr class="border-t border-slate-100 dark:border-slate-800/60" data-forecast-totals>${forecastTotalsRow}</tr>` : ""}
     </thead>`;
 
   const tbody = `
     <tbody>
       ${rows.map((r, ri) => {
     const timeLabel = cols[0].fmt(null, ri); // "time" column
-    const isMidnightRow = /^\d{2}\/\d{2}$/.test(timeLabel);
+    const isMidnightRow = midnightRows[ri];
 
     const tds = cols.map(c => {
       const raw = c.key === "time" ? null : r[c.key];
       const displayVal = c.key === "time" ? timeLabel : c.fmt(raw, ri);
       const isObj = typeof displayVal === "object";
-      const cellTitle = c.cellTip && isObj ? ` title="${escapeHtml(displayVal.tip)}"` : "";
+      const cellTitle = c.cellTip && isObj
+        ? ` title="${escapeHtml(displayVal.tip)}"`
+        : c.key === "time" && timeTips[ri] ? ` title="${escapeHtml(timeTips[ri])}"` : "";
       const cellText = isObj ? displayVal.text : displayVal;
       // Merge flow-cell background style with per-value inline style (e.g. icon color)
       const bgStyle = styleForCell(c.key, raw);
@@ -221,7 +262,11 @@ export function renderTable({ rows, cfg, targets, showKwh, showDess = false, reb
     const isRebalancing = rebalanceWindow != null && ri >= rebalanceWindow.startIdx && ri <= rebalanceWindow.endIdx;
     const rowBg = isRebalancing ? "bg-sky-100 dark:bg-sky-900/50" : "";
     const isDeparture = ri === departureIdx;
-    return `<tr class="border-b border-slate-100/70 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 ${rowBg}${isDeparture ? ' ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/50' : ''}">${tds}</tr>`;
+    // Forecast rows are muted; the first one carries a dashed top edge.
+    const forecastCls = !isForecast(ri)
+      ? ""
+      : ` text-slate-500 dark:text-slate-400${isForecast(ri - 1) ? "" : " border-t-2 border-dashed border-t-slate-400 dark:border-t-slate-500"}`;
+    return `<tr class="border-b border-slate-100/70 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 ${rowBg}${isDeparture ? ' ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/50' : ''}${forecastCls}"${isForecast(ri) ? " data-forecast" : ""}>${tds}</tr>`;
   }).join("")}
     </tbody>`;
 

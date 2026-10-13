@@ -8,6 +8,9 @@ import {
   expandHourlyTo15Min,
   buildTemperatureUrl,
   parseTemperatureResponse,
+  forecastNullTimes,
+  spliceIrradiance,
+  EXTENDED_FORECAST_MODEL,
 } from '../../lib/open-meteo.ts';
 
 // ---------------------------------------------------------------------------
@@ -371,5 +374,79 @@ describe('parseTemperatureResponse', () => {
   it('throws on a response without hourly temperature data', () => {
     expect(() => parseTemperatureResponse({})).toThrow('no hourly temperature_2m');
     expect(() => parseTemperatureResponse({ hourly: { time: [] } })).toThrow('no hourly temperature_2m');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forecastNullTimes / spliceIrradiance (extended planning window)
+// ---------------------------------------------------------------------------
+
+describe('forecastNullTimes', () => {
+  it('lists hourly interval starts (shifted back 1 h like the parser) with no radiation', () => {
+    const data = {
+      hourly: {
+        time: ['2026-10-13T12:00', '2026-10-13T13:00', '2026-10-13T14:00', '2026-10-13T15:00'],
+        shortwave_radiation: [300, null, 0, undefined],
+      },
+    };
+    const records = parseForecastResponse(data, 60);
+    expect(forecastNullTimes(data, 60)).toEqual([records[1].time, records[3].time]);
+    expect(records[1].ghi_W_per_m2).toBe(0); // the parser reads the null as 0
+    expect(forecastNullTimes(data, 60)[0]).toBe(Date.parse('2026-10-13T12:00:00Z'));
+  });
+
+  it('lists 15-minute interval starts unshifted, including non-finite values', () => {
+    const data = {
+      minutely_15: {
+        time: ['2026-10-13T12:00', '2026-10-13T12:15', '2026-10-13T12:30'],
+        shortwave_radiation: [400, NaN, null],
+      },
+    };
+    expect(forecastNullTimes(data, 15)).toEqual([
+      Date.parse('2026-10-13T12:15:00Z'),
+      Date.parse('2026-10-13T12:30:00Z'),
+    ]);
+  });
+});
+
+describe('spliceIrradiance', () => {
+  const rec = (iso, ghi, model) => ({ time: Date.parse(iso), hour: new Date(iso).getUTCHours(), ghi_W_per_m2: ghi, intervalMinutes: 60, model });
+  const d2 = {
+    records: [
+      rec('2026-10-13T10:00:00Z', 100, 'd2'),
+      rec('2026-10-13T11:00:00Z', 0, 'd2'), // a null inside the range (kept)
+      rec('2026-10-13T12:00:00Z', 200, 'd2'),
+      rec('2026-10-13T13:00:00Z', 0, 'd2'), // past the range
+      rec('2026-10-13T14:00:00Z', 0, 'd2'),
+    ],
+    nullTimes: [Date.parse('2026-10-13T11:00:00Z'), Date.parse('2026-10-13T13:00:00Z'), Date.parse('2026-10-13T14:00:00Z')],
+  };
+  const seamless = {
+    records: [
+      rec('2026-10-13T10:00:00Z', 999, 's'),
+      rec('2026-10-13T12:00:00Z', 999, 's'),
+      rec('2026-10-13T13:00:00Z', 300, 's'),
+      rec('2026-10-13T14:00:00Z', 0, 's'),
+      rec('2026-10-13T15:00:00Z', 50, 's'),
+    ],
+    nullTimes: [Date.parse('2026-10-13T12:00:00Z'), Date.parse('2026-10-13T14:00:00Z')],
+  };
+
+  it('keeps ICON D2 up to its last value record for record and continues with the second model', () => {
+    const result = spliceIrradiance(d2, seamless);
+    expect(result.records.map(r => [new Date(r.time).toISOString().slice(11, 13), r.model])).toEqual([
+      ['10', 'd2'], ['11', 'd2'], ['12', 'd2'], ['13', 's'], ['14', 's'], ['15', 's'],
+    ]);
+    expect(result.records.slice(0, 3)).toEqual(d2.records.slice(0, 3));
+    expect(result.nullTimes).toEqual([Date.parse('2026-10-13T11:00:00Z'), Date.parse('2026-10-13T14:00:00Z')]);
+  });
+
+  it('uses the second model alone when ICON D2 has no value at all', () => {
+    const empty = { records: d2.records.slice(3), nullTimes: d2.nullTimes.slice(1) };
+    expect(spliceIrradiance(empty, seamless)).toEqual(seamless);
+  });
+
+  it('names ICON seamless as the extension model', () => {
+    expect(EXTENDED_FORECAST_MODEL).toBe('icon_seamless');
   });
 });

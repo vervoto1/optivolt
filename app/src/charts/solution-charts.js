@@ -3,11 +3,14 @@ import {
   ttHeader, ttRow, ttSection, ttDivider, ttPrices,
 } from '../chart-tooltip.js';
 import { SOLUTION_COLORS, dim, toRGBA } from './colors.js';
+import { evSocPoint } from '../utils.js';
 import { buildTimeAxisFromTimestamps, dsBar, getBaseOptions, getChartTheme, renderChart } from './core.js';
 import { makeEvDeparturePlugin, makeEvTargetPlugin } from './ev-annotations.js';
 import {
   BUY_PRICE_STRIP_TICK_PADDING,
+  firstForecastIndex,
   makeBuyPriceStripPlugin,
+  makeForecastBoundaryPlugin,
   makeNegativePriceInjectionPlugin,
   makeRebalancingPlugin,
 } from './overlays.js';
@@ -38,7 +41,8 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
       const posRows = flowSpecs.filter(s => s.sign === 1  && (row[s.key] || 0) !== 0);
       const negRows = flowSpecs.filter(s => s.sign === -1 && (row[s.key] || 0) !== 0);
 
-      let html = ttHeader(time, `SoC <strong>${Math.round(row.soc_percent)}%</strong>`);
+      const forecastNote = row.priceForecast ? " · forecast price" : "";
+      let html = ttHeader(time, `SoC <strong>${Math.round(row.soc_percent)}%</strong>${forecastNote}`);
 
       if (posRows.length) {
         html += ttSection("↑ Sources");
@@ -63,6 +67,29 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
       return html;
     },
   });
+}
+
+// Bars of forecast-priced slots are drawn fainter: those decisions are
+// provisional and never sent to Victron.
+export const FORECAST_BAR_ALPHA = 0.4;
+
+function fadeForecastBars(ds, rows, color) {
+  const faded = toRGBA(color, FORECAST_BAR_ALPHA);
+  const fadedHover = toRGBA(color, FORECAST_BAR_ALPHA * 0.6);
+  return {
+    ...ds,
+    backgroundColor: rows.map(r => (r.priceForecast ? faded : color)),
+    hoverBackgroundColor: rows.map(r => (r.priceForecast ? fadedHover : dim(color))),
+  };
+}
+
+/**
+ * Chart.js `segment.borderDash` callback: segments drawing a forecast-priced
+ * slot are dashed. A stepped line draws slot i's value on the segment from
+ * point i to point i+1, so the segment's start point decides.
+ */
+export function forecastSegmentDash(boundaryIdx, dash = [5, 4]) {
+  return (ctx) => (boundaryIdx > 0 && ctx.p0DataIndex >= boundaryIdx ? dash : undefined);
 }
 
 export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalanceWindow = null, evSettings = null, aggregateMinutes = null) {
@@ -94,16 +121,18 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
 
   const nonZeroKeys = new Set();
   for (const r of effectiveRows) for (const { key } of flowSpecs) if ((r[key] || 0) !== 0) nonZeroKeys.add(key);
+  const boundaryIdx = firstForecastIndex(effectiveRows);
   const datasets = flowSpecs
     .filter(spec => nonZeroKeys.has(spec.key))
-    .map(spec =>
-      dsBar(
+    .map(spec => {
+      const ds = dsBar(
         spec.label,
         effectiveRows.map(r => spec.sign * Math.abs(W2kWh(r[spec.key]))),
         spec.color,
         stackId
-      )
-    );
+      );
+      return boundaryIdx > 0 ? fadeForecastBars(ds, effectiveRows, spec.color) : ds;
+    });
 
   const plugins = rebalanceWindow
     ? [makeRebalancingPlugin(rebalanceWindow.startIdx, rebalanceWindow.endIdx)]
@@ -116,6 +145,8 @@ export function drawFlowsBarStackSigned(canvas, rows, stepSize_m = 15, rebalance
     ? makeEvDeparturePlugin(effectiveRows, evSettings.departureTime)
     : null;
   if (depPlugin) plugins.push(depPlugin);
+  const boundaryPlugin = makeForecastBoundaryPlugin(boundaryIdx);
+  if (boundaryPlugin) plugins.push(boundaryPlugin);
 
   renderChart(canvas, {
     type: "bar",
@@ -179,6 +210,8 @@ export function aggregateRows(rows, inputStep_m, targetStep_m) {
       agg.soc = last.soc;
       agg.soc_percent = last.soc_percent;
       agg.ev_soc_percent = last.ev_soc_percent;
+      // A bucket holding any forecast-priced slot is not firm.
+      if (group.some(r => r.priceForecast)) agg.priceForecast = true;
       return agg;
     });
 }
@@ -218,7 +251,7 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, 
   if (hasEvSoc) {
     datasets.push({
       label: "EV SoC (%)",
-      data: evRows.map(r => r.ev_soc_percent ?? 0),
+      data: evRows.map(evSocPoint),
       borderColor: SOLUTION_COLORS.ev_charge,
       backgroundColor: makeSocGradient(SOLUTION_COLORS.ev_charge),
       fill: 'origin',
@@ -236,6 +269,9 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, 
   const evTargetPlugin = (evSettings && hasEvSoc)
     ? makeEvTargetPlugin(rows, evSettings.departureTime, evSettings.targetSoc_percent)
     : null;
+  const socPlugins = evTargetPlugin ? [evTargetPlugin] : [];
+  const socBoundaryPlugin = makeForecastBoundaryPlugin(firstForecastIndex(rows));
+  if (socBoundaryPlugin) socPlugins.push(socBoundaryPlugin);
 
   renderChart(canvas, {
     type: "line",
@@ -253,6 +289,7 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, 
               const time = tooltip.title?.[0] ?? "";
               let html = ttHeader(time);
               for (const pt of (tooltip.dataPoints ?? [])) {
+                if (pt.raw == null) continue;
                 html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${Math.round(pt.raw)}%`);
               }
               return html;
@@ -264,7 +301,7 @@ export function drawSocChart(canvas, rows, _stepSize_m = 15, evSettings = null, 
       layout: hasEvSoc ? undefined : { padding: { bottom: 0 } },
       scales: { y: { max: 100 } }
     }),
-    plugins: evTargetPlugin ? [evTargetPlugin] : [],
+    plugins: socPlugins,
   });
 }
 
@@ -296,12 +333,18 @@ export function drawPricesStepLines(canvas, rows, _stepSize_m = 15) {
   const axis = buildTimeAxisFromTimestamps(timestampsMs);
   const strokeW = (axis.labels.length > 48) ? 1 : 2;
 
+  // Forecast-priced slots: dashed line from the firm boundary on.
+  const boundaryIdx = firstForecastIndex(rows);
   const commonLine = {
     stepped: true,
     borderWidth: strokeW,
     pointRadius: 0,
-    pointHitRadius: 8
+    pointHitRadius: 8,
+    ...(boundaryIdx > 0 ? { segment: { borderDash: forecastSegmentDash(boundaryIdx) } } : {}),
   };
+  const pricePlugins = [makePriceZeroLinePlugin()];
+  const priceBoundaryPlugin = makeForecastBoundaryPlugin(boundaryIdx);
+  if (priceBoundaryPlugin) pricePlugins.push(priceBoundaryPlugin);
 
   renderChart(canvas, {
     type: "line",
@@ -332,9 +375,9 @@ export function drawPricesStepLines(canvas, rows, _stepSize_m = 15) {
           intersect: false,
           enabled: false,
           external: createTooltipHandler({
-            renderContent: (_idx, tooltip) => {
+            renderContent: (idx, tooltip) => {
               const time = tooltip.title?.[0] ?? "";
-              let html = ttHeader(time);
+              let html = rows[idx]?.priceForecast ? ttHeader(time, "forecast price") : ttHeader(time);
               for (const pt of (tooltip.dataPoints ?? [])) {
                 html += ttRow(pt.dataset.borderColor, pt.dataset.label, `${pt.raw.toFixed(1)} c€/kWh`);
               }
@@ -345,7 +388,7 @@ export function drawPricesStepLines(canvas, rows, _stepSize_m = 15) {
         },
       },
     }),
-    plugins: [makePriceZeroLinePlugin()]
+    plugins: pricePlugins
   });
 }
 

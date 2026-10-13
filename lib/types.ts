@@ -164,6 +164,14 @@ export interface SolverConfig {
    * smallest feasible cap when the battery has sagged too far for slot 0.
    */
   rebalanceMaxStartSlot?: number;
+  /**
+   * Earliest slot index (inclusive) at which the rebalance hold window may
+   * start; absent = 0. Clamped to [0, the resolved latest start]. Set equal to
+   * `rebalanceMaxStartSlot` to fix the start exactly — the multi-day extended
+   * solve inherits the firm-only plan's start this way so it never searches
+   * the window (much faster than a cap alone).
+   */
+  rebalanceMinStartSlot?: number;
 
   // Constant Voltage phase: reduced charge power at high SoC
   cvPhaseThresholds?: CvPhaseThreshold[];
@@ -176,6 +184,36 @@ export interface SolverConfig {
 
   // Export-tariff diagnostics (ignored by buildLP)
   exportTariffInfo?: ExportTariffInfo;
+
+  // Multi-day horizon (plans/multi-day-horizon-plan.md). All optional: with
+  // `firmSlots` absent (or >= T) buildLP emits the single-horizon LP unchanged.
+  /**
+   * Number of firm (published-price, executable) slots at the start of the
+   * horizon; slots `t >= firmSlots` are priced with forecast prices and are
+   * never executed. Truncated and clamped to [1, T] by buildLP. When
+   * `firmSlots < T`, buildLP caps the slot-indexed tie-breaks at
+   * `firmSlots − 1`, relaxes every binary of the forecast slots (battery
+   * direction, CV/DP taper with running-minimum powers), freezes the floor
+   * ratchet at the boundary, keeps the rebalance hold inside the firm part
+   * (or defers it, see `resolveRebalanceWindow`), and confines the EV to firm
+   * slots (departure clamped to `firmSlots + 1`; no EV when its start is at or
+   * after `firmSlots`). parseSolution flags forecast rows `priceForecast: true`.
+   */
+  firmSlots?: number;
+  /**
+   * Reference SoC in Wh at the end of the firm part (slot `firmSlots − 1`),
+   * normally the firm-only plan's `rows[firmSlots − 1].soc`. Used with
+   * `carryOverMargin_cents_per_kWh` for the carry-over dead-band; ignored
+   * unless `firmSlots < T`.
+   */
+  socRef_Wh?: number;
+  /**
+   * Carry-over risk margin r (c€ per kWh of SoC, the `riskMargin_cents_per_kWh`
+   * setting). When `firmSlots < T`, `socRef_Wh` is finite and r > 0, buildLP
+   * charges r per kWh of |soc_{firmSlots−1} − socRef_Wh| (two-sided dead-band,
+   * variables `carry_dev_pos` / `carry_dev_neg`, row `c_carry_over`).
+   */
+  carryOverMargin_cents_per_kWh?: number;
 }
 
 export interface CvPhaseThreshold {
@@ -231,7 +269,8 @@ export interface PlanRow {
   ev_charge: number;    // total EV charge power W
   ev_charge_A: number;  // charge current A (ev_charge / (AC_PHASE_VOLTAGE_V * evChargePhases))
   ev_charge_mode: EvChargeMode;
-  ev_soc_percent: number;  // EV SoC %
+  /** EV SoC %; null on forecast rows (the EV is not modelled past the firm part). */
+  ev_soc_percent: number | null;
   /** Planning-semantics label (separate from ev_charge_mode). Optional: only meaningful for EV-active solves. */
   ev_plan_mode?: EvPlanMode;
   /** Shortfall vs requested target SoC at this slot's EV SoC, in Wh (0 when met). Set on the departure slot. */
@@ -244,6 +283,13 @@ export interface PlanRow {
    * none). Absent when the deadline lies beyond the horizon (no target enforced).
    */
   ev_target_soc_percent?: number;
+  /**
+   * Present (always `true`) only on rows at or after `SolverConfig.firmSlots`:
+   * the slot is priced with forecast prices and must never be written to
+   * Victron or acted on. Absent on firm rows and on every row of a
+   * single-horizon plan, so those payloads are unchanged.
+   */
+  priceForecast?: true;
 }
 
 /**
@@ -274,6 +320,58 @@ export interface DessSlot {
 export interface DessResult {
   perSlot: DessSlot[];
   diagnostics: DessDiagnostics;
+}
+
+/**
+ * Energy and cost totals over a set of plan rows (the summary's own totals
+ * fields, and the shape of `PlanSummary.forecast`).
+ */
+export interface PlanTotals {
+  loadTotal_kWh: number;
+  pvTotal_kWh: number;
+  evLoadTotal_kWh: number;
+  loadFromGrid_kWh: number;
+  loadFromBattery_kWh: number;
+  loadFromPv_kWh: number;
+  gridToBattery_kWh: number;
+  batteryToGrid_kWh: number;
+  pvCurtailed_kWh: number;
+  importEnergy_kWh: number;
+  importCost_cents: number;
+  exportCost_cents: number;
+  netGridCost_cents: number;
+  avgImportPrice_cents_per_kWh: number | null;
+  evChargeTotal_kWh: number;
+  evChargeFromGrid_kWh: number;
+  evChargeFromPv_kWh: number;
+  evChargeFromBattery_kWh: number;
+}
+
+/**
+ * Multi-day horizon status of a plan, for the UI (present only with
+ * `extendedHorizon.mode` `on`).
+ */
+export interface ExtendedHorizonSummary {
+  mode: 'on';
+  /** End (exclusive, ms) of the firm (published-price) part of the plan. */
+  firmEndMs: number;
+  /** End (exclusive, ms) of the plan: the extended end, or `firmEndMs` when firm-only. */
+  endMs: number;
+  /** Forecast-priced slots in the plan (0 when firm-only). */
+  extendedSlots: number;
+  /**
+   * Objective of the firm-only (published-price) solve, when it reported a
+   * finite one. With `status: 'extended'` the plan's own objective (`/calculate`
+   * `objectiveValue`) is the extended solve's, which also covers the forecast
+   * slots and the carry-over dead-band, so the two are not comparable.
+   */
+  firmObjective?: number;
+  /** The import fit `import = a·market + b` the forecast slots were priced with. */
+  fit?: { a: number; b: number; source: 'fresh' | 'stored' };
+  /** `extended`: the plan includes forecast slots; `firmOnly`: it is the published-price plan. */
+  status: 'extended' | 'firmOnly';
+  /** Why the plan is firm-only (absent when extended). */
+  reason?: string;
 }
 
 /**
@@ -310,4 +408,11 @@ export interface PlanSummary {
    * slot index the hold window was allowed to start at instead.
    */
   rebalanceHoldMaxStartSlot?: number;
+  /**
+   * Multi-day horizon only: totals of the forecast-priced rows. The fields
+   * above then cover the firm rows only. Absent when the plan has no forecast rows.
+   */
+  forecast?: PlanTotals;
+  /** Multi-day horizon status (present only with `extendedHorizon.mode` `on`). */
+  extendedHorizon?: ExtendedHorizonSummary;
 }

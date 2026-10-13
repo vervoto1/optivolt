@@ -66,6 +66,28 @@ describe('GET /ev/schedule branch coverage', () => {
     expect(res.body.slots[1].override_mode).toBe('idle');      // ic 50 > 10, no charge -> idle
   });
 
+  it('never annotates a forecast-priced slot (multi-day horizon) as low_price', async () => {
+    getLastPlan.mockReturnValue({
+      timing: { startMs: START_MS, stepMin: 15 },
+      rows: [
+        row({ ic: 5 }),
+        row({ ic: 2, ev_charge: 0, ev_charge_A: null, ev_soc_percent: null, priceForecast: true }),
+        row({ ic: 2, ev_charge: 1000, priceForecast: true }),
+      ],
+      summary: { evChargeTotal_kWh: 1, evChargeFromGrid_kWh: 1, evChargeFromPv_kWh: 0, evChargeFromBattery_kWh: 0 },
+    });
+    loadSettings.mockResolvedValue({
+      evLowPriceChargingEnabled: true,
+      evLowPriceChargingLevel_cents_per_kWh: 10,
+    });
+
+    const res = await get(evRouter, '/schedule');
+
+    expect(res.status).toBe(200);
+    expect(res.body.slots.map(s => s.override_mode)).toEqual(['low_price', 'idle', 'planned']);
+    expect(res.body.slots[1]).toMatchObject({ priceForecast: true, price_cents_per_kWh: 2 });
+  });
+
   it('uses planned/idle override modes when low-price charging is disabled', async () => {
     getLastPlan.mockReturnValue({
       timing: { startMs: START_MS, stepMin: 15 },

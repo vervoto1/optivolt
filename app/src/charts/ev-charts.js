@@ -5,6 +5,7 @@ import {
 import { SOLUTION_COLORS, dim } from './colors.js';
 import { buildTimeAxisFromTimestamps, dsBar, getBaseOptions, getChartTheme, renderChart } from './core.js';
 import { makeEvDeparturePlugin, makeEvTargetPlugin } from './ev-annotations.js';
+import { evSocPoint } from '../utils.js';
 
 export function drawEvPowerChart(canvas, rows, _stepSize_m = 15, evSettings = {}) {
   const timestampsMs = rows.map(r => r.timestampMs);
@@ -111,7 +112,7 @@ export function drawEvSocChartTab(canvas, rows, evSettings = {}) {
       labels: axis.labels,
       datasets: [{
         label: "EV SoC (%)",
-        data: rows.map(r => r.ev_soc_percent ?? 0),
+        data: rows.map(evSocPoint),
         borderColor: SOLUTION_COLORS.ev_charge,
         backgroundColor: SOLUTION_COLORS.ev_charge,
         borderWidth: 2,
@@ -134,7 +135,7 @@ export function drawEvSocChartTab(canvas, rows, evSettings = {}) {
               const time = tooltip.title?.[0] ?? "";
               const pt = tooltip.dataPoints?.[0];
               let html = ttHeader(time);
-              if (pt) html += ttRow(SOLUTION_COLORS.ev_charge, "EV SoC", `${Math.round(pt.raw)}%`);
+              if (pt && pt.raw != null) html += ttRow(SOLUTION_COLORS.ev_charge, "EV SoC", `${Math.round(pt.raw)}%`);
               return html;
             },
           }),

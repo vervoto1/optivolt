@@ -8,8 +8,8 @@
 import { fetchHaStats } from './ha-client.ts';
 import { hasPvCoordinates, MISSING_PV_COORDINATES_MESSAGE } from './pv-coordinates.ts';
 import { postprocess, aggregateTo15Min } from '../../lib/ha-postprocess.ts';
-import { fetchArchiveIrradiance, fetchForecastIrradiance } from './open-meteo-client.ts';
-import { expandHourlyTo15Min } from '../../lib/open-meteo.ts';
+import { fetchArchiveIrradiance, fetchExtendedForecastIrradiance, fetchForecastIrradiance } from './open-meteo-client.ts';
+import { expandHourlyTo15Min, OPEN_METEO_MAX_FORECAST_DAYS } from '../../lib/open-meteo.ts';
 /* v8 ignore start — import lines are module-load noise */
 import {
   calculateMaxProductionPerHour,
@@ -25,9 +25,15 @@ import {
   validatePvForecast,
 } from '../../lib/predict-pv.ts';
 /* v8 ignore stop */
-import type { PvProductionRecord, PvForecastPoint } from '../../lib/predict-pv.ts';
+import type { IrradianceRecord, PvProductionRecord, PvForecastPoint } from '../../lib/predict-pv.ts';
 import type { PredictionRunConfig, PvMode, PvModel } from '../types.ts';
-import { getForecastTimeRange, buildForecastSeries, type ForecastSeries } from '../../lib/time-series-utils.ts';
+import {
+  buildForecastSeries,
+  resolvePlanningWindow,
+  truncateAtFirstGap,
+  type ForecastSeries,
+  type PlanningWindowSettings,
+} from '../../lib/time-series-utils.ts';
 
 export interface PvForecastRunResult {
   forecast: ForecastSeries;
@@ -35,12 +41,58 @@ export interface PvForecastRunResult {
   recent: PvForecastPoint[];
   metrics: { mae: number; rmse: number; n: number };
   model: PvModel;
+  /** Set when the series ends before the planning window end (extended windows only). */
+  truncatedAt?: string;
+  /** Why the series ends at `truncatedAt`. */
+  truncationReason?: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Open-Meteo `forecast_days` for a forecast that must reach `windowEndMs`.
+ * With `timezone=GMT` the days count from the UTC midnight of today, not the
+ * local one, so (as for the temperature forecast) the count runs from there,
+ * +1 so the last local day is covered after the UTC day it starts in; capped
+ * at the API's 16 days.
+ */
+export function extendedForecastDays(nowMs: number, windowEndMs: number): number {
+  const todayStartUtc = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  return Math.min(OPEN_METEO_MAX_FORECAST_DAYS, Math.ceil((windowEndMs - todayStartUtc) / DAY_MS) + 1);
+}
+
+/**
+ * Forecast irradiance for the planning window. With the window not extended
+ * this is exactly today's ICON D2 request; extended, ICON seamless continues
+ * after ICON D2's last value, through `windowEndMs`. `coveredStarts` lists
+ * the interval starts that carry a real radiation value (null only when not
+ * extended: no cut applies).
+ */
+async function fetchWindowIrradiance(
+  latitude: number,
+  longitude: number,
+  resolution: 15 | 60,
+  window: { extended: boolean; nowMs: number; endMs: number },
+): Promise<{ records: IrradianceRecord[]; coveredStarts: Set<number> | null }> {
+  if (!window.extended) {
+    return { records: await fetchForecastIrradiance(latitude, longitude, undefined, resolution), coveredStarts: null };
+  }
+  const forecastDays = extendedForecastDays(window.nowMs, window.endMs);
+  const spliced = await fetchExtendedForecastIrradiance(latitude, longitude, resolution, forecastDays);
+  if (spliced.extensionError) {
+    console.warn(`[predict] ICON seamless irradiance unavailable, PV forecast limited to ICON D2: ${spliced.extensionError}`);
+  }
+  const nulls = new Set(spliced.nullTimes);
+  return {
+    records: spliced.records,
+    coveredStarts: new Set(spliced.records.map(rec => rec.time).filter(t => !nulls.has(t))),
+  };
 }
 
 /**
  * Run the full PV forecast pipeline.
  */
-export async function runPvForecast(config: PredictionRunConfig): Promise<PvForecastRunResult> {
+export async function runPvForecast(config: PredictionRunConfig & PlanningWindowSettings): Promise<PvForecastRunResult> {
   const { haUrl, haToken, sensors, derived, pvConfig } = config;
 
   if (!pvConfig) {
@@ -66,6 +118,7 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
 
   // 1. Compute date range (before fetching, so all I/O can be parallelized)
   const endTime = new Date();
+  const window = resolvePlanningWindow(config, endTime.getTime());
   // HA 5-min statistics have ~10 day retention; clamp for 15min mode.
   const effectiveHistoryDays = is15MinMode ? Math.min(historyDays, 10) : historyDays;
   const startTime = new Date(endTime.getTime() - effectiveHistoryDays * 24 * 60 * 60 * 1000);
@@ -73,7 +126,7 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
   const endDate = endTime.toISOString().slice(0, 10);
 
   // 2. Fetch HA history, archive irradiance, and forecast irradiance in parallel
-  const [rawData, archiveIrradiance, forecastIrradiance] = await Promise.all([
+  const [rawData, archiveIrradiance, windowIrradiance] = await Promise.all([
     fetchHaStats({
       haUrl,
       haToken,
@@ -82,8 +135,13 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
       period: is15MinMode ? '5minute' : 'hour',
     }),
     fetchArchiveIrradiance(latitude, longitude, startDate, endDate),
-    fetchForecastIrradiance(latitude, longitude, undefined, forecastResolution),
+    fetchWindowIrradiance(latitude, longitude, forecastResolution, {
+      extended: window.extended,
+      nowMs: endTime.getTime(),
+      endMs: Date.parse(window.endIso),
+    }),
   ]);
+  const forecastIrradiance = windowIrradiance.records;
 
   let data = postprocess(rawData, sensors, derived);
   if (is15MinMode) {
@@ -158,14 +216,28 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
 
   // 6. Build 15-min series for the solver (from future points only)
   const now = new Date();
-  const { startIso, endIso } = getForecastTimeRange(now.getTime());
+  const { startIso, endIso, baseEndIso } = resolvePlanningWindow(config, now.getTime());
 
   const mappedFuturePoints = futurePoints.map(p => ({
     time: p.time,
     // v8 ignore next — null path of ?? is already tested, v8 double-counts
     value: p.predicted ?? 0
   }));
-  const forecast = buildForecastSeries(mappedFuturePoints, startIso, endIso, forecastResolution);
+  let forecast = buildForecastSeries(mappedFuturePoints, startIso, endIso, forecastResolution);
+  let truncation: { truncatedAt: string; truncationReason: string } | null = null;
+  const covered = windowIrradiance.coveredStarts;
+  if (covered) {
+    // Past the old window end a slot without irradiance ends the series
+    // rather than reading as 0 W (see truncateAtFirstGap).
+    const bucketMs = forecastResolution * 60_000;
+    const cut = truncateAtFirstGap(forecast, baseEndIso, slotMs =>
+      covered.has(Math.floor(slotMs / bucketMs) * bucketMs) ? null : 'no irradiance forecast for this slot');
+    forecast = cut.series;
+    if (cut.truncatedAt) {
+      truncation = { truncatedAt: cut.truncatedAt, truncationReason: cut.reason! };
+      console.warn(`[predict] PV forecast ends at ${cut.truncatedAt}, before the planning window end ${endIso}: ${cut.reason}`);
+    }
+  }
 
   // 7. Split: future points for forecast chart, archive points for validation chart
   const nowMs = now.getTime();
@@ -187,5 +259,5 @@ export async function runPvForecast(config: PredictionRunConfig): Promise<PvFore
   // 8. Validation metrics
   const metrics = validatePvForecast(recent);
 
-  return { forecast, points, recent, metrics, model: pvModel };
+  return { forecast, points, recent, metrics, model: pvModel, ...truncation };
 }

@@ -3,6 +3,7 @@ import type { PvCurtailmentSlot } from '../lib/pv-curtailment.ts';
 import type { DayFilter, Aggregation } from '../lib/load-predictor-historical.ts';
 import type { SelectionMetric, SelectionReason, StrategyScore } from '../lib/strategy-selector.ts';
 import type { HaSensor, HaDerivedSensor } from '../lib/ha-postprocess.ts';
+import type { PriceForecastRegion } from '../lib/price-forecast.ts';
 
 export type { TimeSeries };
 
@@ -53,6 +54,7 @@ export interface Settings {
   shoreOptimizer?: ShoreOptimizerConfig;
   pvCurtailment?: PvCurtailmentConfig;
   exportTariff?: ExportTariffConfig;
+  extendedHorizon?: ExtendedHorizonConfig;
   cvPhase?: CvPhaseConfig;
   batteryChargeControl?: BatteryChargeControlConfig;
   batteryBalanceControl?: BatteryBalanceControlConfig;
@@ -339,6 +341,36 @@ export interface ExportTariffConfig {
   terminalTail_h: number;
 }
 
+export type { PriceForecastRegion };
+
+/**
+ * `off`: no forecast is fetched. `collect`: the price forecast is fetched and
+ * logged (and load/PV extended) but plans are unchanged. `on`: the plan is
+ * also extended with forecast-priced days.
+ */
+export type ExtendedHorizonMode = 'off' | 'collect' | 'on';
+
+/**
+ * Multi-day planning horizon with forecast market prices after the published
+ * day-ahead prices (plans/multi-day-horizon-plan.md). A settings object
+ * without this block behaves as `mode: "off"`.
+ */
+export interface ExtendedHorizonConfig {
+  mode: ExtendedHorizonMode;
+  /** Days planned past the local midnight at or after the firm end (1–4). */
+  extraDays: number;
+  /** Base URL of the EpexPredictor feed: http(s), no credentials. */
+  forecastUrl: string;
+  /** Bidding zone requested from the feed. */
+  region: PriceForecastRegion;
+  /** Fallback slope (1 + VAT) of the import fit when the overlap's spread is too small. */
+  importVat_percent: number;
+  /** Dead-band on the carry-over at the firm boundary, in c/kWh (≥ 0). Not a price shift. */
+  riskMargin_cents_per_kWh: number;
+  /** Background refresh interval of the forecast, in minutes (≥ 30, with jitter). */
+  refreshMinutes: number;
+}
+
 export interface ShoreOptimizerConfig {
   enabled: boolean;
   dryRun: boolean;
@@ -400,10 +432,44 @@ export interface PredictionAdjustment {
   updatedAt: string;
 }
 
+/** Last accepted import fit `import = a·market + b` (written by the forecast pricing). */
+export interface PriceForecastFit {
+  a: number;
+  b: number;
+  /** Overlap points the fit used. */
+  n: number;
+  /** Median absolute residual, c/kWh. */
+  mad: number;
+  /** ISO timestamp of the fit. */
+  fittedAt: string;
+}
+
+/**
+ * The stored market price forecast (server-derived, never in settings). Only
+ * the background refresh writes `fetchedAt`/`publishedEnd`/`region`/`series`
+ * and it keeps `fit` across refreshes.
+ */
+export interface PriceForecastData {
+  /** ISO timestamp of the fetch; older than 12 h counts as missing. */
+  fetchedAt: string;
+  /** ISO end of the published (EPEX) prices in the feed: `knownUntil` + 15 min. */
+  publishedEnd: string;
+  /** Bidding zone the forecast was fetched for. */
+  region: PriceForecastRegion;
+  /** Market price, c/kWh ex VAT, 15-minute slots, as fetched (from local midnight). */
+  series: TimeSeries;
+  fit?: PriceForecastFit;
+}
+
 export interface Data {
   load: TimeSeries;
   pv: TimeSeries;
   importPrice: TimeSeries;
+  /**
+   * VRM prices only: end (exclusive, ISO) of the last slot VRM returned a buy
+   * price for; `importPrice` is zero-filled after it. Absent for other sources.
+   */
+  importPricePublishedUntil?: string;
   exportPrice: TimeSeries;
   /** Bare market price in c€/kWh (excl. VAT and tax); the export value once net metering ends. */
   marketPrice?: TimeSeries;
@@ -412,6 +478,7 @@ export interface Data {
   rebalanceState?: RebalanceState;
   evLoad?: TimeSeries;
   predictionAdjustments?: PredictionAdjustment[];
+  priceForecast?: PriceForecastData;
 }
 
 // ----------------------------- Plan rows with DESS ----------------------
