@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.75 - 2026-10-14
+
+- **The plan's warnings box is titled "Plan warnings"** instead of "Stale data detected". The box also lists export-tariff and multi-day horizon messages, such as "Multi-day horizon not used: the price forecast is missing — planning with published prices only", which are not about stale data; each message already says what is wrong. UI text only.
+
 ## 0.7.74 - 2026-10-13
 
 - **OptiVolt waits for the local EpexPredictor add-on while it trains.** The add-on answers a forecast request only after it has trained, which took about 3½ minutes on the first start in production (13 regions) and repeats when new data arrives. OptiVolt gave up after 10 s (two attempts) and then waited 30 minutes before trying again, so the first forecast, and the first one after each retrain, arrived up to half an hour late. When `forecastUrl` resolves to the local add-on (`auto`), the request now waits up to 5 minutes, in a single attempt. The fetch runs in the background and never holds up a plan. The public server and typed URLs keep the 10 s timeout with 2 attempts.
