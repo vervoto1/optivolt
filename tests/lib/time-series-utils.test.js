@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractWindow, getQuarterStart, getNextQuarterStart, buildForecastSeries, sampleSeriesAt } from '../../lib/time-series-utils.ts';
+import { extractWindow, getQuarterStart, getNextQuarterStart, buildForecastSeries, sampleSeriesAt, firstNonFiniteIndex } from '../../lib/time-series-utils.ts';
 
 describe('Time Series Utils', () => {
   describe('getQuarterStart', () => {
@@ -198,5 +198,19 @@ describe('buildForecastSeries', () => {
     const series = buildForecastSeries(points, start, end, 60);
     expect(series.values).toHaveLength(4);
     expect(series.values).toEqual([500, 500, 500, 500]);
+  });
+});
+
+describe('firstNonFiniteIndex', () => {
+  it('returns -1 when every value is a finite number', () => {
+    expect(firstNonFiniteIndex([0, -1.5, 2e6])).toBe(-1);
+    expect(firstNonFiniteIndex([])).toBe(-1);
+  });
+
+  it('returns the index of the first NaN, infinity, null or non-number', () => {
+    expect(firstNonFiniteIndex([1, NaN, null])).toBe(1);
+    expect(firstNonFiniteIndex([1, 2, Infinity])).toBe(2);
+    expect(firstNonFiniteIndex([null, 1])).toBe(0);
+    expect(firstNonFiniteIndex([1, '2'])).toBe(1);
   });
 });

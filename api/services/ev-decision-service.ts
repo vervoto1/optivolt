@@ -43,14 +43,19 @@ export interface LastPlanLike {
   timing: { startMs: number; stepMin: number };
 }
 
-/** Find the plan row covering `nowMs` (last row whose timestamp is ≤ now). */
-function currentRow(rows: PlanRow[], nowMs: number): PlanRow | null {
+/**
+ * Find the plan row covering `nowMs` (last row whose timestamp is ≤ now; the
+ * first row when every row is later). A forecast-priced row (multi-day
+ * horizon, reached by a stale plan) is never acted on: it reads as no current
+ * slot (null), as does an empty plan. Also used by `GET /ev/current`.
+ */
+export function currentRow(rows: PlanRow[], nowMs: number): PlanRow | null {
   if (rows.length === 0) return null;
   let row = rows[0];
   for (let i = rows.length - 1; i >= 0; i--) {
     if (rows[i].timestampMs <= nowMs) { row = rows[i]; break; }
   }
-  return row;
+  return row.priceForecast ? null : row;
 }
 
 /**

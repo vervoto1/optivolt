@@ -22,6 +22,7 @@ import {
   updateTerminalCustomUI,
 } from "./src/state.js";
 import { updateExportTariffUI } from "./src/export-tariff.js";
+import { updateExtendedHorizonUI } from "./src/extended-horizon.js";
 import { setupSettingsSubtabs } from "./src/settings-subtabs.js";
 
 // ---------- Helpers ----------
@@ -187,6 +188,7 @@ async function boot() {
     onFlowsAggregationChange: optimizer.onFlowsAggregationChange,
     updateTerminalCustomUI: () => updateTerminalCustomUI(els),
     updateExportTariffUI: () => updateExportTariffUI(els),
+    updateExtendedHorizonUI: () => updateExtendedHorizonUI(els),
   });
   // The export-tariff status changes with time (at the switch instant).
   setInterval(() => updateExportTariffUI(els), 60_000);

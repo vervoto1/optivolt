@@ -4,7 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
-import { fetchArchiveIrradiance, fetchForecastIrradiance, fetchTemperatureSeries } from '../../../api/services/open-meteo-client.ts';
+import {
+  fetchArchiveIrradiance,
+  fetchExtendedForecastIrradiance,
+  fetchForecastIrradiance,
+  fetchTemperatureSeries,
+} from '../../../api/services/open-meteo-client.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -307,5 +312,95 @@ describe('fetchTemperatureSeries', () => {
   it('throws an Open-Meteo error on a non-ok response', async () => {
     mockFetch.mockResolvedValue(makeErrorResponse(429));
     await expect(fetchTemperatureSeries(52.1, 5.2, 30, 2)).rejects.toThrow('Open-Meteo temperature request returned status 429');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchExtendedForecastIrradiance (ICON D2 + ICON seamless splice)
+// ---------------------------------------------------------------------------
+
+describe('fetchExtendedForecastIrradiance', () => {
+  const TODAY_HOURLY_URL = 'https://api.open-meteo.com/v1/forecast?latitude=51.05&longitude=3.71'
+    + '&hourly=shortwave_radiation,direct_radiation,diffuse_radiation&models=icon_d2&timezone=GMT&past_days=1&forecast_days=2';
+  const d2Hourly = {
+    hourly: {
+      time: ['2026-10-13T12:00', '2026-10-13T13:00', '2026-10-13T14:00'],
+      shortwave_radiation: [600, 0, null],
+    },
+  };
+  const seamlessHourly = {
+    hourly: {
+      time: ['2026-10-13T12:00', '2026-10-13T13:00', '2026-10-13T14:00', '2026-10-13T15:00', '2026-10-13T16:00'],
+      shortwave_radiation: [1, 2, 300, null, 100],
+    },
+  };
+  const routeFetch = (byModel) => mockFetch.mockImplementation(async (url) => {
+    const model = /models=([a-z0-9_]+)/.exec(url)[1];
+    const body = byModel[model];
+    if (body instanceof Error) throw body;
+    return typeof body === 'number' ? makeErrorResponse(body) : makeOkResponse(body);
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('requests ICON D2 exactly as fetchForecastIrradiance does, plus ICON seamless for forecastDays', async () => {
+    routeFetch({ icon_d2: d2Hourly, icon_seamless: seamlessHourly });
+    await fetchExtendedForecastIrradiance(51.05, 3.71, 60, 5);
+    const urls = mockFetch.mock.calls.map(c => c[0]);
+
+    mockFetch.mockClear();
+    routeFetch({ icon_d2: d2Hourly });
+    await fetchForecastIrradiance(51.05, 3.71, undefined, 60);
+    const today = mockFetch.mock.calls[0][0];
+
+    expect(today).toBe(TODAY_HOURLY_URL);
+    expect(urls).toEqual([today, today.replace('models=icon_d2', 'models=icon_seamless').replace('forecast_days=2', 'forecast_days=5')]);
+  });
+
+  it('splices ICON seamless in after the last ICON D2 value and reports the remaining nulls', async () => {
+    routeFetch({ icon_d2: d2Hourly, icon_seamless: seamlessHourly });
+    const result = await fetchExtendedForecastIrradiance(51.05, 3.71, 60, 5);
+    // Hourly labels are backward-averaged: 12:00 covers 11:00–12:00.
+    expect(result.records.map(r => [new Date(r.time).toISOString().slice(11, 16), r.ghi_W_per_m2])).toEqual([
+      ['11:00', 600], ['12:00', 0], ['13:00', 300], ['14:00', 0], ['15:00', 100],
+    ]);
+    expect(result.nullTimes).toEqual([Date.parse('2026-10-13T14:00:00Z')]);
+    expect(result.extensionError).toBeUndefined();
+  });
+
+  it('splices 15-minute data with minutely_15 requests', async () => {
+    routeFetch({
+      icon_d2: { minutely_15: { time: ['2026-10-13T12:00', '2026-10-13T12:15'], shortwave_radiation: [500, null] } },
+      icon_seamless: { minutely_15: { time: ['2026-10-13T12:00', '2026-10-13T12:15'], shortwave_radiation: [1, 450] } },
+    });
+    const result = await fetchExtendedForecastIrradiance(51.05, 3.71, 15, 3);
+    expect(mockFetch.mock.calls.every(c => c[0].includes('&minutely_15='))).toBe(true);
+    expect(result.records.map(r => r.ghi_W_per_m2)).toEqual([500, 450]);
+    expect(result.nullTimes).toEqual([]);
+  });
+
+  it('keeps ICON D2 alone with extensionError when ICON seamless fails', async () => {
+    routeFetch({ icon_d2: d2Hourly, icon_seamless: 503 });
+    const result = await fetchExtendedForecastIrradiance(51.05, 3.71, 60, 5);
+    expect(result.records).toHaveLength(3);
+    expect(result.nullTimes).toEqual([Date.parse('2026-10-13T13:00:00Z')]);
+    expect(result.extensionError).toBe('Open-Meteo Forecast API returned status 503');
+  });
+
+  it('reports a non-Error ICON seamless failure as text', async () => {
+    mockFetch.mockImplementation(async (url) => {
+      if (url.includes('icon_seamless')) throw 'boom';
+      return makeOkResponse(d2Hourly);
+    });
+    const result = await fetchExtendedForecastIrradiance(51.05, 3.71, 60, 5);
+    expect(result.extensionError).toBe('boom');
+  });
+
+  it('throws when ICON D2 fails, as the non-extended request does', async () => {
+    routeFetch({ icon_d2: 500, icon_seamless: seamlessHourly });
+    await expect(fetchExtendedForecastIrradiance(51.05, 3.71, 60, 5))
+      .rejects.toThrow('Open-Meteo Forecast API returned status 500');
   });
 });

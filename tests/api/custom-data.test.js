@@ -220,6 +220,35 @@ describe('Data route integration', () => {
     expect(badNull.body.error).toBe("'importPrice' must be a JSON object");
   });
 
+  it('POST /data rejects a non-finite series value, but a legacy one in an untouched series does not block it', async () => {
+    await writeSettings({
+      dataSources: { prices: 'api', load: 'api', pv: 'api', soc: 'api' },
+    });
+    // A pre-0.7.72 file with a null in the stored load (JSON has no NaN).
+    await writeData({
+      load: { start: '2024-01-01T00:00:00Z', step: 15, values: [500, null] },
+      pv: { start: '2024-01-01T00:00:00Z', step: 15, values: [0, 0] },
+      importPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [10, 10] },
+      exportPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: [5, 5] },
+      soc: { value: 50, timestamp: '2024-01-01T00:00:00Z' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const bad = await post(dataRouter, '/', { pv: { start: '2024-01-01T00:00:00Z', step: 15, values: [0, null] } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('Invalid pv: values[1] is not a finite number (null)');
+
+    const strings = await post(dataRouter, '/', { importPrice: { start: '2024-01-01T00:00:00Z', step: 15, values: ['10'] } });
+    expect(strings.status).toBe(400);
+
+    const soc = await post(dataRouter, '/', { soc: { value: 61, timestamp: '2024-01-01T00:15:00Z' } });
+    expect(soc.status).toBe(200);
+    const saved = JSON.parse(await fs.readFile(path.join(tempDir, 'data.json'), 'utf8'));
+    expect(saved.soc.value).toBe(61);
+    expect(saved.load.values).toEqual([500, null]);
+    warn.mockRestore();
+  });
+
   it('POST /data rejects marketPrice when prices are not API-backed', async () => {
     await writeSettings({
       dataSources: { prices: 'ha', load: 'api', pv: 'api', soc: 'api' },

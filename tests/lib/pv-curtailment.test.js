@@ -228,3 +228,20 @@ describe('pv curtailment decision', () => {
     expect(annotations[2]).toMatchObject({ disable: false, reason: 'price_not_negative' });
   });
 });
+
+describe('pv curtailment — multi-day forecast rows', () => {
+  it('treats a forecast row as no current slot', () => {
+    const rows = [row(0), row(1, { priceForecast: true, pvCurtail: 500 })];
+    const decision = decidePvCurtailment(rows, cfg, START + 15 * 60_000, policy);
+    expect(decision).toMatchObject({ shouldDisable: false, reason: 'no_current_slot', currentIndex: null });
+    expect(annotatePvCurtailmentSlots(rows, cfg, policy)[1]).toMatchObject({ disable: false, reason: 'no_current_slot' });
+  });
+
+  it('stops the negative-price run at the firm boundary', () => {
+    const firm = [row(0, { pv: 500, imp: 0 }), row(1, { pv: 500, imp: 0 })];
+    const decision = decidePvCurtailment([...firm, row(2, { pv: 5000, imp: 0, priceForecast: true })], cfg, START, policy);
+    expect(decision.negativeBlockEndIndex).toBe(1);
+    expect(decision).toEqual(decidePvCurtailment(firm, cfg, START, policy));
+    expect(decision.shouldDisable).toBe(true);
+  });
+});

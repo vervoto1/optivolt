@@ -239,6 +239,16 @@ describe('drawEvSocChartTab', () => {
     expect(config.data.datasets[0].data).toEqual([0]);
   });
 
+  it('leaves a gap where forecast rows carry no EV SoC', () => {
+    const canvas = document.createElement('canvas');
+    drawEvSocChartTab(canvas, [
+      { timestampMs: 1000, ev_soc_percent: 50 },
+      { timestampMs: 2000, ev_soc_percent: null, priceForecast: true },
+    ]);
+    const [, config] = renderChart.mock.calls[0];
+    expect(config.data.datasets[0].data).toEqual([50, null]);
+  });
+
   it('attaches the target plugin when one is produced', () => {
     const targetPlugin = { id: 'evTarget' };
     makeEvTargetPlugin.mockReturnValue(targetPlugin);
@@ -268,6 +278,14 @@ describe('drawEvSocChartTab', () => {
       const html = renderContent(0, { title: ['08:00'], dataPoints: [{ raw: 64.6 }] });
       expect(ttHeader).toHaveBeenCalledWith('08:00');
       expect(ttRow).toHaveBeenCalledWith(SOLUTION_COLORS.ev_charge, 'EV SoC', '65%');
+      expect(html).toContain('[head:08:00]');
+    });
+
+    it('skips the SoC row on a gap (null value)', () => {
+      const renderContent = getRenderContent();
+      ttRow.mockClear();
+      const html = renderContent(0, { title: ['08:00'], dataPoints: [{ raw: null }] });
+      expect(ttRow).not.toHaveBeenCalled();
       expect(html).toContain('[head:08:00]');
     });
 

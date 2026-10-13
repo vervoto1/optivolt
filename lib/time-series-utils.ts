@@ -47,6 +47,16 @@ export function getNextQuarterStart(date: Date | number | string = new Date(), s
 }
 
 /**
+ * Index of the first value that is not a finite number, or -1. The data store
+ * rejects a written series with one, so the forecast writers check predicted
+ * series with this first and keep the stored series instead of failing the
+ * whole write.
+ */
+export function firstNonFiniteIndex(values: readonly unknown[]): number {
+  return values.findIndex(v => typeof v !== 'number' || !Number.isFinite(v));
+}
+
+/**
  * Timestamp (ms) just after the last slot of a series.
  */
 export function getSeriesEndMs(source: TimeSeries): number {
@@ -131,6 +141,157 @@ export function getForecastTimeRange(nowMs = Date.now()): { startIso: string; en
   const endIso = end.toISOString();
 
   return { startIso, endIso };
+}
+
+/** The `extendedHorizon` settings fields the planning window reads. */
+export interface PlanningWindowHorizon {
+  mode?: string;
+  extraDays?: number;
+}
+
+/** Anything carrying the optional `extendedHorizon` settings block (Settings, a prediction run config). */
+export interface PlanningWindowSettings {
+  extendedHorizon?: PlanningWindowHorizon | null;
+}
+
+export interface PlanningWindow {
+  /** Start of the current 15-minute slot, exactly as getForecastTimeRange. */
+  startIso: string;
+  /** End of the planning window: the old window end with mode off, the extended end otherwise. */
+  endIso: string;
+  /** The old (getForecastTimeRange) window end. Past it a missing value ends a series instead of reading as 0. */
+  baseEndIso: string;
+  /** True when `mode` is `collect` or `on`. */
+  extended: boolean;
+  /** Extra days after the base day(s); 0 when not extended. */
+  extraDays: number;
+}
+
+export const EXTENDED_HORIZON_DEFAULT_EXTRA_DAYS = 3;
+export const EXTENDED_HORIZON_MIN_EXTRA_DAYS = 1;
+export const EXTENDED_HORIZON_MAX_EXTRA_DAYS = 4;
+
+/**
+ * The `extendedHorizon` block of a settings-like object, read without
+ * requiring the type to declare it.
+ */
+export function extendedHorizonOf(settings: object | null | undefined): PlanningWindowHorizon | undefined {
+  const horizon = (settings as PlanningWindowSettings | null | undefined)?.extendedHorizon;
+  return horizon ?? undefined;
+}
+
+function normalizeExtraDays(extraDays: unknown): number {
+  if (typeof extraDays !== 'number' || !Number.isFinite(extraDays)) return EXTENDED_HORIZON_DEFAULT_EXTRA_DAYS;
+  return Math.min(EXTENDED_HORIZON_MAX_EXTRA_DAYS, Math.max(EXTENDED_HORIZON_MIN_EXTRA_DAYS, Math.round(extraDays)));
+}
+
+/** The first local midnight at or after `ms` (server time zone). */
+function localMidnightAtOrAfter(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  if (d.getTime() >= ms) return d.getTime();
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * The window load and PV forecasts are built for.
+ *
+ * - `extendedHorizon.mode` `off` (or absent/unknown): exactly
+ *   `getForecastTimeRange(nowMs)`.
+ * - `collect` / `on`: from the same start to the local midnight at or after
+ *   max(tomorrow 24:00, `firmEndMs`), plus `extraDays` local days (1–4,
+ *   default 3). Days are added in local calendar time, so a DST switch gives
+ *   a 23 h or 25 h day and the end stays on local midnight.
+ *
+ * Tomorrow 24:00 is the latest the published (firm) prices reach, so the
+ * window always covers what the extended solve can use, before and after the
+ * daily publication: it reaches at least `extendedWindowEndMs`, the end the
+ * extended solve itself uses.
+ */
+export function resolvePlanningWindow(
+  settings: PlanningWindowSettings | null | undefined,
+  nowMs: number = Date.now(),
+  firmEndMs?: number,
+): PlanningWindow {
+  const { startIso, endIso: baseEndIso } = getForecastTimeRange(nowMs);
+  const horizon = extendedHorizonOf(settings);
+  if (!horizon || (horizon.mode !== 'collect' && horizon.mode !== 'on')) {
+    return { startIso, endIso: baseEndIso, baseEndIso, extended: false, extraDays: 0 };
+  }
+
+  const extraDays = normalizeExtraDays(horizon.extraDays);
+  const tomorrowEnd = new Date(nowMs);
+  tomorrowEnd.setDate(tomorrowEnd.getDate() + 2);
+  tomorrowEnd.setHours(0, 0, 0, 0);
+  const anchorMs = typeof firmEndMs === 'number' && Number.isFinite(firmEndMs)
+    ? Math.max(tomorrowEnd.getTime(), firmEndMs)
+    : tomorrowEnd.getTime();
+
+  const end = new Date(localMidnightAtOrAfter(anchorMs));
+  end.setDate(end.getDate() + extraDays);
+  end.setHours(0, 0, 0, 0);
+
+  return { startIso, endIso: end.toISOString(), baseEndIso, extended: true, extraDays };
+}
+
+/**
+ * End of the extended solve's horizon (multi-day horizon, mode `on`): the
+ * local midnight at or after `firmEndMs` plus `extraDays` local calendar days
+ * (1–4, default 3; a DST switch gives a 23 h or 25 h day and the end stays on
+ * local midnight). The forecast reach past the published prices is therefore
+ * constant: it moves with the firm end (the daily publication), not with the
+ * date, so it does not jump a day at midnight.
+ *
+ * `resolvePlanningWindow` (the load/PV predictor window) is anchored at
+ * max(tomorrow 24:00, firm end) instead, so it always reaches at least this
+ * end: before publication it runs a day further, and after midnight the old
+ * firm end is still covered.
+ */
+export function extendedWindowEndMs(settings: PlanningWindowSettings | null | undefined, firmEndMs: number): number {
+  const end = new Date(localMidnightAtOrAfter(firmEndMs));
+  end.setDate(end.getDate() + normalizeExtraDays(extendedHorizonOf(settings)?.extraDays));
+  end.setHours(0, 0, 0, 0);
+  return end.getTime();
+}
+
+export interface SeriesTruncation {
+  series: ForecastSeries;
+  /** Start of the first slot that was dropped, when the series was cut. */
+  truncatedAt?: string;
+  /** Why the slot at `truncatedAt` has no value. */
+  reason?: string;
+}
+
+/**
+ * Cut a forecast series at its first slot, at or after `keepUntilIso`, that
+ * has no real value (`gapAt` returns why, or null/undefined when the slot is
+ * covered).
+ * Slots before `keepUntilIso` are kept whatever `gapAt` says, so the old
+ * window keeps its zero fill; past it a gap never passes for 0 W.
+ */
+export function truncateAtFirstGap(
+  series: ForecastSeries,
+  keepUntilIso: string,
+  gapAt: (slotStartMs: number) => string | null | undefined,
+): SeriesTruncation {
+  const startMs = new Date(series.start).getTime();
+  const stepMs = series.step * 60_000;
+  const keepUntilMs = new Date(keepUntilIso).getTime();
+  for (let i = 0; i < series.values.length; i++) {
+    const slotMs = startMs + i * stepMs;
+    if (slotMs < keepUntilMs) continue;
+    const reason = gapAt(slotMs);
+    if (reason != null) {
+      return {
+        series: { ...series, values: series.values.slice(0, i) },
+        truncatedAt: new Date(slotMs).toISOString(),
+        reason,
+      };
+    }
+  }
+  return { series };
 }
 
 /**

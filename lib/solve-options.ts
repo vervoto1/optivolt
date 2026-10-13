@@ -31,3 +31,24 @@ export function solveOptionsFor(cfg: { load_W: readonly number[] }): Record<stri
     ? { ...MIP_SOLVE_OPTIONS, time_limit: SOLVE_TIME_LIMIT_S }
     : { time_limit: SOLVE_TIME_LIMIT_S };
 }
+
+/** Wall-clock bound on the extended (multi-day horizon) solve, in seconds. */
+export const EXTENDED_SOLVE_TIME_LIMIT_S = 15;
+
+/**
+ * Options for the extended (multi-day horizon) solve, which only replaces the
+ * firm-only plan when it returns Optimal. The relative gap is 0 and the
+ * absolute gap is 0.5 % of the firm-only plan's objective (at least 0.01
+ * cents), so the gap scales with the firm plan and not with the longer
+ * forecast tail. A non-finite firm objective falls back to the 0.01 floor.
+ * MIP_SOLVE_OPTIONS and solveOptionsFor are deliberately untouched (the
+ * solver-refresh gate derives its tolerance from them).
+ */
+export function extendedSolveOptions({ firmObjective }: { firmObjective: number }): Record<string, number> {
+  const scaled = Number.isFinite(firmObjective) ? 0.005 * Math.abs(firmObjective) : 0;
+  return {
+    mip_rel_gap: 0,
+    mip_abs_gap: Math.max(0.01, scaled),
+    time_limit: EXTENDED_SOLVE_TIME_LIMIT_S,
+  };
+}

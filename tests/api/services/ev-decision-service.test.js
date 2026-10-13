@@ -384,3 +384,29 @@ describe('computeEvDecision — manual override', () => {
     expect(d.is_charging).toBe(true);
   });
 });
+
+describe('computeEvDecision — multi-day forecast rows', () => {
+  beforeEach(() => { vi.clearAllMocks(); delete process.env.SUPERVISOR_TOKEN; });
+
+  it('treats a forecast row covering now as no current slot', async () => {
+    mockHa({ soc: '50', plug: 'on' });
+    const plan = makePlan({ evCharge: 5000, ic: 5 });
+    // A stale plan whose current slot is forecast-priced (charging would never be planned there).
+    plan.rows = plan.rows.map((r, i) => (i >= 2 ? { ...r, ev_charge: 5000, ev_soc_percent: null, priceForecast: true } : r));
+    const settings = makeSettings({ evLowPriceChargingEnabled: true, evLowPriceChargingLevel_cents_per_kWh: 10, evKeepOn: true });
+    const d = await computeEvDecision(settings, plan, NOW + 2 * STEP_MS);
+    expect(d.mode).toBe('idle');
+    expect(d.reason).toBe('No plan');
+    expect(d.currentPrice_cents_per_kWh).toBeNull();
+    expect(d.planSlotTimestampMs).toBeNull();
+  });
+
+  it('still follows the firm row covering now', async () => {
+    mockHa({ soc: '50', plug: 'on' });
+    const plan = makePlan({ evCharge: 5000 });
+    plan.rows = plan.rows.map((r, i) => (i >= 2 ? { ...r, priceForecast: true } : r));
+    const d = await computeEvDecision(makeSettings(), plan, NOW);
+    expect(d.mode).toBe('planned');
+    expect(d.planSlotTimestampMs).toBe(NOW);
+  });
+});

@@ -10,7 +10,9 @@ import { hasPvCoordinates, MISSING_PV_COORDINATES_MESSAGE } from './pv-coordinat
 import { loadPredictionConfig } from './prediction-config-store.ts';
 import { withRetry } from './retry.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
+import { maybeRefreshPriceForecast } from './price-forecast-service.ts';
 import type { Data } from '../types.ts';
+import { extendedHorizonOf, firstNonFiniteIndex } from '../../lib/time-series-utils.ts';
 
 function createClientFromEnv(): VRMClient {
   // v8 ignore next — module-level const
@@ -121,7 +123,7 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   // disk at write time. Building the whole object from a snapshot loaded before
   // the multi-second forecast/HA fetches used to revert any data.json write
   // that landed in between (a prediction adjustment, POST /data).
-  const patch: Partial<Pick<Data, 'load' | 'pv' | 'importPrice' | 'exportPrice' | 'marketPrice' | 'soc'>> = {};
+  const patch: Partial<Pick<Data, 'load' | 'pv' | 'importPrice' | 'importPricePublishedUntil' | 'exportPrice' | 'marketPrice' | 'soc'>> = {};
 
   if (shouldFetchVrmLoad && forecasts) {
     patch.load = {
@@ -152,7 +154,13 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
     }
 
     if (predConfig) {
-      const runConfig = { ...predConfig, haUrl: settings.haUrl ?? '', haToken: settings.haToken ?? '' };
+      const extendedHorizon = extendedHorizonOf(settings);
+      const runConfig = {
+        ...predConfig,
+        haUrl: settings.haUrl ?? '',
+        haToken: settings.haToken ?? '',
+        ...(extendedHorizon ? { extendedHorizon } : {}),
+      };
       // Without a usable site location the PV forecast would be fitted to the
       // wrong place; keep the stored series instead (no point retrying).
       const pvLocated = hasPvCoordinates(predConfig.pvConfig);
@@ -168,7 +176,11 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       /* v8 ignore start — optional chaining null paths (loadRes.value?.forecast?.values) are untestable when resolved */
       if (shouldFetchApiLoad) {
         if (loadRes.status === 'fulfilled' && loadRes.value?.forecast?.values) {
-          patch.load = loadRes.value.forecast;
+          // The data store rejects a non-finite value on write, which would fail
+          // the whole refresh (prices and SoC included): keep the stored series.
+          const bad = firstNonFiniteIndex(loadRes.value.forecast.values);
+          if (bad === -1) patch.load = loadRes.value.forecast;
+          else console.error(`[vrm-refresh] Load forecast has a non-finite value at slot ${bad} — keeping stale data`);
         } else if (loadRes.status === 'rejected') {
           /* v8 ignore next — non-Error branch of ternary on reason is untestable */
           console.error('[vrm-refresh] Load forecast failed after retries — keeping stale data:', (loadRes.reason as Error).message);
@@ -179,7 +191,9 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       /* v8 ignore start — optional chaining null paths (pvRes.value?.forecast?.values) are untestable when resolved */
       if (shouldFetchApiPv) {
         if (pvRes.status === 'fulfilled' && pvRes.value?.forecast?.values) {
-          patch.pv = pvRes.value.forecast;
+          const bad = firstNonFiniteIndex(pvRes.value.forecast.values);
+          if (bad === -1) patch.pv = pvRes.value.forecast;
+          else console.error(`[vrm-refresh] PV forecast has a non-finite value at slot ${bad} — keeping stale data`);
         } else if (pvRes.status === 'rejected') {
           /* v8 ignore next — non-Error branch of ternary on reason is untestable */
           console.error('[vrm-refresh] PV forecast failed after retries — keeping stale data:', (pvRes.reason as Error).message);
@@ -194,6 +208,8 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
       step: prices.step_minutes,
       values: prices.importPrice_cents_per_kwh,
     };
+    // Where VRM's real prices end; the series is zero-filled after it.
+    patch.importPricePublishedUntil = prices.publishedUntil;
     patch.exportPrice = {
       start: getStart(prices, 'exportPrice'),
       step: prices.step_minutes,
@@ -229,9 +245,11 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
 
   // EV load (uncontrollable house load injected via POST /data), the rebalance
   // state, lastFullSocAt and the prediction adjustments are never touched here.
-  await updateData(current => {
+  const persisted = await updateData(current => {
     const next: Data = { ...current, ...patch };
     if (dropMarketPrice) delete next.marketPrice;
+    // Only VRM zero-fills unpublished prices; any other source's series ends where its prices end.
+    if (settings.dataSources.prices !== 'vrm') delete next.importPricePublishedUntil;
     return patch.soc ? recordFullSocObservation(next) : next;
   });
 
@@ -242,4 +260,12 @@ export async function refreshSeriesFromVrmAndPersist(): Promise<void> {
   // that landed in between.
   const stepSize_m = forecasts?.step_minutes || settings.stepSize_m;
   await updateSettings(current => current.stepSize_m === stepSize_m ? null : { ...current, stepSize_m });
+
+  // Multi-day horizon: refresh the market price forecast in the background
+  // when it is due. Deliberately not awaited — the solve reads whatever
+  // forecast is stored and never waits on the third-party feed; the promise
+  // never rejects.
+  if (settings.extendedHorizon && settings.extendedHorizon.mode !== 'off') {
+    void maybeRefreshPriceForecast(settings, persisted, Date.now());
+  }
 }

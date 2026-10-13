@@ -1,5 +1,5 @@
 import type { PlanRow, SolverConfig, EvChargeMode, EvPlanMode } from './types.ts';
-import { DEFAULT_INVERTER_EFFICIENCY_PERCENT, evChargeWattsPerAmp } from './build-lp.ts';
+import { DEFAULT_INVERTER_EFFICIENCY_PERCENT, evChargeWattsPerAmp, isEvPlannedInLp, resolveFirmSlots } from './build-lp.ts';
 
 // Minimal type for the HiGHS solver result columns (keyed by variable name).
 interface HighsColumn {
@@ -143,8 +143,18 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
     else if (name.startsWith("ev_soc_"))         evSoc[t] = v;
   }
 
+  // Multi-day horizon: rows at or after the firm boundary are forecast rows
+  // (F = T, i.e. none, when cfg.firmSlots is absent). The EV is not modelled
+  // there, so its SoC is unknown (null) and no EV plan fields are attached;
+  // its flows are genuinely 0 (no EV variables exist past the boundary).
+  const F = resolveFirmSlots(cfg.firmSlots, T);
+  // An EV in the config whose earliest start lies past the firm part has no
+  // LP variables: it stays idle at its initial SoC on the firm rows.
+  const evInLp = isEvPlannedInLp(cfg);
+  const evIdleSoc_percent = cfg.ev?.evInitialSoc_percent ?? 0;
+
   // Scalar soft-target shortfall (no per-slot index). 0 when the target is met.
-  const evActive = cfg.ev != null;
+  const evActive = evInLp;
   const evTargetShortfall_Wh = valueOf(result.Columns?.['ev_target_shortfall'] ?? {});
   const evTargetWh = ((cfg.ev?.evTargetSoc_percent ?? 0) / 100) * (cfg.ev?.evBatteryCapacity_Wh ?? 0);
   const evDepSlot = cfg.ev?.evDepartureSlot ?? -1;
@@ -239,8 +249,11 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
         cfg.ev?.evMaxChargePower_W ?? 0,
         pv2b[t],
       ),
-      ev_soc_percent: (evSoc[t] / evCap) * 100,
-      ...(evActive ? evPlanFields(t) : {}),
+      ev_soc_percent: t >= F
+        ? null
+        : (cfg.ev != null && !evInLp ? evIdleSoc_percent : (evSoc[t] / evCap) * 100),
+      ...(evActive && t < F ? evPlanFields(t) : {}),
+      ...(t >= F ? { priceForecast: true as const } : {}),
     });
   }
 

@@ -9,6 +9,8 @@ import {
   makeBuyPriceStripPlugin,
   makeForecastOriginalMarkersPlugin,
   makeAdjustmentOverlayPlugin,
+  firstForecastIndex,
+  makeForecastBoundaryPlugin,
 } from '../../../app/src/charts/overlays.js';
 import { getBuyPriceColor, SOLUTION_COLORS, toRGBA } from '../../../app/src/charts/colors.js';
 import { fmtHHMM } from '../../../app/src/charts/core.js';
@@ -979,5 +981,60 @@ describe('negative-injection range labels (via tooltip content)', () => {
     expect(firstRowCells[1]).toBe('-10.0¢');
     expect(firstRowCells[2]).toBe('1.00');
     expect(firstRowCells[3]).toBe('10.0¢');
+  });
+});
+
+describe('firstForecastIndex', () => {
+  it('finds the first forecast-priced row, or -1', () => {
+    expect(firstForecastIndex([{}, { priceForecast: false }, { priceForecast: true }, { priceForecast: true }])).toBe(2);
+    expect(firstForecastIndex([{}, null])).toBe(-1);
+    expect(firstForecastIndex(null)).toBe(-1);
+  });
+});
+
+describe('makeForecastBoundaryPlugin', () => {
+  it('returns null without a boundary inside the chart', () => {
+    expect(makeForecastBoundaryPlugin(-1)).toBeNull();
+    expect(makeForecastBoundaryPlugin(0)).toBeNull();
+    expect(makeForecastBoundaryPlugin(1.5)).toBeNull();
+    expect(makeForecastBoundaryPlugin(undefined)).toBeNull();
+  });
+
+  it('draws a dashed labelled line at the first forecast point of a line chart', () => {
+    const plugin = makeForecastBoundaryPlugin(40);
+    expect(plugin.id).toBe('forecastBoundary');
+    const chart = makeChart();
+    plugin.afterDatasetsDraw(chart);
+    const { ctx } = chart;
+    expect(ctx.find('setLineDash')).toEqual(['setLineDash', [4, 3]]);
+    expect(ctx.find('moveTo')).toEqual(['moveTo', 140, 10]);
+    expect(ctx.find('lineTo')).toEqual(['lineTo', 140, 210]);
+    expect(ctx.find('fillText')).toEqual(['fillText', 'forecast \u2192', 144, 12]);
+    expect(ctx.strokeStyle).toBe('rgba(0, 0, 0, 0.25)');
+    expect(ctx.find('restore')).toBeTruthy();
+  });
+
+  it('sits between the last firm bar and the first forecast bar on an offset axis', () => {
+    const plugin = makeForecastBoundaryPlugin(40);
+    const chart = makeChart({ xScale: { ...makeXScale(), options: { offset: true } } });
+    setDark(true);
+    plugin.afterDatasetsDraw(chart);
+    expect(chart.ctx.find('moveTo')).toEqual(['moveTo', 139.5, 10]);
+    expect(chart.ctx.strokeStyle).toBe('rgba(226, 232, 240, 0.32)');
+  });
+
+  it('bails out without a chart area or x scale, or outside the area', () => {
+    const plugin = makeForecastBoundaryPlugin(40);
+    for (const chart of [
+      makeChart({ chartArea: null }),
+      { ...makeChart(), scales: {} },
+      { ...makeChart(), scales: undefined },
+      makeChart({ xScale: { ...makeXScale(), getPixelForValue: () => 900 } }),
+      makeChart({ xScale: { ...makeXScale(), getPixelForValue: () => 50 } }),
+      makeChart({ xScale: { ...makeXScale(), getPixelForValue: () => NaN } }),
+    ]) {
+      plugin.afterDatasetsDraw(chart);
+      expect(chart.ctx.calls).toEqual([]);
+    }
   });
 });

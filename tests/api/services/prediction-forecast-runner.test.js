@@ -123,6 +123,17 @@ describe('buildPredictionRunConfig', () => {
       haUrl: 'ws://x',
       haToken: 'secret',
     });
+    expect(result).not.toHaveProperty('extendedHorizon');
+  });
+
+  it('carries the settings\' extendedHorizon block, which sets the forecast window', async () => {
+    const extendedHorizon = { mode: 'collect', extraDays: 2 };
+    loadPredictionConfig.mockResolvedValue({ sensors: [SENSOR], derived: [], activeType: 'fixed' });
+    loadSettings.mockResolvedValue({ haUrl: 'ws://x', haToken: 'secret', dataSources: { load: 'api', pv: 'api' }, extendedHorizon });
+
+    const result = await buildPredictionRunConfig();
+
+    expect(result.extendedHorizon).toEqual(extendedHorizon);
   });
 });
 
@@ -377,6 +388,27 @@ describe('persistForecastData', () => {
     expect(saved.load).toEqual(newLoad);
     expect(saved.pv).toEqual(newPv);
   });
+
+  // The data store rejects a non-finite value on write; one bad series must
+  // not take the other one down with it.
+  it('keeps the stored series for a forecast with a non-finite value and persists the other', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const badLoad = { ...makeSeries('2026-06-20T00:00:00.000Z'), values: [1, NaN, 3, 4] };
+    const newPv = makeSeries('2026-06-21T00:00:00.000Z');
+    await persistForecastData({ load: badLoad, pv: newPv });
+    const saved = saveData.mock.calls[0][0];
+    expect(saved.load).toEqual(makeSeries());
+    expect(saved.pv).toEqual(newPv);
+    expect(warnSpy).toHaveBeenCalledWith('[predict] load forecast has a non-finite value at slot 1; keeping the stored series');
+  });
+
+  it('writes nothing when the only forecast has a non-finite value', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await persistForecastData({ pv: { ...makeSeries(), values: [1, 2, null, 4] } });
+    expect(loadSettings).not.toHaveBeenCalled();
+    expect(saveData).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith('[predict] pv forecast has a non-finite value at slot 2; keeping the stored series');
+  });
 });
 
 describe('runCombinedPredictionForecast', () => {
@@ -480,6 +512,22 @@ describe('runCombinedPredictionForecast with persist: false', () => {
 });
 
 describe('persistForecastAndPrune (via runCombinedPredictionForecast)', () => {
+  it('persists the finite series and keeps the stored one for a forecast with a non-finite value', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const newLoad = makeSeries('2026-06-20T00:00:00.000Z');
+    runLoadForecast.mockResolvedValue({ forecast: newLoad });
+    runPvForecast.mockResolvedValue({ forecast: { ...makeSeries('2026-06-21T00:00:00.000Z'), values: [1, 2, 3, Infinity] } });
+
+    const cfg = makeConfig({ pvConfig: { latitude: 51.2, longitude: 4.4 } });
+    await runCombinedPredictionForecast(cfg, 'combined');
+
+    expect(saveData).toHaveBeenCalledTimes(1);
+    const saved = saveData.mock.calls[0][0];
+    expect(saved.load).toEqual(newLoad);
+    expect(saved.pv).toEqual(makeSeries());
+    expect(warnSpy).toHaveBeenCalledWith('[predict] pv forecast has a non-finite value at slot 3; keeping the stored series');
+  });
+
   it('saves the pruned data when adjustments changed even if no forecast values set', async () => {
     // Neither source is api -> setLoad/setPv false, but pruning reports a change.
     loadSettings.mockResolvedValue({ ...HA, dataSources: { load: 'vrm', pv: 'vrm' } });

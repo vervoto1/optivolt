@@ -12,6 +12,7 @@ import {
   validate,
   buildPredictIndex,
   generateAllConfigs,
+  historicalSampleCounts,
   DEFAULT_LOOKBACK_WEEKS,
 } from '../../lib/load-predictor-historical.ts';
 import type { DayFilter, Aggregation, PredictConfig, PredictIndex, PredictTarget } from '../../lib/load-predictor-historical.ts';
@@ -34,7 +35,16 @@ import { fetchTemperatureSeries } from './open-meteo-client.ts';
 import { hasPvCoordinates } from './pv-coordinates.ts';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { PredictionRunConfig } from '../types.ts';
-import { getForecastTimeRange, buildForecastSeries, computeErrorMetrics, type ForecastSeries, type PredictionResult } from '../../lib/time-series-utils.ts';
+import {
+  buildForecastSeries,
+  computeErrorMetrics,
+  resolvePlanningWindow,
+  truncateAtFirstGap,
+  type ForecastSeries,
+  type PlanningWindow,
+  type PlanningWindowSettings,
+  type PredictionResult,
+} from '../../lib/time-series-utils.ts';
 
 export interface ValidationEntry {
   type: 'historical';
@@ -87,6 +97,60 @@ export interface ForecastRunResult {
   metrics: { mae: number; rmse: number; mape: number; n: number };
   /** Set when the forecast was (partly) produced by a fallback, e.g. the temperature predictor's historical fallback. */
   warnings?: string[];
+  /** Set when the series ends before the planning window end (extended windows only). */
+  truncatedAt?: string;
+  /** Why the series ends at `truncatedAt`. */
+  truncationReason?: string;
+}
+
+/** A prediction run config plus the settings' optional `extendedHorizon` block (the planning window). */
+export type LoadForecastRunConfig = PredictionRunConfig & PlanningWindowSettings;
+
+/**
+ * Fewest history values an hour past the old window end needs before the
+ * historical predictor's value counts (capped at what the strategy reads with
+ * a complete history, so a 1-week same-weekday strategy is not cut for having
+ * the one day it always has). A target days ahead loses the lookback days
+ * still in the future; one remaining day is a single day's noise rather than
+ * an average, so the series ends where fewer than two remain.
+ */
+export const MIN_HISTORICAL_SAMPLES = 2;
+
+/**
+ * Why each historical prediction cannot be used past the old window end
+ * (null when it can): no value at all, or fewer samples than
+ * MIN_HISTORICAL_SAMPLES (capped at the strategy's complete-history count).
+ */
+function historicalGaps(data: StatRecord[], cfg: PredictConfig, targets: PredictTarget[], predicted: Array<number | null>): Array<string | null> {
+  const counts = historicalSampleCounts(data, cfg, targets);
+  return counts.map((count, i) => {
+    if (predicted[i] === null) return 'no historical load data for this hour';
+    const needed = Math.min(MIN_HISTORICAL_SAMPLES, count.possible);
+    return count.samples < needed
+      ? `only ${count.samples} of ${count.possible} lookback days available for this hour (fewer than ${needed})`
+      : null;
+  });
+}
+
+/**
+ * Past the old window end, end an extended series at the first hour without
+ * a usable value instead of filling it with 0 W. Not extended: unchanged.
+ */
+function truncateLoadSeries(
+  forecast: ForecastSeries,
+  window: PlanningWindow,
+  targets: PredictTarget[],
+  gapsOf: () => Array<string | null>,
+  label: string,
+): Pick<ForecastRunResult, 'forecast' | 'truncatedAt' | 'truncationReason'> {
+  if (!window.extended) return { forecast };
+  const gaps = gapsOf();
+  const hourGaps = new Map(targets.map((t, i) => [t.time, gaps[i]]));
+  // Every slot of the window falls in a target hour (both run to the window end).
+  const cut = truncateAtFirstGap(forecast, window.baseEndIso, slotMs => hourGaps.get(Math.floor(slotMs / 3600000) * 3600000));
+  if (!cut.truncatedAt) return { forecast: cut.series };
+  console.warn(`[predict] ${label} load forecast ends at ${cut.truncatedAt}, before the planning window end ${window.endIso}: ${cut.reason}`);
+  return { forecast: cut.series, truncatedAt: cut.truncatedAt, truncationReason: cut.reason };
 }
 
 export interface ValidationWindow {
@@ -560,7 +624,7 @@ function buildFutureTargets(nowMs: number, endMs: number): PredictTarget[] {
  * Recent accuracy is out of sample: anchors are rebuilt per scored day with
  * the cutoff at that day's start.
  */
-async function runTemperatureForecast(config: PredictionRunConfig): Promise<ForecastRunResult> {
+async function runTemperatureForecast(config: LoadForecastRunConfig): Promise<ForecastRunResult> {
   const { temperaturePredictor: tp, historicalPredictor: hp, haUrl, haToken, sensors, derived } = config;
   if (!tp) throw new Error('temperaturePredictor is required for the temperature activeType');
 
@@ -583,7 +647,8 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
   const includeRecent = config.includeRecent !== false;
   const extraWeeks = includeRecent ? 1 : 0;
   const nowMs = Date.now();
-  const { startIso, endIso } = getForecastTimeRange(nowMs);
+  const window = resolvePlanningWindow(config, nowMs);
+  const { startIso, endIso } = window;
   const futureEnd = new Date(endIso).getTime();
   const futureTargets = buildFutureTargets(nowMs, futureEnd);
   const todayStartUtc = Math.floor(nowMs / DAY_MS) * DAY_MS;
@@ -623,6 +688,9 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
   );
   if (coverage) warnings.push(coverage);
   let values = future.map(p => p.predicted);
+  // Past the old window end: why an hour has no usable value (temperature
+  // hours are always usable; filled hours inherit the historical verdict).
+  const gaps: Array<string | null> = values.map(() => null);
   if (missing > 0) {
     if (!hp?.sensor) {
       throw new Error(`Temperature load forecast could not predict ${missing} of ${future.length} hours and no historical predictor is configured to fill them`);
@@ -638,16 +706,26 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
         startTime: new Date(nowMs - hp.lookbackWeeks * WEEK_MS).toISOString(),
       }), sensors, derived);
     const hist = predict(histData, hp, futureTargets);
+    if (window.extended) {
+      const histGaps = historicalGaps(histData, hp, futureTargets, hist.map(h => h.predicted));
+      values.forEach((v, i) => { if (v === null) gaps[i] = histGaps[i]; });
+    }
     values = values.map((v, i) => v ?? hist[i].predicted);
     const message = `${missing} of ${future.length} forecast hours had no temperature prediction; the historical predictor filled them`;
     console.warn(`[predict] ${message}`);
     warnings.push(message);
   }
 
-  const forecast = buildForecastSeries(
-    futureTargets.map((t, i) => ({ time: t.time, value: values[i] ?? 0 })),
-    startIso,
-    endIso,
+  const { forecast, truncatedAt, truncationReason } = truncateLoadSeries(
+    buildForecastSeries(
+      futureTargets.map((t, i) => ({ time: t.time, value: values[i] ?? 0 })),
+      startIso,
+      endIso,
+    ),
+    window,
+    futureTargets,
+    () => gaps,
+    'temperature',
   );
 
   let recent: PredictionResult[] = [];
@@ -658,20 +736,26 @@ async function runTemperatureForecast(config: PredictionRunConfig): Promise<Fore
   }
   const metrics = computeErrorMetrics(recent, r => r.actual, r => r.predicted);
 
-  return { forecast, recent, metrics, ...(warnings.length > 0 ? { warnings } : {}) };
+  return {
+    forecast,
+    recent,
+    metrics,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(truncatedAt ? { truncatedAt, truncationReason } : {}),
+  };
 }
 
 /**
  * Run forecast for tomorrow using the active config.
  * Caller must ensure config.activeType is set.
  */
-export async function runForecast(config: PredictionRunConfig): Promise<ForecastRunResult> {
+export async function runForecast(config: LoadForecastRunConfig): Promise<ForecastRunResult> {
   const { activeType, historicalPredictor, fixedPredictor, haUrl, haToken, sensors, derived } = config;
 
   if (activeType === 'fixed') {
     const load_W = fixedPredictor!.load_W;
     const nowMs = Date.now();
-    const { startIso, endIso } = getForecastTimeRange(nowMs);
+    const { startIso, endIso } = resolvePlanningWindow(config, nowMs);
     const startMs = new Date(startIso).getTime();
     const endMs = new Date(endIso).getTime();
     const nSlots = Math.round((endMs - startMs) / (15 * 60 * 1000));
@@ -718,7 +802,7 @@ export async function runForecast(config: PredictionRunConfig): Promise<Forecast
  * lookbackWeeks + 1 weeks this would fetch; `predict()` only reads back
  * `lookbackWeeks` from each target, so a longer window changes nothing.
  */
-async function runHistoricalForecast(config: PredictionRunConfig, prefetched?: StatRecord[]): Promise<ForecastRunResult> {
+async function runHistoricalForecast(config: LoadForecastRunConfig, prefetched?: StatRecord[]): Promise<ForecastRunResult> {
   const { historicalPredictor, haUrl, haToken, sensors, derived } = config;
 
   let data = prefetched;
@@ -742,7 +826,8 @@ async function runHistoricalForecast(config: PredictionRunConfig, prefetched?: S
   }
 
   const now = new Date();
-  const { startIso, endIso } = getForecastTimeRange(now.getTime());
+  const window = resolvePlanningWindow(config, now.getTime());
+  const { startIso, endIso } = window;
   const end = new Date(endIso);
 
   const recentStart = now.getTime() - 7 * 24 * 60 * 60 * 1000;
@@ -773,7 +858,18 @@ async function runHistoricalForecast(config: PredictionRunConfig, prefetched?: S
   const predictions = predict(data, historicalPredictor!, allTargets);
 
   const mappedPoints = predictions.map(p => ({ time: p.time, value: p.predicted ?? 0 }));
-  const forecastSeries = buildForecastSeries(mappedPoints, startIso, endIso);
+  const { forecast: forecastSeries, truncatedAt, truncationReason } = truncateLoadSeries(
+    buildForecastSeries(mappedPoints, startIso, endIso),
+    window,
+    futureTargets,
+    () => historicalGaps(
+      data,
+      historicalPredictor!,
+      futureTargets,
+      predictions.slice(recentTargets.length).map(p => p.predicted),
+    ),
+    'historical',
+  );
 
   let recent: PredictionResult[] = [];
   if (config.includeRecent !== false) {
@@ -793,5 +889,5 @@ async function runHistoricalForecast(config: PredictionRunConfig, prefetched?: S
 
   const metrics = computeErrorMetrics(recent, r => r.actual, r => r.predicted);
 
-  return { forecast: forecastSeries, recent, metrics };
+  return { forecast: forecastSeries, recent, metrics, ...(truncatedAt ? { truncatedAt, truncationReason } : {}) };
 }

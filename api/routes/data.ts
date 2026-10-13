@@ -90,7 +90,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         }
       }
       try {
-        validateData(nextData);
+        validateData(nextData, { unchangedFrom: current });
       } catch (validationError) {
         const msg = validationError instanceof Error ? validationError.message : String(validationError);
         throw toHttpError(validationError, 400, msg);

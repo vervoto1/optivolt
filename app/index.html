@@ -2012,6 +2012,73 @@
           </div>
         </section>
 
+        <!-- Multi-day Horizon Card -->
+        <section id="card-extended-horizon" class="card">
+          <div class="mb-4">
+            <h2 class="sidebar-label">Multi-day horizon</h2>
+            <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Plans past the published prices with forecast day-ahead prices (EpexPredictor). Only the published-price part is sent to Victron; the forecast part only steers how much charge is kept for the coming days.
+            </p>
+            <p id="extended-horizon-status" role="status" aria-live="polite" class="mt-2 text-xs font-medium text-slate-600 dark:text-slate-400"></p>
+          </div>
+          <div class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Mode</span>
+                <select id="extended-horizon-mode" class="form-select" data-settings-input>
+                  <option value="off" selected>Off</option>
+                  <option value="collect">Collect only</option>
+                  <option value="on">On</option>
+                </select>
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Extra days</span>
+                <input id="extended-horizon-extra-days" type="number" min="1" max="4" step="1" value="3" class="form-input" data-settings-input />
+              </label>
+            </div>
+            <label class="block text-sm">
+              <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Forecast URL</span>
+              <input id="extended-horizon-forecast-url" type="url" value="https://epexpredictor.batzill.com" placeholder="https://epexpredictor.batzill.com"
+                spellcheck="false" autocomplete="off" class="form-input font-mono" data-settings-input data-no-autosolve />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Region</span>
+                <select id="extended-horizon-region" class="form-select" data-settings-input data-no-autosolve>
+                  <option value="DE">DE</option>
+                  <option value="AT">AT</option>
+                  <option value="BE">BE</option>
+                  <option value="FR">FR</option>
+                  <option value="NL" selected>NL</option>
+                  <option value="SE1">SE1</option>
+                  <option value="SE2">SE2</option>
+                  <option value="SE3">SE3</option>
+                  <option value="SE4">SE4</option>
+                  <option value="DK1">DK1</option>
+                  <option value="DK2">DK2</option>
+                  <option value="ES">ES</option>
+                  <option value="PT">PT</option>
+                </select>
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Refresh (min)</span>
+                <input id="extended-horizon-refresh" type="number" min="30" max="600" step="1" value="60" class="form-input" data-settings-input data-no-autosolve />
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Import VAT (%)</span>
+                <input id="extended-horizon-vat" type="number" min="0" max="100" step="0.1" value="21" class="form-input" data-settings-input />
+              </label>
+              <label class="text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Risk margin (c€/kWh)</span>
+                <input id="extended-horizon-risk-margin" type="number" min="0" step="0.1" value="1" class="form-input" data-settings-input />
+              </label>
+            </div>
+            <p class="text-xs leading-5 text-slate-500 dark:text-slate-400">
+              Collect only fetches and logs the forecast without changing plans. Import VAT is the fallback slope when the forecast cannot be fitted to your import prices. The risk margin is what each kWh more or less charge carried past the published prices must save, compared with the published-prices-only plan; it does not shift prices.
+            </p>
+          </div>
+        </section>
+
         <!-- Home Assistant Settings Card -->
         <section id="pred-ha-settings-group" class="card">
           <div class="mb-4">

@@ -500,6 +500,37 @@ describe('VRMClient — fetchPrices', () => {
     expect(result.importPrice_eur_per_kwh).toEqual([0]);
     expect(result.exportPrice_eur_per_kwh).toEqual([0]);
   });
+
+  it('records publishedUntil: the end of the last slot VRM priced, before the zero fill', async () => {
+    const client = new VRMClient({ installationId: '123', token: 'tok' });
+    const startMs = new Date('2026-10-13T10:00:00Z').getTime();
+    const endMs = new Date('2026-10-13T12:00:00Z').getTime(); // 8 slots
+    const q = 15 * 60 * 1000;
+    vi.stubGlobal('fetch', makeFetch({
+      success: true,
+      records: {
+        // A gap at slot 1 does not end the published range; slot 3 is the last priced one.
+        deGb: [[startMs, 0.2], [startMs + 2 * q, 0.25], [startMs + 3 * q, 0], [endMs + q, 0.3]],
+        deGs: [[startMs, 0.1], [startMs + 5 * q, 0.1]],
+      },
+    }));
+
+    const result = await client.fetchPrices({ startMs, endMs });
+    expect(result.publishedUntil).toBe('2026-10-13T11:00:00.000Z');
+    // The arrays are still zero-filled to the whole window.
+    expect(result.importPrice_cents_per_kwh).toHaveLength(8);
+    expect(result.importPrice_cents_per_kwh.slice(4)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('publishedUntil is the window start when VRM priced no slot in it', async () => {
+    const client = new VRMClient({ installationId: '123', token: 'tok' });
+    const startMs = new Date('2026-10-13T10:00:00Z').getTime();
+    const endMs = new Date('2026-10-13T11:00:00Z').getTime();
+    vi.stubGlobal('fetch', makeFetch({ success: true, records: { deGs: [[startMs, 0.1]] } }));
+
+    const result = await client.fetchPrices({ startMs, endMs });
+    expect(result.publishedUntil).toBe('2026-10-13T10:00:00.000Z');
+  });
 });
 
 describe('VRMClient — static helpers', () => {

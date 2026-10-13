@@ -39,7 +39,11 @@ vi.mock('../../../api/services/pv-prediction-service.ts', () => ({
 vi.mock('../../../api/services/prediction-config-store.ts', () => ({
   loadPredictionConfig: vi.fn(),
 }));
+vi.mock('../../../api/services/price-forecast-service.ts', () => ({
+  maybeRefreshPriceForecast: vi.fn(() => new Promise(() => {})), // never settles: the refresh must not wait on it
+}));
 
+const { maybeRefreshPriceForecast } = await import('../../../api/services/price-forecast-service.ts');
 const { refreshSeriesFromVrmAndPersist, refreshSettingsFromVrmAndPersist } = await import(
   '../../../api/services/vrm-refresh.ts'
 );
@@ -721,6 +725,31 @@ describe('refreshSeriesFromVrmAndPersist — API data sources', () => {
     errorSpy.mockRestore();
   }, 15_000);
 
+  // The data store rejects a non-finite value on write, which would fail the
+  // whole refresh: such a forecast is treated like a failed one.
+  it.each([
+    ['load', 'Load', { load: 'api', pv: 'vrm' }],
+    ['pv', 'PV', { load: 'vrm', pv: 'api' }],
+  ])('keeps the stored %s series when its forecast has a non-finite value, and still refreshes prices', async (key, label, sources) => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { ...sources, prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+    });
+    const bad = { forecast: { start: '2024-01-02T00:00:00.000Z', step: 15, values: [300, null, 400] } };
+    (key === 'load' ? runForecast : runPvForecast).mockResolvedValue(bad);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await refreshSeriesFromVrmAndPersist();
+
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData[key]).toEqual(baseData[key]);
+    expect(savedData.importPrice.values).toEqual([12]);
+    expect(errorSpy).toHaveBeenCalledWith(`[vrm-refresh] ${label} forecast has a non-finite value at slot 1 — keeping stale data`);
+    errorSpy.mockRestore();
+  });
+
   it('does not call runForecast or runPvForecast when neither source is api', async () => {
     loadSettings.mockResolvedValue({
       ...baseSettings,
@@ -941,5 +970,142 @@ describe('refreshSeriesFromVrmAndPersist — patches data.json at write time', (
     expect(disk.importPrice).toEqual(postedPrices);
     expect(disk.load).toEqual(baseData.load);
     expect(disk.pv.values).toEqual(forecasts.pv_W);
+  });
+});
+
+describe('refreshSeriesFromVrmAndPersist — price forecast hook', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+    loadData.mockResolvedValue({ ...baseData });
+    saveData.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices });
+    mqttService.readVictronSocPercent.mockResolvedValue(70);
+  });
+
+  afterEach(() => {
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  const horizon = (mode) => ({ mode, extraDays: 3, forecastUrl: 'https://epexpredictor.batzill.com', region: 'NL', importVat_percent: 21, riskMargin_cents_per_kWh: 1, refreshMinutes: 60 });
+
+  it('starts a background forecast refresh with the persisted data, without waiting for it', async () => {
+    for (const mode of ['collect', 'on']) {
+      maybeRefreshPriceForecast.mockClear();
+      const settings = { ...baseSettings, extendedHorizon: horizon(mode) };
+      loadSettings.mockResolvedValue(settings);
+
+      // Resolves although the (mocked) forecast refresh never settles.
+      await refreshSeriesFromVrmAndPersist();
+
+      expect(maybeRefreshPriceForecast).toHaveBeenCalledTimes(1);
+      const [passedSettings, passedData, nowMs] = maybeRefreshPriceForecast.mock.calls[0];
+      expect(passedSettings.extendedHorizon.mode).toBe(mode);
+      expect(passedData).toEqual(saveData.mock.lastCall[0]);
+      expect(passedData.soc.value).toBe(70);
+      expect(typeof nowMs).toBe('number');
+    }
+  });
+
+  it('does not touch the forecast when the mode is off or the block is absent', async () => {
+    loadSettings.mockResolvedValue({ ...baseSettings, extendedHorizon: horizon('off') });
+    await refreshSeriesFromVrmAndPersist();
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    await refreshSeriesFromVrmAndPersist();
+    expect(maybeRefreshPriceForecast).not.toHaveBeenCalled();
+  });
+});
+
+describe('refreshSeriesFromVrmAndPersist — multi-day horizon inputs', () => {
+  const stored = { ...baseData, importPricePublishedUntil: '2024-01-01T23:00:00.000Z' };
+  let runForecast, runPvForecast, loadPredictionConfig, fetchPricesFromHA;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    process.env.VRM_INSTALLATION_ID = '123';
+    process.env.VRM_TOKEN = 'tok';
+
+    ({ runForecast } = await import('../../../api/services/load-prediction-service.ts'));
+    ({ runPvForecast } = await import('../../../api/services/pv-prediction-service.ts'));
+    ({ loadPredictionConfig } = await import('../../../api/services/prediction-config-store.ts'));
+    ({ fetchPricesFromHA } = await import('../../../api/services/ha-price-service.ts'));
+
+    loadSettings.mockResolvedValue({ ...baseSettings });
+    loadData.mockResolvedValue({ ...stored });
+    saveData.mockResolvedValue();
+    saveSettings.mockResolvedValue();
+    wireUpdateSettings({ loadSettings, saveSettings, updateSettings });
+    wireUpdateData({ loadData, saveData, updateData });
+    mqttService.readVictronSocPercent.mockResolvedValue(50);
+    mockFetchForecasts.mockResolvedValue({ ...forecasts });
+    mockFetchPrices.mockResolvedValue({ ...prices, publishedUntil: '2024-01-01T10:15:00.000Z' });
+    loadPredictionConfig.mockResolvedValue({ pvConfig: { latitude: 50.85, longitude: 4.35 } });
+  });
+
+  afterEach(() => {
+    delete process.env.VRM_INSTALLATION_ID;
+    delete process.env.VRM_TOKEN;
+  });
+
+  it('persists where VRM\'s published prices end next to the import series', async () => {
+    await refreshSeriesFromVrmAndPersist();
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.importPricePublishedUntil).toBe('2024-01-01T10:15:00.000Z');
+    expect(savedData.importPrice.values).toEqual([12]);
+  });
+
+  it('keeps the stored value with the stored series when the VRM price fetch fails', async () => {
+    mockFetchPrices.mockRejectedValue(new Error('prices unavailable'));
+    await refreshSeriesFromVrmAndPersist();
+    const savedData = saveData.mock.calls[0][0];
+    expect(savedData.importPricePublishedUntil).toBe(stored.importPricePublishedUntil);
+    expect(savedData.importPrice).toEqual(stored.importPrice);
+  });
+
+  it.each(['ha', 'api'])('drops it once prices come from %s', async (source) => {
+    loadSettings.mockResolvedValue({ ...baseSettings, dataSources: { ...baseSettings.dataSources, prices: source } });
+    fetchPricesFromHA.mockResolvedValueOnce({
+      importPrice: { start: '2024-01-01T10:00:00.000Z', step: 15, values: [20] },
+      exportPrice: { start: '2024-01-01T10:00:00.000Z', step: 15, values: [20] },
+    });
+    await refreshSeriesFromVrmAndPersist();
+    expect(mockFetchPrices).not.toHaveBeenCalled();
+    expect(saveData.mock.calls[0][0]).not.toHaveProperty('importPricePublishedUntil');
+  });
+
+  it('hands the extendedHorizon block to the load and PV forecasts', async () => {
+    const extendedHorizon = { mode: 'collect', extraDays: 2 };
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'api', prices: 'vrm', soc: 'mqtt' },
+      haUrl: 'http://ha.local',
+      haToken: 'token123',
+      extendedHorizon,
+    });
+    runForecast.mockResolvedValue({ forecast: baseData.load });
+    runPvForecast.mockResolvedValue({ forecast: baseData.pv });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runForecast.mock.calls[0][0]).toMatchObject({ extendedHorizon, haUrl: 'http://ha.local' });
+    expect(runPvForecast.mock.calls[0][0]).toMatchObject({ extendedHorizon });
+  });
+
+  it('adds no extendedHorizon key when the settings have none', async () => {
+    loadSettings.mockResolvedValue({
+      ...baseSettings,
+      dataSources: { load: 'api', pv: 'vrm', prices: 'vrm', soc: 'mqtt' },
+    });
+    runForecast.mockResolvedValue({ forecast: baseData.load });
+
+    await refreshSeriesFromVrmAndPersist();
+
+    expect(runForecast.mock.calls[0][0]).not.toHaveProperty('extendedHorizon');
   });
 });

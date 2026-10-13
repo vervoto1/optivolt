@@ -173,6 +173,16 @@ export function getElements() {
     exportTariffTail: document.getElementById('export-tariff-tail'),
     exportTariffStatus: document.getElementById('export-tariff-status'),
 
+    // Multi-day horizon
+    extendedHorizonMode: document.getElementById('extended-horizon-mode'),
+    extendedHorizonExtraDays: document.getElementById('extended-horizon-extra-days'),
+    extendedHorizonForecastUrl: document.getElementById('extended-horizon-forecast-url'),
+    extendedHorizonRegion: document.getElementById('extended-horizon-region'),
+    extendedHorizonVat: document.getElementById('extended-horizon-vat'),
+    extendedHorizonRiskMargin: document.getElementById('extended-horizon-risk-margin'),
+    extendedHorizonRefresh: document.getElementById('extended-horizon-refresh'),
+    extendedHorizonStatus: document.getElementById('extended-horizon-status'),
+
     // EV summary (Optimizer tab)
     evSummaryBlock: $("#ev-summary-block"),
     sumEvGrid: $("#sum-ev-grid-kwh"),
@@ -265,6 +275,7 @@ export function wireGlobalInputs(
     onFlowsAggregationChange,
     updateTerminalCustomUI,
     updateExportTariffUI,
+    updateExtendedHorizonUI,
   }
 ) {
   // Auto-save only settings-owned controls.
@@ -292,6 +303,12 @@ export function wireGlobalInputs(
       el?.addEventListener("change", updateExportTariffUI);
     }
     updateExportTariffUI();
+  }
+
+  // The multi-day horizon status follows the mode it describes.
+  if (updateExtendedHorizonUI) {
+    els.extendedHorizonMode?.addEventListener("change", updateExtendedHorizonUI);
+    updateExtendedHorizonUI();
   }
 
   // Manual recompute

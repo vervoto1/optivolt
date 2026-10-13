@@ -113,3 +113,53 @@ describe('buildPlanSummary — grid cost totals', () => {
     expect(s.netGridCost_cents).toBeCloseTo(8);
   });
 });
+
+describe('buildPlanSummary — multi-day forecast rows', () => {
+  const firm = [
+    makeRow({ evLoad: 0, load: 1000, imp: 1000, g2l: 1000, ic: 10 }),
+    makeRow({ evLoad: 0, load: 2000, imp: 2000, g2l: 2000, ic: 20, exp: 500, ec: 4 }),
+  ];
+  const forecast = [
+    makeRow({ evLoad: 0, load: 3000, imp: 3000, g2l: 3000, ic: 30, g2ev: 1000, priceForecast: true }),
+  ];
+
+  it('totals the firm rows as before and reports the forecast rows separately', () => {
+    const alone = buildPlanSummary(firm, cfg, { gridChargeTippingPoint_cents_per_kWh: 7 });
+    const s = buildPlanSummary([...firm, ...forecast], cfg, { gridChargeTippingPoint_cents_per_kWh: 7 });
+    const { forecast: block, ...firmPart } = s;
+    expect(firmPart).toEqual(alone);
+    expect(block).toEqual({
+      loadTotal_kWh: 3,
+      pvTotal_kWh: 0,
+      evLoadTotal_kWh: 0,
+      loadFromGrid_kWh: 3,
+      loadFromBattery_kWh: 0,
+      loadFromPv_kWh: 0,
+      gridToBattery_kWh: 0,
+      batteryToGrid_kWh: 0,
+      pvCurtailed_kWh: 0,
+      importEnergy_kWh: 3,
+      importCost_cents: 90,
+      exportCost_cents: 0,
+      netGridCost_cents: 90,
+      avgImportPrice_cents_per_kWh: 30,
+      evChargeTotal_kWh: 1,
+      evChargeFromGrid_kWh: 1,
+      evChargeFromPv_kWh: 0,
+      evChargeFromBattery_kWh: 0,
+    });
+  });
+
+  it('has no forecast block, and the same key order, without forecast rows', () => {
+    const s = buildPlanSummary(firm, cfg);
+    expect(s).not.toHaveProperty('forecast');
+    expect(Object.keys(s)).toEqual([
+      'loadTotal_kWh', 'pvTotal_kWh', 'evLoadTotal_kWh', 'loadFromGrid_kWh', 'loadFromBattery_kWh', 'loadFromPv_kWh',
+      'gridToBattery_kWh', 'batteryToGrid_kWh', 'pvCurtailed_kWh', 'importEnergy_kWh', 'importCost_cents',
+      'exportCost_cents', 'netGridCost_cents', 'avgImportPrice_cents_per_kWh',
+      'gridBatteryTippingPoint_cents_per_kWh', 'gridChargeTippingPoint_cents_per_kWh',
+      'batteryExportTippingPoint_cents_per_kWh', 'pvExportTippingPoint_cents_per_kWh', 'rebalanceStatus',
+      'evChargeTotal_kWh', 'evChargeFromGrid_kWh', 'evChargeFromPv_kWh', 'evChargeFromBattery_kWh',
+    ]);
+  });
+});

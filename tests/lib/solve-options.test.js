@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { MIP_SOLVE_OPTIONS, SOLVE_TIME_LIMIT_S, solveOptionsFor } from '../../lib/solve-options.ts';
+import { MIP_SOLVE_OPTIONS, SOLVE_TIME_LIMIT_S, EXTENDED_SOLVE_TIME_LIMIT_S, extendedSolveOptions, solveOptionsFor } from '../../lib/solve-options.ts';
 
 describe('solve-options', () => {
   it('solves a non-empty horizon as a MILP with the planner gap, and an empty one as a plain LP', () => {
@@ -31,5 +31,26 @@ describe('solve-options', () => {
       expect(src, file).toContain("from '../../lib/solve-options.ts'".replace('../../', file.startsWith('scripts') ? '../' : '../../'));
       expect(src, file).not.toMatch(/mip_rel_gap:\s*0\./);
     }
+  });
+
+  describe('extendedSolveOptions (multi-day horizon)', () => {
+    it('solves to a zero relative gap with an absolute gap of 0.5 % of the firm-only objective', () => {
+      expect(extendedSolveOptions({ firmObjective: -520 })).toEqual({ mip_rel_gap: 0, mip_abs_gap: 2.6, time_limit: 15 });
+      expect(extendedSolveOptions({ firmObjective: 1000 })).toEqual({ mip_rel_gap: 0, mip_abs_gap: 5, time_limit: 15 });
+      expect(EXTENDED_SOLVE_TIME_LIMIT_S).toBe(15);
+    });
+
+    it('never goes below the 0.01 c floor (small or non-finite firm objective)', () => {
+      expect(extendedSolveOptions({ firmObjective: 0 }).mip_abs_gap).toBe(0.01);
+      expect(extendedSolveOptions({ firmObjective: 1 }).mip_abs_gap).toBe(0.01);
+      expect(extendedSolveOptions({ firmObjective: Number.NaN }).mip_abs_gap).toBe(0.01);
+      expect(extendedSolveOptions({ firmObjective: -Infinity }).mip_abs_gap).toBe(0.01);
+    });
+
+    it('leaves the planner options untouched', () => {
+      extendedSolveOptions({ firmObjective: 100 });
+      expect(MIP_SOLVE_OPTIONS).toEqual({ mip_rel_gap: 0.005, mip_abs_gap: 0.01 });
+      expect(solveOptionsFor({ load_W: [1] })).toEqual({ mip_rel_gap: 0.005, mip_abs_gap: 0.01, time_limit: 30 });
+    });
   });
 });

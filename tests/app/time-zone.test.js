@@ -10,8 +10,10 @@ import {
   fmtZonedDDMM,
   zonedDateKey,
   isZonedMidnight,
+  fmtZonedWeekday,
+  spansMultipleDays,
 } from '../../app/src/time-zone.js';
-import { toDatetimeLocal, fromDatetimeLocal, resolveDepartureMs } from '../../app/src/utils.js';
+import { toDatetimeLocal, fromDatetimeLocal, resolveDepartureMs, evSocPoint } from '../../app/src/utils.js';
 import { buildTimeAxisFromTimestamps } from '../../app/src/charts/core.js';
 
 // The suite runs with TZ=Europe/Amsterdam (vitest.config.js), so these tests
@@ -95,5 +97,49 @@ describe('wall time ↔ instant in the display zone', () => {
     expect(resolveDepartureMs('14:00', 'tomorrow', SLOT_MS)).toBe(Date.parse('2026-10-10T14:00:00Z'));
     setDisplayTimeZone('Europe/Amsterdam');
     expect(resolveDepartureMs('14:00', 'today', SLOT_MS)).toBe(Date.parse('2026-10-09T12:00:00Z'));
+  });
+});
+
+describe('weekday labels', () => {
+  it('names the weekday in the display zone', () => {
+    // 2026-10-09T23:30Z is Fri 23:30 in UTC but Sat 01:30 in Amsterdam.
+    const ms = Date.parse('2026-10-09T23:30:00Z');
+    setDisplayTimeZone('UTC');
+    expect(fmtZonedWeekday(ms)).toBe('Fri');
+    setDisplayTimeZone('Europe/Amsterdam');
+    expect(fmtZonedWeekday(new Date(ms))).toBe('Sat');
+    expect(fmtZonedWeekday(NaN)).toBe('');
+  });
+
+  it('a span counts as multi-day only past 24 hours', () => {
+    const DAY = 24 * 3_600_000;
+    expect(spansMultipleDays([SLOT_MS, SLOT_MS + DAY])).toBe(false);
+    expect(spansMultipleDays([SLOT_MS, SLOT_MS + 1000, SLOT_MS + DAY + 1])).toBe(true);
+    expect(spansMultipleDays([SLOT_MS])).toBe(false);
+    expect(spansMultipleDays(null)).toBe(false);
+  });
+
+  it('chart tooltips name the weekday past 24 hours', () => {
+    setDisplayTimeZone('Europe/Amsterdam');
+    const HOUR = 3_600_000;
+    const short = buildTimeAxisFromTimestamps([SLOT_MS, SLOT_MS + HOUR]);
+    expect(short.tooltipTitleCb([{ dataIndex: 1 }])).toBe('13:45');
+    const ts = Array.from({ length: 30 }, (_, i) => SLOT_MS + i * HOUR);
+    const long = buildTimeAxisFromTimestamps(ts);
+    expect(long.tooltipTitleCb([{ dataIndex: 0 }])).toBe('Fri 12:45');
+    expect(long.tooltipTitleCb([{ dataIndex: 29 }])).toBe('Sat 17:45');
+    expect(long.tooltipTitleCb([{ dataIndex: 99 }])).toBe('');
+  });
+});
+
+describe('evSocPoint', () => {
+  it('plots a gap for forecast rows without EV state and 0 for firm rows', () => {
+    expect(evSocPoint({ ev_soc_percent: 42 })).toBe(42);
+    expect(evSocPoint({ ev_soc_percent: 42, priceForecast: true })).toBe(42);
+    expect(evSocPoint({ ev_soc_percent: null, priceForecast: true })).toBeNull();
+    expect(evSocPoint({ priceForecast: true })).toBeNull();
+    expect(evSocPoint({ ev_soc_percent: null })).toBe(0);
+    expect(evSocPoint({})).toBe(0);
+    expect(evSocPoint(undefined)).toBe(0);
   });
 });

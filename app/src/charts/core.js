@@ -1,6 +1,6 @@
 /* global Chart */
 import { dim } from './colors.js';
-import { fmtZonedDDMM, fmtZonedHHMM, zonedParts } from '../time-zone.js';
+import { fmtZonedDDMM, fmtZonedHHMM, fmtZonedWeekday, spansMultipleDays, zonedParts } from '../time-zone.js';
 
 export function fmtHHMM(dt) {
   return fmtZonedHHMM(dt);
@@ -44,6 +44,8 @@ export function buildTimeAxisFromTimestamps(timestampsMs) {
   }
 
   const labels = times.map(dt => fmtHHMM(dt));
+  // Past 24 hours a clock time repeats, so the tooltip names the day too.
+  const withWeekday = spansMultipleDays(timestampsMs);
 
   return {
     labels,
@@ -53,7 +55,8 @@ export function buildTimeAxisFromTimestamps(timestampsMs) {
     },
     tooltipTitleCb: (items) => {
       const idx = items?.[0]?.dataIndex;
-      return times[idx] ? fmtHHMM(times[idx]) : "";
+      if (!times[idx]) return "";
+      return withWeekday ? `${fmtZonedWeekday(times[idx])} ${fmtHHMM(times[idx])}` : fmtHHMM(times[idx]);
     },
     gridCb: (ctx) => {
       const idx = ctx.index ?? ctx.tick?.index ?? ctx.tick?.value;

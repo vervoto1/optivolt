@@ -4,15 +4,17 @@ import { updateData } from './data-store.ts';
 import { loadCalibration, loadEvCalibration, generateThresholdsFromCurve, EV_MIN_RATE } from './efficiency-calibrator.ts';
 import { applyPredictionAdjustmentsToData, pruneExpiredPredictionAdjustments } from './prediction-adjustments.ts';
 import { recordFullSocObservation } from './rebalance-nudge.ts';
-import { extractWindow, getQuarterStart, getSeriesEndMs, sampleSeriesAt } from '../../lib/time-series-utils.ts';
+import { extendedWindowEndMs, extractWindow, getForecastTimeRange, getQuarterStart, getSeriesEndMs, sampleSeriesAt } from '../../lib/time-series-utils.ts';
 import { fetchHaEntityState } from './ha-client.ts';
 import { resolveEvMode } from './ev-mode.ts';
 import { resolveDepartureMs } from './ev-departure.ts';
 import { fetchEvTargetSoc } from './ev-target-soc.ts';
 import { evChargeWattsPerAmp } from '../../lib/build-lp.ts';
-import { resolveExportPrices, terminalTailMinPrice } from '../../lib/export-tariff.ts';
+import { resolveExportPrices, terminalTailMinPrice, type ExportPriceRegime } from '../../lib/export-tariff.ts';
+import { priceForecastSlots, type ExportRelation, type FitRejectionReason, type ImportFit, type ImportResolution, type StoredFitRejectionReason } from '../../lib/forecast-pricing.ts';
+import { getPriceForecastStatus, publishedImportEndMs } from './price-forecast-service.ts';
 import type { SolverConfig, EvConfig, TimeSeries, ExportTariffInfo } from '../../lib/types.ts';
-import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult } from '../types.ts';
+import type { Settings, Data, SocData, CalibrationResult, EvCalibrationResult, PriceForecastFit, PriceForecastRegion } from '../types.ts';
 
 /**
  * How long a rebalance hold may stay pending (rebalancing enabled, the hold
@@ -128,23 +130,7 @@ function applyExportTariff(cfg: SolverConfig, settings: Settings, data: Data, no
   });
   cfg.exportPrice = resolved.exportPrice;
 
-  // The end-of-horizon valuation follows the tariff of the last slot, so a 2026
-  // horizon keeps the top-level setting untouched.
-  let terminalOverride: ExportTariffInfo['terminalOverride'] = null;
-  const lastRegime = resolved.regime[T - 1];
-  if (lastRegime === 'market' || lastRegime === 'fallback') {
-    terminalOverride = tariff.terminalSocValuation === 'tailMin'
-      ? {
-          terminalSocValuation: 'custom',
-          terminalSocCustomPrice_cents_per_kWh: terminalTailMinPrice(cfg.importPrice, settings.stepSize_m, tariff.terminalTail_h),
-        }
-      : {
-          terminalSocValuation: tariff.terminalSocValuation,
-          terminalSocCustomPrice_cents_per_kWh: cfg.terminalSocCustomPrice_cents_per_kWh,
-        };
-    cfg.terminalSocValuation = terminalOverride.terminalSocValuation;
-    cfg.terminalSocCustomPrice_cents_per_kWh = terminalOverride.terminalSocCustomPrice_cents_per_kWh;
-  }
+  const terminalOverride = applyTerminalOverride(cfg, settings, resolved.regime[T - 1]);
 
   cfg.exportTariffInfo = {
     marketPricedSlots: resolved.marketPricedSlots,
@@ -153,6 +139,68 @@ function applyExportTariff(cfg: SolverConfig, settings: Settings, data: Data, no
     effectiveFrom: tariff.effectiveFrom,
     terminalOverride,
   };
+}
+
+/**
+ * The end-of-horizon valuation follows the tariff of the last slot, so a 2026
+ * horizon keeps the top-level setting untouched: when the last slot is market
+ * priced (or the 0 fallback) the tariff block's valuation replaces it on
+ * `cfg` (tailMin over `cfg.importPrice`). Returns the override, or null.
+ * Requires `settings.exportTariff`.
+ */
+function applyTerminalOverride(
+  cfg: SolverConfig,
+  settings: Settings,
+  lastRegime: ExportPriceRegime | undefined,
+): ExportTariffInfo['terminalOverride'] {
+  const tariff = settings.exportTariff!;
+  if (lastRegime !== 'market' && lastRegime !== 'fallback') return null;
+  const terminalOverride: NonNullable<ExportTariffInfo['terminalOverride']> = tariff.terminalSocValuation === 'tailMin'
+    ? {
+        terminalSocValuation: 'custom',
+        terminalSocCustomPrice_cents_per_kWh: terminalTailMinPrice(cfg.importPrice, settings.stepSize_m, tariff.terminalTail_h),
+      }
+    : {
+        terminalSocValuation: tariff.terminalSocValuation,
+        terminalSocCustomPrice_cents_per_kWh: cfg.terminalSocCustomPrice_cents_per_kWh,
+      };
+  cfg.terminalSocValuation = terminalOverride.terminalSocValuation;
+  cfg.terminalSocCustomPrice_cents_per_kWh = terminalOverride.terminalSocCustomPrice_cents_per_kWh;
+  return terminalOverride;
+}
+
+/**
+ * The end of the published VRM import prices, when it caps the firm part:
+ * only with `extendedHorizon.mode` `on` and VRM prices (VRM zero-fills the
+ * unpublished slots, so its series end is not where its prices end; see
+ * `publishedImportEndMs`). Infinity otherwise, so `off` and `collect` keep
+ * today's horizon exactly, zero-filled slots included.
+ */
+function vrmPublishedUntilMs(settings: Settings, data: Data): number {
+  if (settings.extendedHorizon?.mode !== 'on' || settings.dataSources.prices !== 'vrm') return Infinity;
+  // null: not a single non-zero price, i.e. nothing published at all.
+  return publishedImportEndMs(data, 'vrm') ?? new Date(data.importPrice.start).getTime();
+}
+
+/**
+ * `extendedHorizon.mode` `collect` must not change any plan, but in that mode
+ * the planner's own load and PV predictors (the `api` sources) already write
+ * the longer planning window. Their series ends are therefore capped at the
+ * old (`getForecastTimeRange`) window end, which is where those predictors
+ * end with the mode off, so the horizon is still set by the prices exactly as
+ * with the mode off, e.g. when HA prices for tomorrow arrive before 13:00 or
+ * `api` prices are posted for several days. VRM and HA load/PV series are
+ * never extended, so they are not capped (with the mode off they may already
+ * reach past the old window). Infinity otherwise.
+ *
+ * Not applied with the mode `on`: there the firm part runs to the end of the
+ * published prices, also when those reach past the old window (published
+ * prices are real prices). The firm-only plan of `on` is then longer than the
+ * `off` plan, which is intended: it is the fallback of the extended solve.
+ */
+function collectSeriesCapMs(settings: Settings, nowMs: number, source: 'load' | 'pv'): number {
+  if (settings.extendedHorizon?.mode !== 'collect' || settings.dataSources[source] !== 'api') return Infinity;
+  return Date.parse(getForecastTimeRange(nowMs).endIso);
 }
 
 /**
@@ -172,12 +220,15 @@ export function buildSolverConfigFromSettings(
   nowMs = getQuarterStart(new Date(), settings.stepSize_m),
   evState?: EvLiveState,
 ): SolverConfig {
-  const loadEndMs   = getSeriesEndMs(data.load);
-  const pvEndMs     = getSeriesEndMs(data.pv);
+  const loadEndMs   = Math.min(getSeriesEndMs(data.load), collectSeriesCapMs(settings, nowMs, 'load'));
+  const pvEndMs     = Math.min(getSeriesEndMs(data.pv), collectSeriesCapMs(settings, nowMs, 'pv'));
   const importEndMs = getSeriesEndMs(data.importPrice);
   const exportEndMs = getSeriesEndMs(data.exportPrice);
   const evLoadEndMs = data.evLoad ? getSeriesEndMs(data.evLoad) : Infinity;
-  const endMs = Math.min(loadEndMs, pvEndMs, importEndMs, exportEndMs, evLoadEndMs);
+  // The firm end: forecast prices never stand in for missing published ones,
+  // so with the multi-day horizon on, VRM's zero-filled slots are cut off too.
+  const publishedUntilMs = vrmPublishedUntilMs(settings, data);
+  const endMs = Math.min(loadEndMs, pvEndMs, importEndMs, exportEndMs, evLoadEndMs, publishedUntilMs);
 
   if (endMs <= nowMs) {
     throw new HttpError(422, 'Insufficient future data', {
@@ -188,6 +239,7 @@ export function buildSolverConfigFromSettings(
         importEnd: new Date(importEndMs).toISOString(),
         exportEnd: new Date(exportEndMs).toISOString(),
         ...(data.evLoad ? { evLoadEnd: new Date(evLoadEndMs).toISOString() } : {}),
+        ...(Number.isFinite(publishedUntilMs) ? { publishedUntil: new Date(publishedUntilMs).toISOString() } : {}),
       },
     });
   }
@@ -578,6 +630,283 @@ export async function buildPlannerConfig(
   }
 
   return cfg;
+}
+
+// ----------------------------- Multi-day horizon ---------------------------
+
+/** What the extended config needs from the firm-only solve. */
+export interface ExtendedFirmResult {
+  /** Objective of the firm-only solve. Not read here: the planner derives the extended MIP gap from it. */
+  objective?: number;
+  /** The firm-only plan's SoC at the end of the firm part, `rows[firmSlots − 1].soc` (Wh). Becomes `socRef_Wh`. */
+  socAtFirmEnd_Wh: number;
+  /** Start slot of the hold window the firm-only plan chose (`rebalanceWindow.startIdx`), when it has one. */
+  rebalanceStartSlot?: number;
+}
+
+export interface BuildExtendedSolverConfigInput {
+  /** The firm-only config exactly as it was solved (after any rebalance pin relaxation). */
+  firmCfg: SolverConfig;
+  settings: Settings;
+  /** The plan data (getSolverInputs' `data`); prediction adjustments are applied here as in buildPlannerConfig. */
+  data: Data;
+  /** Start of slot 0, the same instant the firm config was built for. */
+  nowMs: number;
+  firmResult: ExtendedFirmResult;
+}
+
+export type ExtendedHorizonSkipReason =
+  | 'off'                 // extendedHorizon.mode is not `on`
+  | 'forecastMissing'     // no stored price forecast
+  | 'forecastStale'       // the stored forecast is older than 12 h
+  | 'forecastRegion'      // the stored forecast is for another region
+  | 'noForecastSlots'     // nothing to append: load/PV/window/forecast end at or before the firm end
+  | 'fitRejected'         // import fit rejected and no usable stored fit
+  | 'exportInconsistent'  // net-metered forecast slots, but the firm export relation is inconsistent
+  | 'invalidFirmResult';  // socAtFirmEnd_Wh is not a finite number
+
+/**
+ * Which series ends the extended horizon (the earliest end; ties in this
+ * order), or `fitYear`: the fresh import fit is on this year's published
+ * prices and the next year's slots are left out (`priceForecastSlots`).
+ */
+export type ExtendedHorizonEndReason = 'load' | 'pv' | 'evLoad' | 'window' | 'forecast' | 'fitYear';
+
+export interface ExtendedHorizonInfo {
+  /** Firm (published-price) slots: the firm config's T, `cfg.firmSlots`. */
+  firmSlots: number;
+  /** Forecast slots appended after the firm part. */
+  extendedSlots: number;
+  /** firmSlots + extendedSlots. */
+  totalSlots: number;
+  /** ISO end of the firm part and of the extended horizon. */
+  firmEnd: string;
+  end: string;
+  endReason: ExtendedHorizonEndReason;
+  /** Resolution the forecast was resampled to (the firm import's). */
+  resolution: ImportResolution;
+  /** The import fit used: fresh (`fittedAt` = now) or the stored fallback. */
+  fit: PriceForecastFit & { source: 'fresh' | 'stored'; method?: ImportFit['method'] };
+  /** Why the fresh fit was rejected, when the stored fit was used instead. */
+  freshFitRejection?: { reason: FitRejectionReason; message: string };
+  /** Continued net-metering export relation, or null when no forecast slot is net-metered. */
+  exportRelation: ExportRelation | null;
+  /** Region of the forecast, for `persistPriceForecastFit`. */
+  region: PriceForecastRegion;
+  /** A fresh accepted fit for the caller to persist with `persistPriceForecastFit` (absent when the stored fit was used). */
+  newFit?: PriceForecastFit;
+}
+
+export interface ExtendedHorizonSkip {
+  skipped: ExtendedHorizonSkipReason;
+  message: string;
+  /** With `noForecastSlots`: which series ended the horizon. */
+  endReason?: ExtendedHorizonEndReason;
+  /** With `fitRejected`: the fresh fit's rejection and why the stored fit was not usable. */
+  fitRejection?: { reason: FitRejectionReason; message: string; storedRejection: StoredFitRejectionReason };
+}
+
+export type ExtendedSolverConfigResult = { cfg: SolverConfig; info: ExtendedHorizonInfo } | ExtendedHorizonSkip;
+
+const FORECAST_STATE_SKIP = {
+  missing: 'forecastMissing',
+  stale: 'forecastStale',
+  region: 'forecastRegion',
+} as const;
+
+/**
+ * The extended (multi-day) solver config, derived from the firm-only config
+ * that was just solved, or the reason there is none. Pure (no I/O).
+ *
+ * - Only with `extendedHorizon.mode` `on` and a fresh stored forecast for the
+ *   configured region.
+ * - Forecast slots run from the firm end to the earliest of the load end, the
+ *   PV end, the evLoad end (when evLoad is used, as in the firm config), the
+ *   extended window end (`extendedWindowEndMs`: the local midnight at or
+ *   after the firm end plus `extraDays` calendar days) and
+ *   the forecast end; pricing may cut that short where the forecast lacks a
+ *   quarter of a slot's hour.
+ * - The firm part of every array is the firm config's own (calibration
+ *   thresholds, adjustments and the export tariff are therefore identical);
+ *   forecast load/PV come from the plan data with the prediction adjustments
+ *   applied, exactly like buildPlannerConfig.
+ * - Prices: see lib/forecast-pricing.ts. The export tariff is applied to the
+ *   forecast slots with the forecast market price as the market series; the
+ *   terminal valuation follows the extended last slot (reset to the settings
+ *   first, so a firm-only override does not leak), and `exportTariffInfo`
+ *   counts both parts.
+ * - `firmSlots`, `socRef_Wh` (the firm-only SoC at the firm end) and
+ *   `carryOverMargin_cents_per_kWh` (`riskMargin_cents_per_kWh`) are set.
+ * - A rebalance hold's start is fixed (`rebalanceMinStartSlot` =
+ *   `rebalanceMaxStartSlot`) at the start the firm plan chose, so the extended
+ *   solve has no window to search; without a reported start, or for a hold
+ *   longer than the firm part, the firm config's cap is kept (buildLP then
+ *   defers a hold that has no slot-0 pin).
+ * - EV config stays as in the firm config: buildLP confines it to firm slots.
+ *
+ * A fresh accepted import fit is returned as `info.newFit`; the caller
+ * persists it (fire-and-forget) with `persistPriceForecastFit`, keeping this
+ * function free of I/O and the stored fallback fit current.
+ */
+export function buildExtendedSolverConfig({
+  firmCfg, settings, data, nowMs, firmResult,
+}: BuildExtendedSolverConfigInput): ExtendedSolverConfigResult {
+  const horizon = settings.extendedHorizon;
+  if (horizon?.mode !== 'on') {
+    return { skipped: 'off', message: 'the multi-day horizon is not switched on' };
+  }
+  if (!Number.isFinite(firmResult.socAtFirmEnd_Wh)) {
+    return { skipped: 'invalidFirmResult', message: 'the firm-only plan has no SoC at the firm end' };
+  }
+  const status = getPriceForecastStatus(data, horizon, nowMs);
+  if (status.state !== 'fresh') {
+    return { skipped: FORECAST_STATE_SKIP[status.state], message: `the price forecast is ${status.state === 'region' ? 'for another region' : status.state}` };
+  }
+  const forecast = status.forecast!;
+
+  const stepMs = settings.stepSize_m * 60_000;
+  const firmSlots = firmCfg.load_W.length;
+  const firmEndMs = nowMs + firmSlots * stepMs;
+  const adjusted = applyPredictionAdjustmentsToData(data);
+  const evLoad = resolveEvMode(settings) !== 'native' && data.evLoad ? data.evLoad : undefined;
+
+  const ends: Array<[ExtendedHorizonEndReason, number]> = [
+    ['load', getSeriesEndMs(adjusted.load)],
+    ['pv', getSeriesEndMs(adjusted.pv)],
+    ['evLoad', evLoad ? getSeriesEndMs(evLoad) : Infinity],
+    ['window', extendedWindowEndMs(settings, firmEndMs)],
+    ['forecast', getSeriesEndMs(forecast.series)],
+  ];
+  let [endReason, endMs] = ends[0];
+  for (const [reason, ms] of ends) {
+    if (ms < endMs) [endReason, endMs] = [reason, ms];
+  }
+  const requested = Math.floor((endMs - nowMs) / stepMs) - firmSlots;
+  if (requested <= 0) {
+    return { skipped: 'noForecastSlots', endReason, message: `no slots to append: the ${endReason} data ends at or before the firm end` };
+  }
+
+  const slotStartsMs = Array.from({ length: requested }, (_, i) => firmEndMs + i * stepMs);
+  const priced = priceForecastSlots({
+    nowMs,
+    stepSize_m: settings.stepSize_m,
+    firmStartMs: nowMs,
+    firmImport: firmCfg.importPrice,
+    firmSourceExport: extractWindow(data.exportPrice, nowMs, firmEndMs),
+    slotStartsMs,
+    importSeries: data.importPrice,
+    importPublishedUntilMs: publishedImportEndMs(data, settings.dataSources.prices),
+    forecast: { series: forecast.series, publishedEndMs: Date.parse(forecast.publishedEnd), fit: forecast.fit },
+    vat_percent: horizon.importVat_percent,
+    tariff: settings.exportTariff,
+    marketSourceConfigured: isMarketSourceConfigured(settings, data),
+  });
+  if (!priced.ok) {
+    if (priced.reason === 'noForecastSlots') {
+      return { skipped: 'noForecastSlots', endReason: 'forecast', message: priced.message };
+    }
+    return { skipped: priced.reason, message: priced.message, ...(priced.fitRejection ? { fitRejection: priced.fitRejection } : {}) };
+  }
+
+  const extendedSlots = priced.slots;
+  if (priced.truncationReason) endReason = priced.truncationReason;
+  const extEndMs = firmEndMs + extendedSlots * stepMs;
+  const tail = (series: TimeSeries) => extractWindow(series, firmEndMs, extEndMs);
+
+  const cfg: SolverConfig = {
+    ...firmCfg,
+    load_W: [...firmCfg.load_W, ...tail(adjusted.load)],
+    pv_W: [...firmCfg.pv_W, ...tail(adjusted.pv)],
+    importPrice: [...firmCfg.importPrice, ...priced.importPrice],
+    exportPrice: [...firmCfg.exportPrice, ...priced.export.exportPrice],
+    evLoad_W: [...(firmCfg.evLoad_W ?? new Array<number>(firmSlots).fill(0)), ...(evLoad ? tail(evLoad) : new Array<number>(extendedSlots).fill(0))],
+    terminalSocValuation: settings.terminalSocValuation,
+    terminalSocCustomPrice_cents_per_kWh: settings.terminalSocCustomPrice_cents_per_kWh,
+    firmSlots,
+    socRef_Wh: firmResult.socAtFirmEnd_Wh,
+    carryOverMargin_cents_per_kWh: horizon.riskMargin_cents_per_kWh,
+  };
+
+  if (settings.exportTariff && firmCfg.exportTariffInfo) {
+    const firmInfo = firmCfg.exportTariffInfo;
+    cfg.exportTariffInfo = {
+      marketPricedSlots: firmInfo.marketPricedSlots + priced.export.marketPricedSlots,
+      fallbackSlots: firmInfo.fallbackSlots + priced.export.fallbackSlots,
+      // Decided by the last slot, which is now the extended one.
+      missingMarketSource: priced.export.missingMarketSource,
+      effectiveFrom: firmInfo.effectiveFrom,
+      terminalOverride: applyTerminalOverride(cfg, settings, priced.export.regime[extendedSlots - 1]),
+    };
+  }
+
+  // The hold start is fixed (min = max) at the firm plan's, so the extended
+  // solve never branches on it. A hold longer than the firm part is the
+  // exception: the firm-only LP could only start it at slot 0 (its window
+  // covers the whole firm horizon), which is no choice, so that 0 is not
+  // passed on; the firm config's own cap is kept instead, so a slot-0 pin (a
+  // started hold, or the "hold from now" cap within the start tolerance)
+  // still holds from slot 0, and otherwise buildLP defers the hold
+  // (isRebalanceHoldDeferred).
+  const holdSlots = Math.trunc(firmCfg.rebalanceRemainingSlots ?? 0);
+  const startSlot = firmResult.rebalanceStartSlot;
+  if (holdSlots > 0 && holdSlots <= firmSlots && startSlot != null && Number.isFinite(startSlot)) {
+    const start = Math.max(0, Math.trunc(startSlot));
+    cfg.rebalanceMaxStartSlot = start;
+    cfg.rebalanceMinStartSlot = start;
+  }
+
+  const fit = { ...priced.fit, source: priced.fitSource, ...(priced.fitMethod ? { method: priced.fitMethod } : {}) };
+  const info: ExtendedHorizonInfo = {
+    firmSlots,
+    extendedSlots,
+    totalSlots: firmSlots + extendedSlots,
+    firmEnd: new Date(firmEndMs).toISOString(),
+    end: new Date(extEndMs).toISOString(),
+    endReason,
+    resolution: priced.resolution,
+    fit,
+    ...(priced.freshFitRejection ? { freshFitRejection: priced.freshFitRejection } : {}),
+    exportRelation: priced.exportRelation,
+    region: forecast.region,
+    ...(priced.fitSource === 'fresh' ? { newFit: { ...priced.fit } } : {}),
+  };
+  return { cfg, info };
+}
+
+/** A stored fit equal to the new one is rewritten only when it is older than this (keeps its age honest). */
+export const FIT_REWRITE_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Store an accepted import fit as `data.priceForecast.fit` (the fallback when
+ * a later fit is rejected). Skipped when there is no stored forecast, it is
+ * for another region, or the stored fit has the same a, b, n and mad and is
+ * younger than FIT_REWRITE_MIN_AGE_MS (no data.json write every plan).
+ * Never throws; resolves to whether it wrote. Meant to be called without
+ * awaiting it in the solve path.
+ */
+export async function persistPriceForecastFit(
+  fit: PriceForecastFit,
+  region: PriceForecastRegion,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  let wrote = false;
+  try {
+    await updateData(current => {
+      const pf = current.priceForecast;
+      if (!pf || pf.region !== region) return null;
+      const stored = pf.fit;
+      if (stored && stored.a === fit.a && stored.b === fit.b && stored.n === fit.n && stored.mad === fit.mad
+        && nowMs - Date.parse(stored.fittedAt) < FIT_REWRITE_MIN_AGE_MS) {
+        return null;
+      }
+      wrote = true;
+      return { ...current, priceForecast: { ...pf, fit: { ...fit } } };
+    });
+  } catch (err) {
+    console.warn('[config-builder] could not store the price forecast fit:', (err as Error).message);
+    return false;
+  }
+  return wrote;
 }
 
 /**

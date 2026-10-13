@@ -12,7 +12,11 @@ import {
   parseIrradianceResponse,
   parseForecastResponse,
   parseTemperatureResponse,
+  forecastNullTimes,
+  spliceIrradiance,
+  EXTENDED_FORECAST_MODEL,
 } from '../../lib/open-meteo.ts';
+import type { SplicedIrradiance } from '../../lib/open-meteo.ts';
 import type { IrradianceRecord } from '../../lib/predict-pv.ts';
 import type { TemperatureRecord } from '../../lib/load-predictor-temperature.ts';
 import { fetchWithTimeout } from '../../lib/fetch-utils.ts';
@@ -59,6 +63,57 @@ export async function fetchForecastIrradiance(
 
   const data = await response.json();
   return parseForecastResponse(data, resolution);
+}
+
+async function fetchForecastWithNulls(
+  lat: number,
+  lon: number,
+  model: string | undefined,
+  forecastDays: number,
+  resolution: 15 | 60,
+  timeoutMs: number,
+): Promise<SplicedIrradiance> {
+  const url = buildForecastUrl({ latitude: lat, longitude: lon, model, pastDays: 1, forecastDays, resolution });
+  const response = await fetchWithTimeout(url, {}, { timeoutMs, label: 'Open-Meteo Forecast API request' });
+
+  if (!response.ok) {
+    throw new Error(`Open-Meteo Forecast API returned status ${response.status}`);
+  }
+
+  const data = await response.json();
+  return { records: parseForecastResponse(data, resolution), nullTimes: forecastNullTimes(data, resolution) };
+}
+
+export interface ExtendedForecastIrradiance extends SplicedIrradiance {
+  /** Set when the ICON seamless request failed and only ICON D2 was used. */
+  extensionError?: string;
+}
+
+/**
+ * Forecast irradiance for an extended planning window: ICON D2 (the same
+ * request `fetchForecastIrradiance` makes) up to its last non-null value,
+ * then ICON seamless (`forecastDays` days) after it. A failed ICON seamless
+ * request keeps the ICON D2 records alone and reports `extensionError`; a
+ * failed ICON D2 request throws, as it does today. `nullTimes` lists the
+ * interval starts left without a radiation value.
+ */
+export async function fetchExtendedForecastIrradiance(
+  lat: number,
+  lon: number,
+  resolution: 15 | 60,
+  forecastDays: number,
+  timeoutMs = OPEN_METEO_TIMEOUT_MS,
+): Promise<ExtendedForecastIrradiance> {
+  const [primary, secondary] = await Promise.allSettled([
+    fetchForecastWithNulls(lat, lon, undefined, 2, resolution, timeoutMs),
+    fetchForecastWithNulls(lat, lon, EXTENDED_FORECAST_MODEL, forecastDays, resolution, timeoutMs),
+  ]);
+  if (primary.status === 'rejected') throw primary.reason;
+  if (secondary.status === 'rejected') {
+    const extensionError = secondary.reason instanceof Error ? secondary.reason.message : String(secondary.reason);
+    return { ...primary.value, extensionError };
+  }
+  return spliceIrradiance(primary.value, secondary.value);
 }
 
 /**

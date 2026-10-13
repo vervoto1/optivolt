@@ -65,6 +65,13 @@ export function findEvTargetRow(rows) {
   return idx < 0 ? null : { idx, targetSoc_percent: rows[idx].ev_target_soc_percent };
 }
 
+// EV SoC to plot for a plan row. Forecast-priced rows carry no EV state
+// (null), which a chart shows as a gap rather than a drop to 0.
+export function evSocPoint(row) {
+  if (row?.ev_soc_percent == null) return row?.priceForecast ? null : 0;
+  return row.ev_soc_percent;
+}
+
 export function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')

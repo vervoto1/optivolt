@@ -83,6 +83,15 @@
     "terminalSocValuation": "tailMin",
     "terminalTail_h": 6
   },
+  "extendedHorizon": {
+    "mode": "off",
+    "extraDays": 3,
+    "forecastUrl": "https://epexpredictor.batzill.com",
+    "region": "NL",
+    "importVat_percent": 21,
+    "riskMargin_cents_per_kWh": 1.0,
+    "refreshMinutes": 60
+  },
   "cvPhase": {
     "enabled": false,
     "thresholds": [

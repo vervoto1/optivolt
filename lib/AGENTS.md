@@ -12,7 +12,7 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | File | Description |
 |------|-------------|
 | `types.ts` | Shared type definitions: `SolverConfig`, `PlanRow`, `DessSlot`, `PlanSummary`, `TimeSeries`, `TerminalSocValuation` |
-| `time-series-utils.ts` | Time series utilities: `getQuarterStart()`, `extractWindow()`, `sampleSeriesAt()` (timestamp-matched sampling, NaN outside), `buildForecastSeries()`, `computeErrorMetrics()` (MAE/RMSE/MAPE) |
+| `time-series-utils.ts` | Time series utilities: `getQuarterStart()`, `extractWindow()`, `sampleSeriesAt()` (timestamp-matched sampling, NaN outside), `buildForecastSeries()`, `computeErrorMetrics()` (MAE/RMSE/MAPE), `resolvePlanningWindow()` / `extendedHorizonOf()` (load/PV forecast window, extended by `extendedHorizon` in `collect`/`on` mode), `extendedWindowEndMs()` (the extended solve's end: the firm end's local midnight + `extraDays`) |
 | `predict-pv.ts` | PV forecasting with Bird Clear Sky Model: `calculateClearSkyGHI()`, `estimateHourlyCapacity()`, `forecastPv()`, `validatePvForecast()` |
 | `open-meteo.ts` | Open-Meteo API URL builders and response parsers: `buildForecastUrl()`, `parseIrradianceResponse()`, `parseMinutely15Response()` |
 | `predict-load.ts` | Historical load prediction: `predict()`, `validate()`, `generateAllConfigs()`, day filtering, mean/median aggregation |
@@ -24,6 +24,8 @@ Core domain logic for OptiVolt's energy optimization pipeline. Twelve pure TypeS
 | `parse-solution.ts` | HiGHS solver output parser: `parseSolution()` reconstructs energy flows and SoC from solver columns |
 | `plan-summary.ts` | Plan KPI aggregation: `buildPlanSummary()` computes totals, tipping points, rebalance status |
 | `export-tariff.ts` | Export valuation around the end of net metering: `resolveExportPrices()` (per-slot net metering / market − fee / 0 fallback), `parseEffectiveFrom()`, `terminalTailMinPrice()` |
+| `price-forecast.ts` | Market price forecast feed (EpexPredictor): `buildPriceForecastUrl()`, `parsePriceForecastResponse()` (`knownUntil` → `publishedEnd`), `forecastUrlError()`, `PRICE_FORECAST_REGIONS` |
+| `forecast-pricing.ts` | Prices for the forecast slots of a multi-day horizon: `priceForecastSlots()` (resampling to the firm import's resolution, Theil–Sen import fit `a·m + b` with stored-fit fallback, export relation / market rule) |
 | `dess-mapper.ts` | Dynamic ESS strategy mapper: `mapRowsToDessV2()` assigns strategies per 15-minute slot (tipping points; rebalance hold window → proBattery hold) |
 
 ## For AI Agents

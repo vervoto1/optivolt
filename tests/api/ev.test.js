@@ -115,6 +115,28 @@ describe('GET /ev/schedule', () => {
   });
 });
 
+describe('GET /ev/schedule — multi-day forecast rows', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('marks forecast slots and passes their null EV SoC through', async () => {
+    getLastPlan.mockReturnValue({
+      ...mockPlan,
+      rows: [
+        ...mockPlan.rows,
+        { ...makeRow(START_MS + 2_700_000, 0), ev_soc_percent: null, priceForecast: true },
+      ],
+    });
+
+    const res = await get(app, '/ev/schedule');
+
+    expect(res.status).toBe(200);
+    expect(res.body.preview).toBe(false);
+    expect(res.body.slots).toHaveLength(4);
+    expect(res.body.slots.slice(0, 3).every(s => !('priceForecast' in s))).toBe(true);
+    expect(res.body.slots[3]).toMatchObject({ priceForecast: true, ev_soc_percent: null, ev_charge_W: 0 });
+  });
+});
+
 describe('GET /ev/current', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -148,6 +170,43 @@ describe('GET /ev/current', () => {
 
     expect(res.body.timestampMs).toBe(START_MS + 1_800_000);
     expect(res.body.is_charging).toBe(false);
+  });
+
+  it('reads a forecast-priced row (multi-day horizon) as no current slot: null plan fields', async () => {
+    getLastPlan.mockReturnValue({
+      ...mockPlan,
+      rows: [
+        ...mockPlan.rows,
+        { ...makeRow(START_MS + 2_700_000, 2000), ev_soc_percent: null, priceForecast: true },
+      ],
+    });
+    vi.setSystemTime(START_MS + 2_800_000); // inside the forecast row (a stale plan)
+
+    const res = await get(app, '/ev/current');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      timestampMs: null,
+      planned_ev_charge_W: null,
+      planned_ev_charge_mode: null,
+      g2ev_W: null,
+      pv2ev_W: null,
+      b2ev_W: null,
+      ev_soc_percent: null,
+    });
+    // The decision uses the same lookup: no plan-driven charging there.
+    expect(res.body.ev_charge_W).not.toBe(2000);
+  });
+
+  it('answers with null plan fields for a plan without rows', async () => {
+    getLastPlan.mockReturnValue({ ...mockPlan, rows: [] });
+    vi.setSystemTime(START_MS);
+
+    const res = await get(app, '/ev/current');
+
+    expect(res.status).toBe(200);
+    expect(res.body.timestampMs).toBeNull();
+    expect(res.body.planned_ev_charge_W).toBeNull();
   });
 
   it('falls back to rows[0] when all timestamps are in the future', async () => {

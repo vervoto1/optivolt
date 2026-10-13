@@ -92,6 +92,8 @@ export function decidePvCurtailment(
   const stepMs = Math.max(1, cfg.stepSize_m) * 60_000;
   const currentIndex = rows.findIndex(row => nowMs >= row.timestampMs && nowMs < row.timestampMs + stepMs);
   if (currentIndex < 0) return empty('no_current_slot');
+  // A forecast-priced row (multi-day horizon) is never acted on.
+  if (rows[currentIndex].priceForecast) return empty('no_current_slot');
 
   const row = rows[currentIndex];
   const currentPv_W = Math.max(0, Number(row.pv) || 0);
@@ -191,7 +193,8 @@ function findNegativeBlockEnd(
 ): number {
   let endIndex = startIndex;
   for (let i = startIndex + 1; i < rows.length; i += 1) {
-    if (!isNegative(rows[i], policy)) break;
+    // The run stops at the firm boundary: forecast prices never extend it.
+    if (rows[i].priceForecast || !isNegative(rows[i], policy)) break;
     endIndex = i;
   }
   return endIndex;

@@ -259,6 +259,32 @@ OptiVolt can learn from actual battery behavior to improve future plans. When en
   - `POST /plan-accuracy/calibration/reset` — clear all calibration data
   - `POST /plan-accuracy/reset-all` — clear all adaptive learning data (calibration, plan history, SoC samples)
 
+### 7. Multi-day Horizon with Forecast Prices (Optional, opt-in)
+By default the plan ends where the published day-ahead prices end (midnight tonight, or midnight tomorrow once tomorrow's prices are out). The `extendedHorizon` settings block can extend it by 1–4 days, priced with a **forecast** of the market price, so the optimizer itself decides how much charge to carry over into the next days. Forecast prices are never written to Victron or any other actuator: only the published-price part of the plan is executed, and the plan without the extension is always solved first and used whenever the extension cannot be.
+
+```json
+"extendedHorizon": {
+  "mode": "off",
+  "extraDays": 3,
+  "forecastUrl": "https://epexpredictor.batzill.com",
+  "region": "NL",
+  "importVat_percent": 21,
+  "riskMargin_cents_per_kWh": 1.0,
+  "refreshMinutes": 60
+}
+```
+
+- `mode`: `off` (default) fetches nothing. `collect` fetches and logs the forecast (and extends the load/PV forecasts) but leaves every plan unchanged; use it for a week or so to see how good the forecast is. `on` also plans the extra days.
+- `extraDays` (1–4): days planned past the end of the published prices (rounded to local midnight).
+- `forecastUrl`: base URL of the forecast service (`http` or `https`, no user name or password in it); `/prices` is appended.
+- `region`: the bidding zone (`NL`, `BE`, `DE`, `AT`, `FR`, `DK1`, `DK2`, `SE1`–`SE4`, `ES`, `PT`).
+- `importVat_percent`, `riskMargin_cents_per_kWh`: how forecast market prices become import prices, and how much a forecast must save before the plan carries more (or less) charge over than it would without the extension.
+- `refreshMinutes` (30–600): how often the forecast is refreshed (plus a few minutes of random jitter, and never later than 10 h after the last fetch, 2 h before a forecast counts as missing). It is also refreshed soon after new day-ahead prices appear.
+
+**Outbound call.** With `mode` set to `collect` or `on`, OptiVolt calls the third-party forecast service [EpexPredictor](https://github.com/b3nn0/EpexPredictor) at `epexpredictor.batzill.com` from the background data refresh (never while a plan is being solved): `GET /prices?region=<region>&unit=CT_PER_KWH&startTs=<local midnight>`, at most once per `refreshMinutes` and at most every 30 minutes around the daily price publication or after a failure. The request contains only the region and the start time; like any HTTP request it also reveals your public IP address to that host. No account, token, site or usage data is sent. The public service is offered free of charge with **no guarantees** and on a **fair-use** basis, so keep `refreshMinutes` at 60 or more. If it is slow or down, OptiVolt keeps the last forecast (for up to 12 h, after which it counts as missing) and plans without the extension. To avoid the third party entirely, run EpexPredictor yourself (it is open source, BSD-3, and can run in Docker) and point `forecastUrl` at your instance, for example `http://192.168.1.10:8000`.
+
+Each day, the first forecast fetched after the day-ahead publication is also kept (hourly, 5 days ahead, last 60 days) in `price-forecast-log.json` in the add-on's data directory, so the forecast error can be measured before switching to `on`.
+
 ## Architecture & HTTP API
 
 ```text
@@ -326,7 +352,7 @@ The **API** exposes:
 - `POST /predictions/forecast` — Runs load and PV forecasts together, persists raw forecasts according to data-source settings, and returns adjusted forecasts.
 - `GET /predictions/forecast/now` — Same combined forecast path with recent comparison disabled.
 - `GET /plan-accuracy/*` — Plan accuracy and adaptive learning (`/plan-accuracy`, `/calibration`, `/history`, `/soc-samples`, `/snapshots`).
-- `GET /ev/current` — Current time slot's EV charging decision (`ev_charge_mode`, `ev_charge_A`, source flows, EV SoC).
+- `GET /ev/current` — Current time slot's EV charging decision (`ev_charge_mode`, `ev_charge_A`, source flows, EV SoC). On a forecast-priced slot of a multi-day plan there is no current slot: `timestampMs` and the plan fields are `null`.
 - `GET /ev/schedule` — Full per-slot EV charging schedule from the last computed plan.
 - `GET /ha/entity/:entityId` — Fetch live entity state from Home Assistant (used to validate EV sensor configuration).
 - `GET /ess/state` — Live per-battery + system snapshot for the ESS dashboard (cells, temperatures, SoC, balancing, alarms, and SoC-calibration targets), read in one bulk Home Assistant `/api/states` call. Per-entity tolerant: a missing/renamed id yields a `null` value rather than blanking the tab.

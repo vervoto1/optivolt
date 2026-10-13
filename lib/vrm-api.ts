@@ -105,6 +105,12 @@ export interface VRMPrices {
   exportPrice_eur_per_kwh: number[];
   importPrice_cents_per_kwh: number[];
   exportPrice_cents_per_kwh: number[];
+  /**
+   * End (exclusive, ISO) of the last timeline slot VRM returned a buy price
+   * for. The price arrays are zero-filled after it (prices not yet
+   * published); the window start when VRM returned no buy price in it.
+   */
+  publishedUntil: string;
   raw: unknown;
 }
 
@@ -348,6 +354,12 @@ export class VRMClient {
     const importPrice_cents_per_kwh = importPrice_eur_per_kwh.map(v => v * 100);
     const exportPrice_cents_per_kwh = exportPrice_eur_per_kwh.map(v => v * 100);
 
+    // Before zero-filling: the end of the last slot VRM actually priced.
+    let publishedUntilMs = win.startMs;
+    for (const ms of timeline) {
+      if (buy.has(ms)) publishedUntilMs = ms + 15 * 60 * 1000;
+    }
+
     return {
       step_minutes: 15,
       timestamps: timeline,
@@ -356,6 +368,7 @@ export class VRMClient {
       exportPrice_eur_per_kwh,
       importPrice_cents_per_kwh,
       exportPrice_cents_per_kwh,
+      publishedUntil: VRMClient.toISO(publishedUntilMs),
       raw: data
     };
   }
