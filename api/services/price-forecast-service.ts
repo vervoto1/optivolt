@@ -29,6 +29,14 @@ import type { Data, Settings, ExtendedHorizonConfig, PriceForecastData } from '.
 
 export const PRICE_FORECAST_TIMEOUT_MS = 10_000;
 export const PRICE_FORECAST_ATTEMPTS = 2;
+/**
+ * The local EpexPredictor add-on answers only after it has (re)trained, which
+ * takes minutes after a start or when new data arrives. The fetch runs in the
+ * background and never holds up a solve, so wait for it once rather than time
+ * out after 10 s and back off for 30 minutes.
+ */
+export const LOCAL_PRICE_FORECAST_TIMEOUT_MS = 5 * 60_000;
+export const LOCAL_PRICE_FORECAST_ATTEMPTS = 1;
 /** A stored forecast older than this counts as missing. */
 export const PRICE_FORECAST_STALE_MS = 12 * 60 * 60_000;
 /**
@@ -185,24 +193,31 @@ export interface PriceForecastRefreshResult {
   error?: string;
 }
 
+export interface FetchPriceForecastOptions {
+  timeoutMs?: number;
+  attempts?: number;
+}
+
 /**
- * Fetch and parse the feed (10 s timeout, 2 attempts). `forecastUrl` is the
- * base URL to fetch from (already resolved: not `auto`). Throws on failure.
+ * Fetch and parse the feed (by default 10 s timeout, 2 attempts). `forecastUrl`
+ * is the base URL to fetch from (already resolved: not `auto`). Throws on
+ * failure.
  */
 export async function fetchPriceForecast(
   cfg: Pick<ExtendedHorizonConfig, 'forecastUrl' | 'region'>,
   nowMs: number,
+  { timeoutMs = PRICE_FORECAST_TIMEOUT_MS, attempts = PRICE_FORECAST_ATTEMPTS }: FetchPriceForecastOptions = {},
 ): Promise<Omit<PriceForecastData, 'fit'>> {
   const url = buildPriceForecastUrl({ baseUrl: cfg.forecastUrl, region: cfg.region, nowMs });
   const parsed = await withRetry(async () => {
     const response = await fetchWithTimeout(
       url,
       { headers: { Accept: 'application/json' } },
-      { timeoutMs: PRICE_FORECAST_TIMEOUT_MS, label: 'Price forecast request' },
+      { timeoutMs, label: 'Price forecast request' },
     );
     if (!response.ok) throw new Error(`Price forecast request returned status ${response.status}`);
     return parsePriceForecastResponse(await response.json());
-  }, { attempts: PRICE_FORECAST_ATTEMPTS, label: 'price forecast' });
+  }, { attempts, label: 'price forecast' });
 
   return {
     fetchedAt: new Date(nowMs).toISOString(),
@@ -229,7 +244,13 @@ export async function refreshPriceForecast(
     if (resolved.source === 'public') {
       console.warn(`[price-forecast] local EpexPredictor add-on not used (${resolved.reason}): fetching from the public server`);
     }
-    const fetched = await fetchPriceForecast({ forecastUrl: resolved.url, region: cfg.region }, nowMs);
+    const fetched = await fetchPriceForecast(
+      { forecastUrl: resolved.url, region: cfg.region },
+      nowMs,
+      resolved.source === 'local'
+        ? { timeoutMs: LOCAL_PRICE_FORECAST_TIMEOUT_MS, attempts: LOCAL_PRICE_FORECAST_ATTEMPTS }
+        : {},
+    );
     const source = {
       source: resolved.source,
       url: resolved.url,

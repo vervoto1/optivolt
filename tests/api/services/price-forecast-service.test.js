@@ -52,6 +52,8 @@ import {
   FAILURE_BACKOFF_MS,
   MAX_REFRESH_AGE_MS,
   PRICE_FORECAST_ATTEMPTS,
+  LOCAL_PRICE_FORECAST_ATTEMPTS,
+  LOCAL_PRICE_FORECAST_TIMEOUT_MS,
   PRICE_FORECAST_LOG_LIMIT,
   PRICE_FORECAST_STALE_MS,
   PRICE_FORECAST_TIMEOUT_MS,
@@ -306,6 +308,16 @@ describe('fetchPriceForecast', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  it('takes a longer timeout and a single attempt when asked', async () => {
+    mockFetch.mockRejectedValue(new Error('ECONNRESET'));
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    await expect(fetchPriceForecast(cfg(), NOW, { timeoutMs: 300_000, attempts: 1 })).rejects.toThrow('ECONNRESET');
+    expect(timeout).toHaveBeenCalledWith(300_000);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(retryCalls).toEqual([{ attempts: 1, label: 'price forecast' }]);
+    timeout.mockRestore();
+  });
+
   it('turns a timeout into a labelled error', async () => {
     mockFetch.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'TimeoutError' }));
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
@@ -374,6 +386,35 @@ describe('refreshPriceForecast', () => {
     expect(dataState.current.priceForecast).toMatchObject({ source: 'local', url: 'http://601a68d0-epexpredictor' });
     expect(dataState.current.priceForecast).not.toHaveProperty('sourceReason');
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('waits up to 5 minutes, once, for the local add-on while it trains', async () => {
+    vi.stubEnv('SUPERVISOR_TOKEN', 'sup-token');
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    mockFetch.mockImplementation(async (url) => {
+      if (url === 'http://supervisor/addons/self/info') return ok({ result: 'ok', data: { slug: '601a68d0_optivolt' } });
+      if (url === 'http://supervisor/addons/601a68d0_epexpredictor/info') {
+        return ok({ result: 'ok', data: { state: 'started', hostname: '601a68d0-epexpredictor' } });
+      }
+      return ok(feedBody({ slots: 4, knownUntilMs: MIDNIGHT }));
+    });
+
+    await refreshPriceForecast(cfg({ forecastUrl: 'auto' }), NOW);
+
+    expect(LOCAL_PRICE_FORECAST_TIMEOUT_MS).toBe(300_000);
+    expect(LOCAL_PRICE_FORECAST_ATTEMPTS).toBe(1);
+    expect(timeout).toHaveBeenLastCalledWith(LOCAL_PRICE_FORECAST_TIMEOUT_MS);
+    expect(retryCalls.at(-1)).toEqual({ attempts: LOCAL_PRICE_FORECAST_ATTEMPTS, label: 'price forecast' });
+    timeout.mockRestore();
+  });
+
+  it('keeps the 10 s timeout and 2 attempts for the public server', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    mockFetch.mockResolvedValue(ok(feedBody({ slots: 4, knownUntilMs: MIDNIGHT })));
+    await refreshPriceForecast(cfg(), NOW);
+    expect(timeout).toHaveBeenLastCalledWith(PRICE_FORECAST_TIMEOUT_MS);
+    expect(retryCalls.at(-1)).toEqual({ attempts: PRICE_FORECAST_ATTEMPTS, label: 'price forecast' });
+    timeout.mockRestore();
   });
 
   it('keeps the stored import fit for the same region and drops it for another', async () => {

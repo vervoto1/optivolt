@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.74 - 2026-10-13
+
+- **OptiVolt waits for the local EpexPredictor add-on while it trains.** The add-on answers a forecast request only after it has trained, which took about 3½ minutes on the first start in production (13 regions) and repeats when new data arrives. OptiVolt gave up after 10 s (two attempts) and then waited 30 minutes before trying again, so the first forecast, and the first one after each retrain, arrived up to half an hour late. When `forecastUrl` resolves to the local add-on (`auto`), the request now waits up to 5 minutes, in a single attempt. The fetch runs in the background and never holds up a plan. The public server and typed URLs keep the 10 s timeout with 2 attempts.
+- `TODOS.md`: a new open item, "Load prediction learns battery and EV flows as house load". It is to be verified first: the large errors may have stopped around 2026-10-10.
+
 ## 0.7.73 - 2026-10-13
 
 The multi-day horizon's forecast URL can be `auto`, now the default: OptiVolt uses the EpexPredictor add-on from this repository when it is installed and started, and the public server otherwise, so the local forecaster needs no URL typed in.
