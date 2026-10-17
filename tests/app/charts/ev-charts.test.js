@@ -42,7 +42,8 @@ import {
   ttHeader, ttRow, ttSection, ttDivider, ttPrices,
 } from '../../../app/src/chart-tooltip.js';
 import { makeEvDeparturePlugin, makeEvTargetPlugin } from '../../../app/src/charts/ev-annotations.js';
-import { SOLUTION_COLORS } from '../../../app/src/charts/colors.js';
+import { SOLUTION_COLORS, toRGBA } from '../../../app/src/charts/colors.js';
+import { FORECAST_BAR_ALPHA } from '../../../app/src/charts/solution-charts.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -61,6 +62,22 @@ describe('drawEvPowerChart', () => {
     const canvas = document.createElement('canvas');
     drawEvPowerChart(canvas, powerRows);
     expect(buildTimeAxisFromTimestamps).toHaveBeenCalledWith([1000, 2000]);
+  });
+
+  it('draws forecast-priced bars fainter and labels their tooltip', () => {
+    const canvas = document.createElement('canvas');
+    const rows = [powerRows[0], { ...powerRows[0], timestampMs: 3000, priceForecast: true }];
+    drawEvPowerChart(canvas, rows);
+    const [, config] = renderChart.mock.calls[0];
+    const grid = config.data.datasets.find(d => d.label === 'Grid');
+    expect(grid.backgroundColor).toEqual([SOLUTION_COLORS.g2ev, toRGBA(SOLUTION_COLORS.g2ev, FORECAST_BAR_ALPHA)]);
+    const tooltip = createTooltipHandler.mock.calls[0][0].renderContent;
+    tooltip(1, { title: ['t'] });
+    expect(ttHeader).toHaveBeenLastCalledWith('t', 'forecast price');
+    // Without forecast rows the datasets are left as they were.
+    vi.clearAllMocks();
+    drawEvPowerChart(canvas, powerRows);
+    expect(renderChart.mock.calls[0][1].data.datasets.find(d => d.label === 'Grid').backgroundColor).toBeUndefined();
   });
 
   it('treats a missing source field as zero amps even when total power is positive', () => {

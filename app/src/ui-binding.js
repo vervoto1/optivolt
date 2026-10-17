@@ -210,6 +210,7 @@ export function getElements() {
     // EV native-charging feature parity (EV tab)
     evStartTime: $("#ev-start-time"),
     evMinSoc: $("#ev-min-soc"),
+    evDeferMinSoc: $("#ev-defer-min-soc"),
     evChargingSpeedHint: $("#ev-charging-speed-hint"),
     evApplyPriceLimit: $("#ev-apply-price-limit"),
     evMaxPrice: $("#ev-max-price"),
@@ -243,6 +244,7 @@ export function getElements() {
     evOverrideCharge: $("#ev-override-charge"),
     evOverrideStop: $("#ev-override-stop"),
     evNoCharging: $("#ev-no-charging"),
+    evNoChargingText: $("#ev-no-charging-text"),
     evChargingSummary: $("#ev-charging-summary"),
     evPreviewBanner: $("#ev-preview-banner"),
     evPreviewSoc: $("#ev-preview-soc"),

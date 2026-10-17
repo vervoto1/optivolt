@@ -129,6 +129,20 @@ describe('computeEvDecision — priority + gating', () => {
     expect(d.mode).toBe('idle');
   });
 
+  it('reads targetMet from a firm row only; a target due in a forecast row is targetDeferred', async () => {
+    mockHa({ soc: '50', plug: 'on' });
+    const firm = await computeEvDecision(makeSettings(), makePlan({ targetMet: true }), NOW);
+    expect(firm.targetMet).toBe(true);
+    expect(firm.targetDeferred).toBe(false);
+    const plan = makePlan({ targetMet: true });
+    plan.rows[7].priceForecast = true;
+    const deferred = await computeEvDecision(makeSettings(), plan, NOW);
+    expect(deferred.targetMet).toBeNull();
+    expect(deferred.targetDeferred).toBe(true);
+    const none = await computeEvDecision(makeSettings(), null, NOW);
+    expect(none.targetDeferred).toBe(false);
+  });
+
   it('maps a planned opportunistic slot to mode opportunistic', async () => {
     mockHa({ soc: '85', plug: 'on' });
     const d = await computeEvDecision(makeSettings(), makePlan({ evCharge: 5000, planMode: 'opportunistic' }), NOW);

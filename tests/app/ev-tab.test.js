@@ -23,7 +23,7 @@ vi.mock('../../app/src/api/api.js', () => ({
   fetchEvStatus: vi.fn(),
 }));
 
-import { updateEvPanel, updateEvModeBadge } from '../../app/src/ev-tab.js';
+import { updateEvPanel, updateEvModeBadge, noChargingText } from '../../app/src/ev-tab.js';
 import { drawEvSocChartTab } from '../../app/src/charts.js';
 import { updateStackedBarContainer } from '../../app/src/state.js';
 import { fetchEvStatus } from '../../app/src/api/api.js';
@@ -130,6 +130,13 @@ describe('ev-tab.js', () => {
       await updateEvModeBadge(els);
       expect(els.evTabTargetMet.textContent).toBe('—');
       expect(els.evTabTargetMet.className).toContain('text-slate-400');
+    });
+
+    it('says the charge is waiting when the target is due in a forecast row', async () => {
+      const els = badgeEls();
+      fetchEvStatus.mockResolvedValue({ mode: 'idle', targetMet: null, targetDeferred: true });
+      await updateEvModeBadge(els);
+      expect(els.evTabTargetMet.textContent).toBe('waiting for forecast days');
     });
 
     it('renders the badge without touching optional row/target nodes when absent', async () => {
@@ -387,6 +394,38 @@ describe('ev-tab.js', () => {
       const rows = [{ timestampMs: Date.now(), ev_soc_percent: 30, ev_charge: 3000, ev_charge_mode: 'max', ic: 0 }];
       updateEvPanel(els, rows, { evChargeTotal_kWh: 1 });
       // Should not throw
+    });
+  });
+
+  describe('a charge waiting for forecast days', () => {
+    const Q = 15 * 60_000;
+    const T0 = Date.parse('2026-10-18T10:00:00Z'); // Sun 12:00 CEST
+    const firm = (i, extra = {}) => ({ timestampMs: T0 - (8 - i) * Q, ev_soc_percent: 40, ev_charge: 0, g2ev: 0, b2ev: 0, pv2ev: 0, ic: 30, ...extra });
+    const fc = (i, extra = {}) => ({ timestampMs: T0 + i * Q, ev_soc_percent: 50, ev_charge: 11040, ev_charge_mode: 'max', g2ev: 11040, b2ev: 0, pv2ev: 0, ic: 20, priceForecast: true, ...extra });
+
+    it('names the waiting charge in the empty state', () => {
+      expect(noChargingText([firm(0), fc(0), fc(1), fc(2)])).toMatch(/^Charging planned on forecast days \(Sun 1\d:00–1\d:45\)$/);
+      expect(noChargingText([firm(0)])).toBe('No EV charging in current plan');
+      expect(noChargingText(undefined)).toBe('No EV charging in current plan');
+      const els = { ...makeEls(), evNoChargingText: document.createElement('div') };
+      updateEvPanel(els, [firm(0), fc(0)], { evChargeTotal_kWh: 0 });
+      expect(els.evNoCharging.classList.contains('hidden')).toBe(false);
+      expect(els.evNoChargingText.textContent).toContain('Charging planned on forecast days');
+    });
+
+    it('marks forecast rows in the table and leaves them out of the totals, cost and mode counts', () => {
+      const rows = [firm(0, { ev_charge: 4000, ev_charge_mode: 'fixed', g2ev: 4000 }), fc(0)];
+      const els = makeEls();
+      updateEvPanel(els, rows, { evChargeTotal_kWh: 1 });
+      const html = els.evScheduleTable.innerHTML;
+      expect(html.match(/>forecast</g)).toHaveLength(1);
+      expect(html).toContain('opacity:0.6');
+      expect(html).toContain('published-price slots only');
+      // Σ cost: 4 kW × 0.25 h × 30 c = 30.0 c (the forecast row's 55.2 c is not summed).
+      expect(html).toContain('30.0¢</th>');
+      expect(els.evTabTotalCost.textContent).toBe('30.0¢');
+      expect(els.evTabEffectiveRate.textContent).toBe('30.0¢/kWh');
+      expect(els.evTabModeRows.textContent).not.toMatch(/max/i);
     });
   });
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.76 - 2026-10-17
+
+- **With the multi-day horizon `on`, an EV's charge can wait for cheaper forecast days.** Until now the car's target was due by the end of the published prices even in the multi-day plan, so with no deadline it still charged on a Saturday when Sunday's forecast was cheaper. Now, for a plugged-in car:
+  - **No "ready by" time** (or an elapsed one): the target is due at the end of the extended horizon. The extended LP plans the car through the forecast slots too, so the charge lands in the cheapest slots of the coming days, published or predicted.
+  - **A "ready by" time after the published prices** (e.g. "tomorrow 18:00" before tomorrow's prices are out): the target is due at that slot in the forecast part. Before, such a deadline set no target at all until it entered the published window. A deadline past the extended end is due at the extended end.
+  - **First charged to the new "Charge right away up to SoC"** (`evDeferMinSoc_percent`, Settings → EV Charging → Smart Charging, default 20 %): as soon as possible, whatever the price, through the existing minimum-SoC floor (the higher of the two applies). So a nearly empty car never waits, and the plan does not flip back and forth around the threshold. Without a deadline, a value at or above the target SoC turns waiting off: the target is due by the end of the published prices, as before. A blank field is left out of the save; it does not mean 0.
+  - **A forecast slot must save more than `extendedHorizon.riskMargin_cents_per_kWh`** (default 1 c/kWh) per kWh into the charger before the charge waits for it. This is the same margin the battery's carry-over uses.
+  - **Nothing runs on a forecast price.** Forecast rows are still never acted on, and slot 0 is always a published slot, so the car charges once the cheap slots have published prices. If the extended solve is not Optimal, the published-price plan applies as before.
+  - **LP:** forecast slots carry no EV binaries. On/off, taper and target-landing indicators are continuous there, like the battery's. The forecast part can therefore show a partial charging power that a fixed-rate charger cannot run; it never does, because those slots are re-planned with binaries once published. The published-price-only LP is byte-identical.
+  - **With mode `off`/`collect`, or a "ready by" time inside the published prices,** nothing changes.
+- **Where a waiting charge shows up.**
+  - Forecast rows report the EV's planned SoC, and the target-met fields sit on the target row (the deadline or the horizon's last row).
+  - `GET /ev/status` and `GET /ev/current` read `targetMet` from published-price rows only and add `targetDeferred`. While the target is due in a forecast slot, `targetMet` is `null` (not a "✓ met" days in advance) and `targetDeferred` is `true`; the EV tab then shows "waiting for forecast days".
+  - EV tab: forecast slots in the schedule table are faded and tagged "forecast", and the power chart draws them faint, as in the plan charts. The table's Σ row and the cost / effective rate cover the published-price slots only, matching the kWh summary. When all charging waits for forecast days, the empty state reads "Charging planned on forecast days (Sun 12:00–14:45)" instead of "No EV charging in current plan".
+- **Known limits:** the EV preview (car unplugged) still plans within the published prices. A charge can keep waiting for as long as the forecast keeps showing cheaper days above the top-up level; the risk margin is the only brake.
+
 ## 0.7.75 - 2026-10-14
 
 - **The plan's warnings box is titled "Plan warnings"** instead of "Stale data detected". The box also lists export-tariff and multi-day horizon messages, such as "Multi-day horizon not used: the price forecast is missing — planning with published prices only", which are not about stale data; each message already says what is wrong. UI text only.

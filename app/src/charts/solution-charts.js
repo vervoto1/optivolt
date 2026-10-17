@@ -73,7 +73,7 @@ function makeFlowsTooltip(rows, flowSpecs, h) {
 // provisional and never sent to Victron.
 export const FORECAST_BAR_ALPHA = 0.4;
 
-function fadeForecastBars(ds, rows, color) {
+export function fadeForecastBars(ds, rows, color) {
   const faded = toRGBA(color, FORECAST_BAR_ALPHA);
   const fadedHover = toRGBA(color, FORECAST_BAR_ALPHA * 0.6);
   return {

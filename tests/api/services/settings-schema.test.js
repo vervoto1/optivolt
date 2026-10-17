@@ -88,6 +88,13 @@ describe('settings-schema', () => {
       expect(result.maxSoc_percent).toBe(80);
     });
 
+    it('clamps evDeferMinSoc_percent to 0–100 and leaves it unset when not a number', () => {
+      expect(normalizeSettings({ ...validSettings(), evDeferMinSoc_percent: 140 }).evDeferMinSoc_percent).toBe(100);
+      expect(normalizeSettings({ ...validSettings(), evDeferMinSoc_percent: -5 }).evDeferMinSoc_percent).toBe(0);
+      expect(normalizeSettings({ ...validSettings(), evDeferMinSoc_percent: 25 }).evDeferMinSoc_percent).toBe(25);
+      expect(normalizeSettings({ ...validSettings(), evDeferMinSoc_percent: 'x' }).evDeferMinSoc_percent).toBeUndefined();
+    });
+
     it('swaps an inverted EV min/max current pair when loading', () => {
       const s = { ...validSettings(), evMinChargeCurrent_A: 16, evMaxChargeCurrent_A: 6 };
       const result = normalizeSettings(s);

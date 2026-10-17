@@ -222,6 +222,7 @@
   "evStartTime": "",
   "evApplyPriceLimit": false,
   "evMinSoc_percent": 0,
+  "evDeferMinSoc_percent": 20,
   "evOpportunisticEnabled": false,
   "evOpportunisticLevel_percent": 90,
   "evOpportunisticType2Enabled": false,

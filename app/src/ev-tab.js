@@ -2,7 +2,7 @@ import { SOLUTION_COLORS, toRGBA, drawEvPowerChart, drawEvSocChartTab } from "./
 import { formatKWh, updateStackedBarContainer } from "./state.js";
 import { fetchEvStatus, fetchEvOverride, setEvOverride } from "./api/api.js";
 import { resolveDepartureMs, effectiveTargetSoc, findEvTargetRow } from "./utils.js";
-import { fmtZonedDDMM, fmtZonedHHMM, isZonedMidnight } from "./time-zone.js";
+import { fmtZonedDDMM, fmtZonedHHMM, fmtZonedWeekday, isZonedMidnight } from "./time-zone.js";
 
 // Live decision badge styling per effective mode (overrides + plan).
 const DECISION_BADGE = {
@@ -94,6 +94,9 @@ export async function updateEvModeBadge(els) {
       } else if (cur.targetMet === false) {
         els.evTabTargetMet.textContent = 'below target';
         els.evTabTargetMet.className = 'text-xs font-medium text-amber-600 dark:text-amber-400';
+      } else if (cur.targetDeferred === true) {
+        els.evTabTargetMet.textContent = 'waiting for forecast days';
+        els.evTabTargetMet.className = 'text-xs font-medium text-slate-400 dark:text-slate-500';
       } else {
         els.evTabTargetMet.textContent = '—';
         els.evTabTargetMet.className = 'text-xs font-medium text-slate-400 dark:text-slate-500';
@@ -119,6 +122,7 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = nul
   const hasEv = evTotal > 0;
 
   if (els.evNoCharging) els.evNoCharging.classList.toggle('hidden', hasEv);
+  if (els.evNoChargingText) els.evNoChargingText.textContent = noChargingText(rows, stepSize_m);
   if (els.evChargingSummary) els.evChargingSummary.classList.toggle('hidden', !hasEv);
 
   // v8 ignore next — null path of optional chaining on DOM element is untestable in jsdom
@@ -158,7 +162,9 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = nul
       { value: pv,   color: SOLUTION_COLORS.pv2ev },
     ]);
 
-    const totalCost_cents = evRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
+    // Same rows as the summary's kWh totals: the published-price part only.
+    const firmEvRows = evRows.filter(r => !r.priceForecast);
+    const totalCost_cents = firmEvRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
     /* v8 ignore next — evTotal > 0 is guaranteed inside this `if (hasEv)` block; ternary fallback is defensive */
     const effectiveRate = evTotal > 0 ? totalCost_cents / evTotal : 0;
 
@@ -169,7 +175,7 @@ export function updateEvPanel(els, rows, summary, stepSize_m = 15, preview = nul
       els.evTabFreeSolar.className = `stat-value ${pv > 0.001 ? 'text-emerald-600 dark:text-emerald-400' : ''}`;
     }
 
-    renderModeRows(els.evTabModeRows, evRows);
+    renderModeRows(els.evTabModeRows, firmEvRows);
   }
 
   if (els.evPowerChart) drawEvPowerChart(els.evPowerChart, rows, stepSize_m, evSettings);
@@ -185,6 +191,16 @@ const MODE_CONFIG = [
   { key: 'max',        label: 'max',     color: '#ef4444', badge: 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400' },
   { key: 'fixed',      label: 'fixed',   color: '#94a3b8', badge: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' },
 ];
+
+// Empty-state text: a charge that only appears in forecast-priced rows (it is
+// waiting for cheaper forecast days) is named with its span, not hidden.
+export function noChargingText(rows, stepSize_m = 15) {
+  const waiting = (rows ?? []).filter(r => r.priceForecast && (r.ev_charge ?? 0) > 0);
+  if (waiting.length === 0) return 'No EV charging in current plan';
+  const first = waiting[0].timestampMs;
+  const end = waiting[waiting.length - 1].timestampMs + stepSize_m * 60_000;
+  return `Charging planned on forecast days (${fmtZonedWeekday(first)} ${fmtZonedHHMM(first)}–${fmtZonedHHMM(end)})`;
+}
 
 function renderModeRows(el, evRows) {
   if (!el) return;
@@ -263,10 +279,14 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
   const targetSoc_percent = pinnedTarget ? pinnedTarget.targetSoc_percent : evSettings.targetSoc_percent;
   const hasTarget = targetSoc_percent != null && !isNaN(targetSoc_percent);
 
-  const totGrid  = evRows.reduce((s, r) => s + (r.g2ev  || 0) * h / 1000, 0);
-  const totBatt  = evRows.reduce((s, r) => s + (r.b2ev  || 0) * h / 1000, 0);
-  const totSolar = evRows.reduce((s, r) => s + (r.pv2ev || 0) * h / 1000, 0);
-  const totGridCost_cents = evRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
+  // Totals cover the published-price rows, like the summary; forecast rows
+  // (a charge waiting for forecast days) are listed but marked, not summed.
+  const firmRows = evRows.filter(r => !r.priceForecast);
+  const hasForecastRows = firmRows.length < evRows.length;
+  const totGrid  = firmRows.reduce((s, r) => s + (r.g2ev  || 0) * h / 1000, 0);
+  const totBatt  = firmRows.reduce((s, r) => s + (r.b2ev  || 0) * h / 1000, 0);
+  const totSolar = firmRows.reduce((s, r) => s + (r.pv2ev || 0) * h / 1000, 0);
+  const totGridCost_cents = firmRows.reduce((s, r) => s + (r.g2ev || 0) * h / 1000 * (r.ic || 0), 0);
 
   const fmtTotalChip = (val, colorKey) => {
     const bg = toRGBA(SOLUTION_COLORS[colorKey], val > 0.001 ? 0.55 : 0.22);
@@ -276,7 +296,7 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
   const baseTh = "px-2 py-1.5 border-b border-slate-200/80 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-900";
 
   const totalsRow = `<tr>
-    <th class="${baseTh} text-left" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200/80 dark:bg-slate-700/60 text-[9px] font-bold text-slate-400 dark:text-slate-500" title="Column totals (kWh)">Σ</span></th>
+    <th class="${baseTh} text-left" scope="row"><span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200/80 dark:bg-slate-700/60 text-[9px] font-bold text-slate-400 dark:text-slate-500" title="${hasForecastRows ? 'Column totals (kWh), published-price slots only' : 'Column totals (kWh)'}">Σ</span></th>
     <th class="${baseTh} text-right font-mono tabular-nums text-[11px] font-semibold text-slate-500 dark:text-slate-400">${totGridCost_cents.toFixed(1)}¢</th>
     <th class="${baseTh}"></th>
     <th class="${baseTh}"></th>
@@ -320,9 +340,12 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
     const gridCost_cents = (r.g2ev || 0) * h / 1000 * (r.ic || 0);
     const costStr = gridCost_cents < 0.05 ? '–' : `${gridCost_cents.toFixed(1)}¢`;
 
-    const timeCell = isDeparture
+    const forecastTag = r.priceForecast
+      ? `<span class="ml-1.5 inline-block rounded px-1 py-0 text-[9px] font-medium bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" title="Forecast price: provisional, never acted on">forecast</span>`
+      : '';
+    const timeCell = (isDeparture
       ? `${timeLabel}<span class="ml-1.5 inline-block rounded px-1 py-0 text-[9px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400" title="Ready by">ready</span>`
-      : timeLabel;
+      : timeLabel) + forecastTag;
 
     const isTargetRow = i === targetIdx;
     const targetCell = hasTarget
@@ -332,7 +355,7 @@ function renderEvTable(evRows, tableEl, stepSize_m = 15, evSettings = {}) {
     const rowBg = isMidnight ? 'bg-slate-50/50 dark:bg-slate-800/30' : '';
 
     return `
-    <tr class="border-b border-slate-100/70 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 font-mono text-xs ${rowBg}${isDeparture ? ' ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/50' : ''}">
+    <tr class="border-b border-slate-100/70 dark:border-slate-800/60 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 font-mono text-xs ${rowBg}${isDeparture ? ' ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/50' : ''}"${r.priceForecast ? ' style="opacity:0.6"' : ''}>
       <td class="px-2 py-1 text-left tabular-nums${isMidnight ? ' font-semibold text-slate-600 dark:text-slate-300' : ''}">${timeCell}</td>
       <td class="px-2 py-1 text-right">${costStr}</td>
       <td class="px-2 py-1 text-right">${modeHtml}</td>
