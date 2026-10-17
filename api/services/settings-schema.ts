@@ -457,6 +457,10 @@ function normalizeEvNativeSettings(s: Settings): void {
   const minSoc = optNumber(s.evMinSoc_percent);
   s.evMinSoc_percent = minSoc === undefined ? undefined : normalizeSocPercent(minSoc);
 
+  // Forecast-deferral threshold (multi-day horizon, no deadline)
+  const deferMin = optNumber(s.evDeferMinSoc_percent);
+  s.evDeferMinSoc_percent = deferMin === undefined ? undefined : normalizeSocPercent(deferMin);
+
   // Opportunistic bands
   s.evOpportunisticEnabled = s.evOpportunisticEnabled === true;
   const opp1 = optNumber(s.evOpportunisticLevel_percent);

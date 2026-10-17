@@ -1,5 +1,5 @@
 import type { PlanRow, SolverConfig, EvChargeMode, EvPlanMode } from './types.ts';
-import { DEFAULT_INVERTER_EFFICIENCY_PERCENT, evChargeWattsPerAmp, isEvPlannedInLp, resolveFirmSlots } from './build-lp.ts';
+import { DEFAULT_INVERTER_EFFICIENCY_PERCENT, evChargeWattsPerAmp, evModelEnd, isEvPlannedInLp, resolveFirmSlots } from './build-lp.ts';
 
 // Minimal type for the HiGHS solver result columns (keyed by variable name).
 interface HighsColumn {
@@ -144,10 +144,12 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
   }
 
   // Multi-day horizon: rows at or after the firm boundary are forecast rows
-  // (F = T, i.e. none, when cfg.firmSlots is absent). The EV is not modelled
-  // there, so its SoC is unknown (null) and no EV plan fields are attached;
-  // its flows are genuinely 0 (no EV variables exist past the boundary).
+  // (F = T, i.e. none, when cfg.firmSlots is absent). The EV is modelled up
+  // to E (evModelEnd: F, or T for an EV without a deadline); past E its SoC
+  // is unknown (null) and no EV plan fields are attached, and its flows are
+  // genuinely 0 (no EV variables exist there).
   const F = resolveFirmSlots(cfg.firmSlots, T);
+  const E = evModelEnd(cfg);
   // An EV in the config whose earliest start lies past the firm part has no
   // LP variables: it stays idle at its initial SoC on the firm rows.
   const evInLp = isEvPlannedInLp(cfg);
@@ -249,10 +251,10 @@ export function parseSolution(result: HighsSolution, cfg: SolverConfig, opts: Pa
         cfg.ev?.evMaxChargePower_W ?? 0,
         pv2b[t],
       ),
-      ev_soc_percent: t >= F
+      ev_soc_percent: t >= E
         ? null
         : (cfg.ev != null && !evInLp ? evIdleSoc_percent : (evSoc[t] / evCap) * 100),
-      ...(evActive && t < F ? evPlanFields(t) : {}),
+      ...(evActive && t < E ? evPlanFields(t) : {}),
       ...(t >= F ? { priceForecast: true as const } : {}),
     });
   }

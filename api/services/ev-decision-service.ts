@@ -33,6 +33,11 @@ export interface EvDecision {
   plugConnected: boolean | null; // null = uncertain (sensor unavailable/unknown)
   targetSoc_percent: number;
   targetMet: boolean | null;
+  /**
+   * The plan's EV target is due in a forecast-priced row (multi-day horizon:
+   * the charge is waiting for forecast days); `targetMet` is then null.
+   */
+  targetDeferred: boolean;
   readyBy: string | null;
   planSlotTimestampMs: number | null;
 }
@@ -107,10 +112,12 @@ export async function computeEvDecision(
   const currentPrice = row ? row.ic : null;
   const planSlotTimestampMs = row ? row.timestampMs : null;
 
-  // Departure-slot target-met flag, if present in the plan.
-  const targetMet = lastPlan
-    ? (lastPlan.rows.find(r => r.ev_target_met != null)?.ev_target_met ?? null)
-    : null;
+  // Departure-slot target-met flag, if present in the plan. Only from a firm
+  // row: a target due in a forecast row (the charge is waiting for forecast
+  // days) is a plan days out, not a result, so targetMet stays null there.
+  const targetRow = lastPlan?.rows.find(r => r.ev_target_met != null);
+  const targetDeferred = targetRow?.priceForecast === true;
+  const targetMet = targetRow && !targetDeferred ? (targetRow.ev_target_met ?? null) : null;
 
   // Live HA reads (best-effort). Concurrent, not sequential: this runs on the
   // actuator's control tick, every REST read carries its own 10s timeout, and
@@ -148,6 +155,7 @@ export async function computeEvDecision(
     plugConnected,
     targetSoc_percent: targetSoc,
     targetMet,
+    targetDeferred,
     readyBy,
     planSlotTimestampMs,
   };

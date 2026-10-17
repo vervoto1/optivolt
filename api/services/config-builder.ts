@@ -37,6 +37,9 @@ export const REBALANCE_PENDING_GIVE_UP_MS = 3 * 24 * 60 * 60 * 1000;
  */
 export const REBALANCE_START_TOLERANCE_PERCENT = 1;
 
+/** EV SoC (%) below which a car without a deadline is not deferred to forecast days (`evDeferMinSoc_percent`). */
+export const DEFAULT_EV_DEFER_MIN_SOC_PERCENT = 20;
+
 /**
  * Live EV readings that seed the plan. `targetSoc_percent` is present only when
  * an `evTargetSocEntity` was configured and readable; otherwise the static
@@ -456,6 +459,28 @@ export function buildSolverConfigFromSettings(
 
       if (settings.evContinuous) ev.evContinuous = true;
 
+      // Multi-day horizon: plan the EV through the forecast days too, so its
+      // charge can wait for cheaper ones (buildExtendedSolverConfig moves the
+      // departure; the firm-only LP is unchanged):
+      // - no deadline (none set, or an elapsed one): the target is due at the
+      //   end of the extended horizon, unless evDeferMinSoc_percent is at or
+      //   above the target ("never wait": due at the published-price end);
+      // - a deadline past the published prices: the target is due at the
+      //   deadline (the firm-only LP sets no target there, as before).
+      // The car is first topped up to evDeferMinSoc_percent as soon as
+      // possible, via the mask-exempt minimum-SoC floor, so it never waits
+      // while below it.
+      const deferMin_percent = settings.evDeferMinSoc_percent ?? DEFAULT_EV_DEFER_MIN_SOC_PERCENT;
+      const noDeadline = departureMs == null || depSlot <= 0;
+      const deadlinePastFirm = departureMs != null && depSlot > T;
+      if (settings.extendedHorizon?.mode === 'on'
+        && ((noDeadline && deferMin_percent < targetSoc_percent) || deadlinePastFirm)) {
+        ev.evDeferToForecast = true;
+        if (deferMin_percent > 0 && deferMin_percent < targetSoc_percent) {
+          ev.evMinSocFloor_percent = Math.max(ev.evMinSocFloor_percent ?? 0, deferMin_percent);
+        }
+      }
+
       base.ev = ev;
     } else {
       console.log(
@@ -742,7 +767,10 @@ const FORECAST_STATE_SKIP = {
  *   solve has no window to search; without a reported start, or for a hold
  *   longer than the firm part, the firm config's cap is kept (buildLP then
  *   defers a hold that has no slot-0 pin).
- * - EV config stays as in the firm config: buildLP confines it to firm slots.
+ * - EV config stays as in the firm config: buildLP confines it to firm slots,
+ *   except an EV with `evDeferToForecast`, whose departure becomes its
+ *   deadline past the firm part (capped at the extended length) or, without
+ *   a deadline, the extended length.
  *
  * A fresh accepted import fit is returned as `info.newFit`; the caller
  * persists it (fire-and-forget) with `persistPriceForecastFit`, keeping this
@@ -826,6 +854,14 @@ export function buildExtendedSolverConfig({
     socRef_Wh: firmResult.socAtFirmEnd_Wh,
     carryOverMargin_cents_per_kWh: horizon.riskMargin_cents_per_kWh,
   };
+  if (firmCfg.ev?.evDeferToForecast) {
+    // Due at a deadline past the firm part (capped at the extended end), else
+    // at the extended end.
+    const totalSlots = firmSlots + extendedSlots;
+    const departureMs = resolveDepartureMs(settings.evDepartureTime, settings.evDepartureDay, nowMs);
+    const deadlineSlots = departureMs != null ? Math.floor((departureMs - nowMs) / stepMs) : 0;
+    cfg.ev = { ...firmCfg.ev, evDepartureSlot: deadlineSlots > firmSlots ? Math.min(deadlineSlots, totalSlots) : totalSlots };
+  }
 
   if (settings.exportTariff && firmCfg.exportTariffInfo) {
     const firmInfo = firmCfg.exportTariffInfo;

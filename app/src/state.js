@@ -186,6 +186,8 @@ const SETTINGS_FIELDS = {
   // EV native-charging feature parity
   evStartTime: (els) => els.evStartTime?.value ?? '',
   evMinSoc_percent: (els) => num(els.evMinSoc?.value),
+  // Empty = leave it out: Number('') is 0, which would mean "always wait".
+  evDeferMinSoc_percent: (els) => ((els.evDeferMinSoc?.value ?? '').trim() === '' ? undefined : num(els.evDeferMinSoc.value)),
   evApplyPriceLimit: (els) => !!els.evApplyPriceLimit?.checked,
   evMaxPrice_cents_per_kWh: (els) => num(els.evMaxPrice?.value),
   evOpportunisticEnabled: (els) => !!els.evOpportunisticEnabled?.checked,
@@ -355,6 +357,7 @@ export function hydrateUI(els, obj = {}) {
   // EV native-charging feature parity
   setIfDef(els.evStartTime, obj.evStartTime);
   setIfDef(els.evMinSoc, obj.evMinSoc_percent);
+  setIfDef(els.evDeferMinSoc, obj.evDeferMinSoc_percent);
   if (els.evApplyPriceLimit) els.evApplyPriceLimit.checked = !!obj.evApplyPriceLimit;
   setIfDef(els.evMaxPrice, obj.evMaxPrice_cents_per_kWh);
   if (els.evOpportunisticEnabled) els.evOpportunisticEnabled.checked = !!obj.evOpportunisticEnabled;

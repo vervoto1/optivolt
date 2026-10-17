@@ -5,6 +5,7 @@ import {
   resolveRebalanceWindow,
   isRebalanceHoldDeferred,
   isEvPlannedInLp,
+  evModelEnd,
 } from '../../lib/build-lp.ts';
 import { parseSolution } from '../../lib/parse-solution.ts';
 import { extendedSolveOptions, solveOptionsFor } from '../../lib/solve-options.ts';
@@ -352,6 +353,59 @@ describe('buildLP — EV confined to the firm part', () => {
   });
 });
 
+describe('buildLP — EV without a deadline planned through forecast slots (evDeferToForecast)', () => {
+  const deferred = (extra = {}) => base({
+    ev: { ...EV, evDepartureSlot: T, evDeferToForecast: true },
+    firmSlots: F,
+    carryOverMargin_cents_per_kWh: 2,
+    ...extra,
+  });
+
+  it('models the EV over the whole horizon with the target due at the last slot', () => {
+    const cfg = deferred();
+    expect(evModelEnd(cfg)).toBe(T);
+    const lp = buildLP(cfg);
+    expect(row(lp, 'c_ev_target')).toBe(`ev_soc_${T - 1} + ev_target_shortfall >= 48000`);
+    expect(row(lp, `c_ev_soc_${T - 1}`)).toMatch(new RegExp(`^ev_soc_${T - 1} - ev_soc_${T - 2} `));
+    expect(row(lp, `c_pv_split_${F + 3}`)).toContain(`pv_to_ev_${F + 3}`);
+    expect(row(lp, `c_grid_import_cap_${T - 1}`)).toContain(`grid_to_ev_${T - 1}`);
+    expect(row(lp, `c_discharge_cap_${F}`)).toContain(`battery_to_ev_${F}`);
+  });
+
+  it('keeps EV binaries in firm slots and relaxes them to [0, 1] in forecast slots', () => {
+    const lp = buildLP(deferred({ ev: { ...EV, evDepartureSlot: T, evDeferToForecast: true, evChargeThresholds: [{ soc_percent: 70, maxChargePower_W: 3680 }] } }));
+    const bins = binaries(lp);
+    expect(bins).toContain(`ev_on_${F - 1}`);
+    expect(bins).toContain(`ev_cv_0_${F - 1}`);
+    expect(bins.filter(n => /^ev_/.test(n) && slotIndex(n) >= F)).toEqual([]);
+    expect(bounds(lp)).toEqual(expect.arrayContaining([`0 <= ev_on_${F} <= 1`, `0 <= ev_on_${T - 1} <= 1`, `0 <= ev_cv_0_${F} <= 1`]));
+    expect(bounds(lp)).not.toContain(`0 <= ev_on_${F - 1} <= 1`);
+  });
+
+  it('adds the risk margin to EV charge in forecast slots only and caps the on/off tie-break', () => {
+    const lp = buildLP(deferred());
+    const noMargin = buildLP(deferred({ carryOverMargin_cents_per_kWh: 0 }));
+    // Hourly slots: r = 2 c€/kWh is 0.002 c€ per W over the slot (AC into the charger).
+    expect(objCoeff(lp, `grid_to_ev_${F}`) - objCoeff(noMargin, `grid_to_ev_${F}`)).toBeCloseTo(0.002, 12);
+    expect(objCoeff(lp, `pv_to_ev_${F}`) - objCoeff(noMargin, `pv_to_ev_${F}`)).toBeCloseTo(0.95 * 0.002, 12);
+    expect(objCoeff(lp, `battery_to_ev_${F}`) - objCoeff(noMargin, `battery_to_ev_${F}`)).toBeCloseTo(0.95 * 0.002, 12);
+    expect(objCoeff(lp, `grid_to_ev_${F - 1}`)).toBe(objCoeff(noMargin, `grid_to_ev_${F - 1}`));
+    expect(objCoeff(lp, `ev_on_${T - 1}`)).toBe(objCoeff(lp, `ev_on_${F - 1}`));
+  });
+
+  it('changes nothing without a forecast part', () => {
+    const cfg = base({ ev: { ...EV, evDepartureSlot: T } });
+    expect(buildLP({ ...cfg, ev: { ...cfg.ev, evDeferToForecast: true } })).toBe(buildLP(cfg));
+    expect(evModelEnd({ ...cfg, ev: { ...cfg.ev, evDeferToForecast: true } })).toBe(T);
+  });
+
+  it('plans an EV whose earliest start lies in the forecast part', () => {
+    const cfg = deferred({ ev: { ...EV, evStartSlot: F + 2, evDepartureSlot: T, evDeferToForecast: true } });
+    expect(isEvPlannedInLp(cfg)).toBe(true);
+    expect(isEvPlannedInLp({ ...cfg, ev: { ...cfg.ev, evDeferToForecast: false } })).toBe(false);
+  });
+});
+
 describe('buildLP — carry-over dead-band', () => {
   it('ties carry_dev_pos − carry_dev_neg to soc_{F−1} − socRef_Wh at r/1000 c€ per Wh', () => {
     const lp = buildLP(base({ firmSlots: F, socRef_Wh: 4321.5, carryOverMargin_cents_per_kWh: 1.5 }));
@@ -493,6 +547,99 @@ describe('buildLP — multi-day behaviour (HiGHS)', () => {
 // carries the inherited deficit with the binary recovery latch and forecast
 // slots reuse floor_recovered_{F−1} with an allowance that keeps growing with
 // idle drain.
+describe('buildLP — EV without a deadline waits for a cheaper forecast day (HiGHS)', () => {
+  let highs;
+  beforeAll(async () => {
+    highs = await highsFactory({});
+  });
+
+  // Hourly slots, a 12-slot firm day at 30 c, a 12-slot forecast day, no PV;
+  // the car needs 40 → 80 % of 60 kWh (≈ 26.7 kWh AC, four slots at 7.36 kW).
+  const FIRM = 12;
+  const N = 24;
+  const cfgFor = (forecastPrice, ev) => ({
+    load_W: Array(N).fill(500),
+    pv_W: Array(N).fill(0),
+    importPrice: [...Array(FIRM).fill(30), ...Array(N - FIRM).fill(forecastPrice)],
+    exportPrice: Array(N).fill(5),
+    stepSize_m: 60,
+    batteryCapacity_Wh: 10000,
+    minSoc_percent: 10,
+    maxSoc_percent: 100,
+    maxChargePower_W: 5000,
+    maxDischargePower_W: 5000,
+    maxGridImport_W: 17000,
+    maxGridExport_W: 10000,
+    chargeEfficiency_percent: 95,
+    dischargeEfficiency_percent: 95,
+    inverterEfficiency_percent: 95,
+    batteryCost_cent_per_kWh: 0,
+    idleDrain_W: 0,
+    terminalSocValuation: 'zero',
+    terminalSocCustomPrice_cents_per_kWh: 0,
+    initialSoc_percent: 10,
+    firmSlots: FIRM,
+    carryOverMargin_cents_per_kWh: 1,
+    ev: { ...EV, ...ev },
+  });
+  const firmDeadline = { evDepartureSlot: FIRM };
+  const noDeadline = (n = N) => ({ evDepartureSlot: n, evDeferToForecast: true });
+
+  function solve(cfg) {
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    expect(result.Status).toBe('Optimal');
+    return parseSolution(result, cfg, { startMs: 0, stepMin: 60 });
+  }
+  const evKWh = rows => rows.reduce((s, r) => s + r.ev_charge, 0) / 1000;
+
+  it('charges in the firm part when the target is due there', () => {
+    const rows = solve(cfgFor(10, firmDeadline));
+    expect(evKWh(rows.slice(0, FIRM))).toBeGreaterThan(26);
+    expect(evKWh(rows.slice(FIRM))).toBe(0);
+    expect(rows[FIRM].ev_soc_percent).toBeNull();
+  });
+
+  it('moves the charge to the cheaper forecast day without a deadline', () => {
+    const rows = solve(cfgFor(10, noDeadline()));
+    expect(evKWh(rows.slice(0, FIRM))).toBeCloseTo(0, 6);
+    expect(evKWh(rows.slice(FIRM))).toBeGreaterThan(26);
+    expect(rows[N - 1].ev_soc_percent).toBeCloseTo(80, 3);
+    expect(rows[N - 1].ev_target_met).toBe(true);
+    expect(rows[FIRM - 1].ev_soc_percent).toBeCloseTo(40, 6);
+    expect(rows.slice(FIRM).every(r => r.priceForecast)).toBe(true);
+  });
+
+  it('keeps charging in the firm part when the forecast saving is within the risk margin', () => {
+    expect(evKWh(solve(cfgFor(29.5, noDeadline())).slice(0, FIRM))).toBeGreaterThan(26);
+    expect(evKWh(solve(cfgFor(28.5, noDeadline())).slice(0, FIRM))).toBeCloseTo(0, 6);
+  });
+
+  it('tops a nearly empty car up to the floor in the firm part and lets the rest wait', () => {
+    const rows = solve(cfgFor(10, { ...noDeadline(), evInitialSoc_percent: 10, evMinSocFloor_percent: 20 }));
+    // 10 → 20 % of 60 kWh is 6 kWh stored, 6/0.9 ≈ 6.67 kWh AC, from slot 0.
+    expect(rows[0].ev_charge).toBeGreaterThan(0);
+    expect(rows[FIRM - 1].ev_soc_percent).toBeCloseTo(20, 3);
+    expect(evKWh(rows.slice(0, FIRM))).toBeCloseTo(6 / 0.9, 2);
+    expect(rows[N - 1].ev_soc_percent).toBeCloseTo(80, 3);
+  });
+
+  it('meets a deadline inside the forecast part, charging only before it', () => {
+    const dep = FIRM + 6;
+    const rows = solve(cfgFor(10, { evDepartureSlot: dep, evDeferToForecast: true }));
+    expect(evKWh(rows.slice(0, FIRM))).toBeCloseTo(0, 6);
+    expect(evKWh(rows.slice(FIRM, dep))).toBeGreaterThan(26);
+    expect(evKWh(rows.slice(dep))).toBe(0);
+    expect(rows[dep - 1].ev_target_met).toBe(true);
+    expect(rows[dep - 1].ev_soc_percent).toBeCloseTo(80, 3);
+  });
+
+  it('keeps charging in the firm part when the forecast day is dearer', () => {
+    const rows = solve(cfgFor(40, noDeadline()));
+    expect(evKWh(rows.slice(0, FIRM))).toBeGreaterThan(26);
+    expect(rows[N - 1].ev_target_met).toBe(true);
+  });
+});
+
 describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
   let highs;
   beforeAll(async () => {

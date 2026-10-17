@@ -2178,6 +2178,11 @@
                 <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Minimum SoC (%)</span>
                 <input id="ev-min-soc" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
               </label>
+              <label class="block text-sm">
+                <span class="block text-xs font-medium text-slate-400 dark:text-slate-500 mb-1 tracking-wide">Charge right away up to SoC (%)</span>
+                <input id="ev-defer-min-soc" type="number" min="0" max="100" step="1" class="form-input" data-settings-input />
+                <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">With the multi-day horizon on and no ready-by time (or one after the published prices), the charge may wait for the cheapest predicted slots of the coming days, but the car is first charged to this SoC right away, whatever the price. At or above the target SoC: never wait.</p>
+              </label>
               <p id="ev-charging-speed-hint" class="text-xs text-slate-400 dark:text-slate-500"></p>
 
               <!-- Price -->
@@ -2558,7 +2563,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M21 10h-6m-3-7v4M9 3v4m3-4v4M3 10h6m6 0v4a3 3 0 01-6 0v-4m6 0H9" />
               </svg>
             </div>
-            <div class="text-xs text-slate-400 dark:text-slate-500">No EV charging in current plan</div>
+            <div id="ev-no-charging-text" class="text-xs text-slate-400 dark:text-slate-500">No EV charging in current plan</div>
           </div>
           <div id="ev-charging-summary" class="hidden">
             <div class="summary-block">

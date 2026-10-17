@@ -91,6 +91,14 @@ export interface Settings {
   evMaxPrice_cents_per_kWh?: number;
   /** Minimum-SoC safety floor (%) reached ASAP, independent of price. */
   evMinSoc_percent?: number;
+  /**
+   * Multi-day horizon (`extendedHorizon.mode` `on`), no "ready by" time (or
+   * one past the published prices): the charge may wait for cheaper forecast
+   * days, but the car is first topped up to this SoC (%) as soon as possible,
+   * whatever the price. Default 20. At or above the target, a car without a
+   * deadline never waits (target due at the end of the published prices).
+   */
+  evDeferMinSoc_percent?: number;
   /** Top up beyond target toward this SoC (%) when energy is cheap/surplus. */
   evOpportunisticEnabled?: boolean;
   evOpportunisticLevel_percent?: number;

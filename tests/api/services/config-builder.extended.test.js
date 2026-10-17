@@ -354,6 +354,87 @@ describe('buildExtendedSolverConfig — extended config', () => {
     expect(extend({ firmCfg: { ...firm, ev } }).out.cfg.ev).toEqual(ev);
   });
 
+  describe('an EV without a deadline (evDeferToForecast)', () => {
+    const evOn = (overrides = {}) => makeSettings({
+      evEnabled: true,
+      evMinChargeCurrent_A: 6,
+      evMaxChargeCurrent_A: 16,
+      evChargePhases: 3,
+      evBatteryCapacity_kWh: 60,
+      evDepartureTime: '',
+      evDepartureDay: 'tomorrow',
+      evTargetSoc_percent: 80,
+      evChargeEfficiency_percent: 90,
+      ...overrides,
+    });
+    const firmEv = (settings, soc_percent = 50) =>
+      buildSolverConfigFromSettings(settings, makeData(), NOW, { pluggedIn: true, soc_percent }).ev;
+
+    it('is set with the mode on and no deadline, with a floor at evDeferMinSoc_percent (default 20 %)', () => {
+      expect(firmEv(evOn())).toMatchObject({ evDeferToForecast: true, evDepartureSlot: 48, evMinSocFloor_percent: 20 });
+      // A nearly empty car waits too, after the floor tops it up to 20 %.
+      expect(firmEv(evOn(), 5)).toMatchObject({ evDeferToForecast: true, evMinSocFloor_percent: 20 });
+      expect(firmEv(evOn({ evDeferMinSoc_percent: 35 })).evMinSocFloor_percent).toBe(35);
+      // A higher minimum SoC wins.
+      expect(firmEv(evOn({ evMinSoc_percent: 50 })).evMinSocFloor_percent).toBe(50);
+      expect(firmEv(evOn({ evDeferMinSoc_percent: 0 })).evMinSocFloor_percent).toBeUndefined();
+      expect(firmEv(evOn({ evDeferMinSoc_percent: 0 })).evDeferToForecast).toBe(true);
+      for (const mode of ['off', 'collect']) {
+        const ev = firmEv(evOn({ extendedHorizon: extendedHorizon({ mode }) }));
+        expect(ev.evDeferToForecast).toBeUndefined();
+        expect(ev.evMinSocFloor_percent).toBeUndefined();
+      }
+    });
+
+    it('never waits without a deadline when evDeferMinSoc_percent is at or above the target', () => {
+      for (const deferMin of [80, 100]) {
+        const ev = firmEv(evOn({ evDeferMinSoc_percent: deferMin }));
+        expect(ev.evDeferToForecast).toBeUndefined();
+        expect(ev.evMinSocFloor_percent).toBeUndefined();
+        expect(ev.evDepartureSlot).toBe(48);
+      }
+    });
+
+    it('is not set for a deadline inside the published prices', () => {
+      const ev = firmEv(evOn({ evDepartureTime: '23:00', evDepartureDay: 'today' }));
+      expect(ev.evDeferToForecast).toBeUndefined();
+      expect(ev.evMinSocFloor_percent).toBeUndefined();
+    });
+
+    it('treats an elapsed deadline as none', () => {
+      expect(firmEv(evOn({ evDepartureTime: '08:00', evDepartureDay: 'today' })).evDeferToForecast).toBe(true);
+    });
+
+    it('moves the departure to the extended end; the firm EV config is left alone', () => {
+      const settings = evOn();
+      const firm = buildSolverConfigFromSettings(settings, makeData(), NOW, { pluggedIn: true, soc_percent: 50 });
+      const { out } = extend({ settings, firmCfg: firm });
+      expect(out.cfg.ev).toEqual({ ...firm.ev, evDepartureSlot: out.info.totalSlots });
+      expect(firm.ev.evDepartureSlot).toBe(48);
+    });
+
+    it('honours a deadline past the published prices at its slot in the forecast part', () => {
+      // NOW is 12:00 CEST on 13 Oct; the published prices end at 00:00 on 14 Oct (48 slots).
+      const settings = evOn({ evDepartureTime: '18:00', evDepartureDay: 'tomorrow' });
+      const firm = buildSolverConfigFromSettings(settings, makeData(), NOW, { pluggedIn: true, soc_percent: 50 });
+      // The firm-only LP has no slot for it (no target there, as before).
+      expect(firm.ev).toMatchObject({ evDeferToForecast: true, evDepartureSlot: 49, evMinSocFloor_percent: 20 });
+      const { out } = extend({ settings, firmCfg: firm });
+      expect(out.cfg.ev.evDepartureSlot).toBe(30 * 4); // 18:00 tomorrow is 30 h after NOW
+      // Even with "never wait": the deadline is honoured, without a floor.
+      const never = buildSolverConfigFromSettings(evOn({ evDepartureTime: '18:00', evDepartureDay: 'tomorrow', evDeferMinSoc_percent: 100 }), makeData(), NOW, { pluggedIn: true, soc_percent: 50 });
+      expect(never.ev.evDeferToForecast).toBe(true);
+      expect(never.ev.evMinSocFloor_percent).toBeUndefined();
+    });
+
+    it('caps a deadline past the extended end at the extended end', () => {
+      const settings = evOn({ evDepartureTime: '2026-10-25T08:00', evDepartureDay: 'tomorrow' }); // legacy absolute datetime, 12 days out
+      const firm = buildSolverConfigFromSettings(settings, makeData(), NOW, { pluggedIn: true, soc_percent: 50 });
+      const { out } = extend({ settings, firmCfg: firm });
+      expect(out.cfg.ev.evDepartureSlot).toBe(out.info.totalSlots);
+    });
+  });
+
   it('extends an uncontrollable evLoad, which also caps the horizon', () => {
     const data = makeData({ evLoad: { start: iso(NOW), step: 15, values: new Array(60).fill(2000) } });
     const { out } = extend({ data });

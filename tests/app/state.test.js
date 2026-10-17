@@ -83,6 +83,17 @@ describe('state.js', () => {
     expect('haToken' in snapshot).toBe(false);
   });
 
+  it('leaves evDeferMinSoc_percent out when the field is blank (Number("") would be 0 = always wait)', () => {
+    const els = makeEls();
+    expect('evDeferMinSoc_percent' in snapshotUI(els)).toBe(false);
+    els.evDeferMinSoc = { value: '  ' };
+    expect('evDeferMinSoc_percent' in snapshotUI(els)).toBe(false);
+    els.evDeferMinSoc = { value: '35' };
+    expect(snapshotUI(els).evDeferMinSoc_percent).toBe(35);
+    els.evDeferMinSoc = { value: '0' };
+    expect(snapshotUI(els).evDeferMinSoc_percent).toBe(0);
+  });
+
   it('includes haToken in snapshots when the user entered one', () => {
     const els = makeEls();
     els.haToken.value = 'secret-token';

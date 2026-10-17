@@ -104,6 +104,15 @@ export interface EvConfig {
    * a flat rate to the target. Absent = flat cap (today's behaviour).
    */
   evChargeThresholds?: CvPhaseThreshold[];
+  /**
+   * No "ready by" deadline, or one past the published prices: on a multi-day
+   * horizon (`firmSlots` < T) the EV is also modelled in the forecast slots
+   * (continuous, no binaries, EV charge there costs
+   * `carryOverMargin_cents_per_kWh` extra), so charging can wait for cheaper
+   * forecast days; `evDepartureSlot` is then the deadline or the extended
+   * length. Without a forecast part it changes nothing.
+   */
+  evDeferToForecast?: boolean;
 }
 
 /**
@@ -211,7 +220,9 @@ export interface SolverConfig {
    * Carry-over risk margin r (c€ per kWh of SoC, the `riskMargin_cents_per_kWh`
    * setting). When `firmSlots < T`, `socRef_Wh` is finite and r > 0, buildLP
    * charges r per kWh of |soc_{firmSlots−1} − socRef_Wh| (two-sided dead-band,
-   * variables `carry_dev_pos` / `carry_dev_neg`, row `c_carry_over`).
+   * variables `carry_dev_pos` / `carry_dev_neg`, row `c_carry_over`). With
+   * `ev.evDeferToForecast` it is also charged per kWh of EV charge planned in
+   * a forecast slot.
    */
   carryOverMargin_cents_per_kWh?: number;
 }

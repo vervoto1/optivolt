@@ -6,6 +6,7 @@ import { SOLUTION_COLORS, dim } from './colors.js';
 import { buildTimeAxisFromTimestamps, dsBar, getBaseOptions, getChartTheme, renderChart } from './core.js';
 import { makeEvDeparturePlugin, makeEvTargetPlugin } from './ev-annotations.js';
 import { evSocPoint } from '../utils.js';
+import { fadeForecastBars } from './solution-charts.js';
 
 export function drawEvPowerChart(canvas, rows, _stepSize_m = 15, evSettings = {}) {
   const timestampsMs = rows.map(r => r.timestampMs);
@@ -19,10 +20,17 @@ export function drawEvPowerChart(canvas, rows, _stepSize_m = 15, evSettings = {}
     return total_W > 0 ? ev_A * (r[key] || 0) / total_W : 0;
   };
 
+  // Forecast-priced slots (a charge waiting for forecast days) are drawn
+  // fainter, as in the plan charts: provisional, never acted on.
+  const hasForecast = rows.some(r => r.priceForecast);
+  const evBar = (label, key) => {
+    const ds = dsBar(label, rows.map(r => toSourceAmps(r, key)), SOLUTION_COLORS[key], "ev");
+    return hasForecast ? fadeForecastBars(ds, rows, SOLUTION_COLORS[key]) : ds;
+  };
   const datasets = [
-    dsBar("Grid", rows.map(r => toSourceAmps(r, "g2ev")), SOLUTION_COLORS.g2ev, "ev"),
-    dsBar("Solar", rows.map(r => toSourceAmps(r, "pv2ev")), SOLUTION_COLORS.pv2ev, "ev"),
-    dsBar("Battery", rows.map(r => toSourceAmps(r, "b2ev")), SOLUTION_COLORS.b2ev, "ev"),
+    evBar("Grid", "g2ev"),
+    evBar("Solar", "pv2ev"),
+    evBar("Battery", "b2ev"),
     {
       label: "Price",
       data: rows.map(r => r.ic ?? 0),
@@ -48,7 +56,7 @@ export function drawEvPowerChart(canvas, rows, _stepSize_m = 15, evSettings = {}
         { key: "b2ev", color: SOLUTION_COLORS.b2ev, label: "Battery" },
       ].filter(s => toSourceAmps(row, s.key) > 0);
 
-      let html = ttHeader(time);
+      let html = row.priceForecast ? ttHeader(time, "forecast price") : ttHeader(time);
       if (sources.length) {
         /* v8 ignore next — the `|| 0` arm is unreachable: this block only renders when sources exist, which requires ev_charge_A > 0 (truthy) */
         html += ttSection(`Charging — ${(row.ev_charge_A || 0).toFixed(1)} A total`);

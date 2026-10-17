@@ -49,7 +49,8 @@ router.get('/schedule', async (req: Request, res: Response, next: NextFunction) 
         g2ev_W: row.g2ev,
         pv2ev_W: row.pv2ev,
         b2ev_W: row.b2ev,
-        // null on a forecast row: the EV is not modelled past the firm part.
+        // null on a forecast row unless the EV is planned through the forecast
+        // days (no deadline, evDeferToForecast).
         ev_soc_percent: row.ev_soc_percent,
         price_cents_per_kWh: row.ic,
         // Multi-day horizon: a forecast-priced slot (never acted on). Absent
@@ -125,6 +126,7 @@ router.get('/current', async (req: Request, res: Response, next: NextFunction) =
       currentPrice_cents_per_kWh: decision.currentPrice_cents_per_kWh,
       targetSoc_percent: decision.targetSoc_percent,
       targetMet: decision.targetMet,
+      targetDeferred: decision.targetDeferred,
       readyBy: decision.readyBy,
       // Plan-derived split (the LP's view of this slot).
       ...planned,
@@ -147,6 +149,7 @@ router.get('/status', async (req: Request, res: Response, next: NextFunction) =>
       liveSoc_percent: decision.liveSoc_percent,
       targetSoc_percent: decision.targetSoc_percent,
       targetMet: decision.targetMet,
+      targetDeferred: decision.targetDeferred,
       readyBy: decision.readyBy,
     });
   } catch (err) {
