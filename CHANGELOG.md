@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.77 - 2026-10-22
+
+- **The add-on runs Node.js 24.22.1, the 2026-10-21 security release.** It fixes 10 CVEs, 4 of them High: a Brotli decoder out-of-bounds write that allows remote code execution (CVE-2026-111497; the built-in `fetch` decompresses Brotli responses from VRM, the forecast server and Home Assistant), three TLS certificate hostname bypasses for IP-like hosts (CVE-2026-105483, CVE-2026-106069, CVE-2026-106072) and a `dns.resolve` NUL truncation (CVE-2026-105482). It also updates Node's bundled CA store (the compromised eMudhra intermediates are removed), OpenSSL, undici and c-ares. 0.7.76 ran Alpine's Node 24.18.1, which has none of these fixes.
+- **Where Node comes from in the image.** Alpine v3.24 had not packaged 24.22.1 (edge neither), so the add-on no longer installs Alpine's `nodejs` package. It copies the `node` binary from the official `node:24.22.1-alpine3.24` image for the target architecture (`ARG NODE_IMAGE` in `optivolt/Dockerfile`, also used by the `npm ci` stage, which was the floating `node:24-alpine`). That Node bundles its own OpenSSL, ICU and CA store, so HTTPS trusts Node's Mozilla CA list instead of the image's `/etc/ssl/certs`. npm is no longer in the runtime image (the add-on never used it). Future Node security releases need a manual `NODE_IMAGE` bump and a new add-on version.
+
 ## 0.7.76 - 2026-10-17
 
 - **With the multi-day horizon `on`, an EV's charge can wait for cheaper forecast days.** Until now the car's target was due by the end of the published prices even in the multi-day plan, so with no deadline it still charged on a Saturday when Sunday's forecast was cheaper. Now, for a plugged-in car:

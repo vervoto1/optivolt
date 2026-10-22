@@ -116,7 +116,7 @@ jobs:
         echo "::error::the add-on image did not answer /health within 60 s"
         exit 1
 
-    # The image's Node (Alpine ICU) must resolve TZ to its IANA name.
+    # The image's Node (official build, bundled ICU) must resolve TZ to its IANA name.
     - name: Server time zone
       run: |
         curl -fsS -m 5 http://127.0.0.1:3000/timezone | jq -e '.timeZone == "Europe/Amsterdam"' > /dev/null || {
