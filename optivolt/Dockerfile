@@ -3,6 +3,11 @@
 # is a multi-arch manifest, so BuildKit picks the variant for the target platform;
 # BUILD_FROM stays overridable for local experiments.
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
+# The runtime Node comes from the official image (see stage 2), pinned to an
+# exact release on the base's Alpine branch. Bump it by hand on each Node
+# security release: Alpine's own nodejs package can lag one by weeks (v3.24
+# still shipped 24.18.1 after the 2026-10-21 security release, fixed in 24.22.1).
+ARG NODE_IMAGE=node:24.22.1-alpine3.24
 #
 # Stage 1: install npm deps on the native builder platform to avoid QEMU
 # "Illegal instruction" crashes when cross-compiling for aarch64.
@@ -13,11 +18,14 @@ ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 # the target-arch stage 2 below is portable across architectures. Nothing
 # arch-specific may be installed here (a global tsx used to bring a build-host
 # esbuild binary into the aarch64 image).
-FROM --platform=$BUILDPLATFORM node:24-alpine AS deps
+FROM --platform=$BUILDPLATFORM $NODE_IMAGE AS deps
 WORKDIR /opt/optivolt
 COPY package.json package-lock.json* ./
 RUN npm_config_ignore_scripts=true npm ci \
   && npm prune --omit=dev
+
+# The same Node image for the target platform: stage 2 copies its node binary.
+FROM $NODE_IMAGE AS node
 
 # Stage 2: final image on the target HA base.
 FROM $BUILD_FROM
@@ -27,12 +35,16 @@ ENV \
   S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
   NODE_ENV=production
 
-# Alpine 3.24 ships Node.js 24, built with TypeScript type stripping: the s6
-# service runs `node api/index.ts` directly. `apk upgrade` pulls the base
-# image's own packages (OpenSSL, curl, ca-certificates) up to the current
-# security fixes. The last step fails the build, rather than the add-on at
-# runtime, if a future base ships a Node without type stripping.
-RUN apk add --no-cache nodejs npm curl \
+# Node is the official musl build from the node stage, not Alpine's nodejs
+# package, so a Node security release reaches the add-on as soon as NODE_IMAGE
+# is bumped. It bundles its own OpenSSL, ICU and CA store and needs only
+# libstdc++ and libgcc from Alpine; npm is not needed at runtime. It has
+# TypeScript type stripping: the s6 service runs `node api/index.ts` directly.
+# `apk upgrade` pulls the base image's own packages (OpenSSL, curl,
+# ca-certificates) up to the current security fixes. The last step fails the
+# build, rather than the add-on at runtime, if Node lacks type stripping.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+RUN apk add --no-cache libstdc++ libgcc curl \
   && apk upgrade --no-cache
 RUN node -e "process.exit(process.features.typescript ? 0 : 1)" \
   || { echo "Node.js $(node --version) lacks TypeScript type stripping" >&2; exit 1; }

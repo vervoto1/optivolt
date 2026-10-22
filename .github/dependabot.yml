@@ -24,6 +24,5 @@ updates:
         patterns: ["*"]
 
   # No "docker" entry: Dependabot cannot follow `ARG BUILD_FROM` + `FROM $BUILD_FROM`
-  # (the HA base in optivolt/Dockerfile), so it would only propose Node-major bumps
-  # of the node:24-alpine deps stage, drifting away from the Alpine runtime's Node.
-  # Bump the base by hand.
+  # or `ARG NODE_IMAGE` + `FROM $NODE_IMAGE` in optivolt/Dockerfile. Bump the HA
+  # base and the pinned Node release by hand.
