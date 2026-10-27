@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.78 - 2026-10-27
+
+- **The button next to Target SoC (EV tab) loads the car's charge limit.** It loaded the car's current battery level (`evSocSensor`), so with the car at 85 % and its limit at 100 % it set the target to 85 %. It now reads the "Target SoC entity" (Settings → EV, e.g. `number.tesla_charge_limit`) again and loads that value, even while you are typing in the field. Without a usable charge limit (no entity, or a state of `unavailable`, `unknown` or 0) the button is disabled.
+- **The Target SoC field follows the car's charge limit.** The plan and the charger control already used the car's limit whenever Home Assistant could read it, but the field kept the last value typed in, so the page showed a different target from the one planned. Now each time the page reads the limit (on load, when the entity is entered, and every 60 s while the page is open) a different value is written into the field and saved like an edit, which also re-solves. A field you are typing in is left alone until you leave it. The saved value is what OptiVolt plans to when Home Assistant cannot be read, so that fallback is now the car's last known limit instead of an old typed number. The EV sensor readouts (SoC, plug, charger) refresh every 60 s too; before, they were read only on page load.
+
 ## 0.7.77 - 2026-10-22
 
 - **The add-on runs Node.js 24.22.1, the 2026-10-21 security release.** It fixes 10 CVEs, 4 of them High: a Brotli decoder out-of-bounds write that allows remote code execution (CVE-2026-111497; the built-in `fetch` decompresses Brotli responses from VRM, the forecast server and Home Assistant), three TLS certificate hostname bypasses for IP-like hosts (CVE-2026-105483, CVE-2026-106069, CVE-2026-106072) and a `dns.resolve` NUL truncation (CVE-2026-105482). It also updates Node's bundled CA store (the compromised eMudhra intermediates are removed), OpenSSL, undici and c-ares. 0.7.76 ran Alpine's Node 24.18.1, which has none of these fixes.
