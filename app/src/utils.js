@@ -50,9 +50,15 @@ export function resolveDepartureMs(timeStr, day, now = Date.now()) {
 // actually used. Non-numeric or non-positive states fall back to the setting,
 // exactly like the server does. Both unusable → null (no target drawn).
 export function effectiveTargetSoc(liveState, staticValue) {
-  const live = parseFloat(liveState);
-  if (Number.isFinite(live) && live > 0) return Math.min(100, live);
-  return parseFloat(staticValue) || null;
+  return carChargeLimit(liveState) ?? (parseFloat(staticValue) || null);
+}
+
+// The car's charge limit from an `evTargetSocEntity` state, or null when the
+// state is unusable. Same rules as parseTargetSocState on the server: numeric
+// and positive, capped at 100.
+export function carChargeLimit(state) {
+  const live = parseFloat(state);
+  return Number.isFinite(live) && live > 0 ? Math.min(100, live) : null;
 }
 
 // The EV target as the server pinned it on the plan rows: the row index the

@@ -216,6 +216,9 @@ async function boot() {
   // Fire-and-forget: fetch HA sensor states so the EV Status card shows current values.
   // Not awaited — HA may be slow or unconfigured; the initial solve should not wait for it.
   void refreshEvSensorStates(els);
+  // Re-read them while the page is open, so a charge limit changed in the car's
+  // app reaches the Target SoC field without a reload.
+  setInterval(() => { void refreshEvSensorStates(els); }, 60_000);
 
   // Wire the manual charging override (Auto/Charge/Stop) and seed its active state.
   wireEvOverrideControls(els);
