@@ -23,6 +23,8 @@ function setupEls() {
     <input id="ev-plug-sensor" />
     <span id="ev-soc-value"></span>
     <span id="ev-plug-value"></span>
+    <input id="ev-target-soc-entity" />
+    <span id="ev-target-soc-entity-value"></span>
     <input id="ev-charger-switch-entity" />
     <span id="ev-charger-switch-value"></span>
     <input id="ev-charger-current-entity" />
@@ -37,6 +39,8 @@ function setupEls() {
     evPlugSensor: document.getElementById('ev-plug-sensor'),
     evSocValue: document.getElementById('ev-soc-value'),
     evPlugValue: document.getElementById('ev-plug-value'),
+    evTargetSocEntity: document.getElementById('ev-target-soc-entity'),
+    evTargetSocEntityValue: document.getElementById('ev-target-soc-entity-value'),
     evChargerSwitchEntity: document.getElementById('ev-charger-switch-entity'),
     evChargerSwitchValue: document.getElementById('ev-charger-switch-value'),
     evChargerCurrentEntity: document.getElementById('ev-charger-current-entity'),
@@ -56,23 +60,110 @@ describe('EV settings wiring', () => {
     document.body.innerHTML = '';
   });
 
-  it('refreshes HA sensor values and enables target SoC quick-set', async () => {
+  it('refreshes HA sensor values and pulls the car charge limit into Target SoC', async () => {
     const els = setupEls();
     els.evSocSensor.value = 'sensor.ev_soc';
     els.evPlugSensor.value = 'binary_sensor.ev_plug';
-    fetchHaEntityState
-      .mockResolvedValueOnce({ state: '72.4' })
-      .mockResolvedValueOnce({ state: 'on' });
+    els.evTargetSocEntity.value = 'number.tesla_charge_limit';
+    els.evTargetSoc.value = '80';
+    const states = {
+      'sensor.ev_soc': '85',
+      'binary_sensor.ev_plug': 'on',
+      'number.tesla_charge_limit': '100',
+    };
+    fetchHaEntityState.mockImplementation(async (id) => ({ state: states[id] }));
+    const onInput = vi.fn();
+    els.evTargetSoc.addEventListener('input', onInput);
+
+    await refreshEvSensorStates(els);
+
+    expect(els.evSocValue.textContent).toBe('Current value: 85');
+    expect(els.evPlugValue.textContent).toBe('Current value: on');
+    expect(els.evTargetSocEntityValue.textContent).toBe('Current value: 100');
+    // The charge limit, not the battery level, and saved like a user edit.
+    expect(els.evTargetSoc.value).toBe('100');
+    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(els.evTargetSocQuickSet.disabled).toBe(false);
+    expect(els.evTargetSocQuickSet.title).toBe("Set to the car's charge limit (100%)");
+
+    // Unchanged limit on the next refresh: no extra save/solve.
+    await refreshEvSensorStates(els);
+    expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('quick-set re-reads the charge limit and loads it, even into a focused field', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    els.evSocSensor.value = 'sensor.ev_soc';
+    els.evTargetSocEntity.value = 'number.tesla_charge_limit';
+    const states = { 'sensor.ev_soc': '85', 'number.tesla_charge_limit': '90' };
+    fetchHaEntityState.mockImplementation(async (id) => ({ state: states[id] }));
+    await refreshEvSensorStates(els);
+    expect(els.evTargetSoc.value).toBe('90');
+
+    // User is typing in the field when the limit changes in the car app:
+    // a background refresh leaves the field alone…
+    els.evTargetSoc.focus();
+    els.evTargetSoc.value = '7';
+    states['number.tesla_charge_limit'] = '70';
+    await refreshEvSensorStates(els);
+    expect(els.evTargetSoc.value).toBe('7');
+
+    // …but the button reads the car again and loads its limit.
+    states['number.tesla_charge_limit'] = '75';
+    els.evTargetSocQuickSet.click();
+    await flushPromises();
+    expect(fetchHaEntityState).toHaveBeenLastCalledWith('number.tesla_charge_limit');
+    expect(els.evTargetSoc.value).toBe('75');
+  });
+
+  it.each(['unavailable', 'unknown', '0'])('keeps Target SoC and disables quick-set when the limit reads %s', async (state) => {
+    const els = setupEls();
+    els.evSocSensor.value = 'sensor.ev_soc';
+    els.evTargetSocEntity.value = 'number.tesla_charge_limit';
+    els.evTargetSoc.value = '80';
+    fetchHaEntityState.mockImplementation(async (id) => ({ state: id === 'sensor.ev_soc' ? '85' : state }));
+
+    await refreshEvSensorStates(els);
+
+    expect(els.evTargetSoc.value).toBe('80');
+    expect(els.evTargetSocQuickSet.disabled).toBe(true);
+    expect(els.evTargetSocQuickSet.title).toBe("Configure the car's charge-limit entity first");
+  });
+
+  it('never loads the battery level when no charge-limit entity is configured', async () => {
+    const els = setupEls();
+    els.evSocSensor.value = 'sensor.ev_soc';
+    els.evTargetSoc.value = '80';
+    fetchHaEntityState.mockResolvedValue({ state: '85' });
 
     await refreshEvSensorStates(els);
     els.evTargetSocQuickSet.click();
 
-    expect(fetchHaEntityState).toHaveBeenCalledWith('sensor.ev_soc');
-    expect(fetchHaEntityState).toHaveBeenCalledWith('binary_sensor.ev_plug');
-    expect(els.evSocValue.textContent).toBe('Current value: 72.4');
-    expect(els.evPlugValue.textContent).toBe('Current value: on');
+    expect(els.evTargetSocQuickSet.disabled).toBe(true);
+    expect(els.evTargetSoc.value).toBe('80');
+  });
+
+  it('loads the charge limit as soon as the entity is entered', async () => {
+    vi.useRealTimers();
+    const els = setupEls();
+    const persistConfig = vi.fn().mockResolvedValue();
+    const persistConfigDebounced = Object.assign(vi.fn(), { cancel: vi.fn() });
+    const debounceRun = Object.assign(vi.fn(), { cancel: vi.fn() });
+    fetchHaEntityState.mockResolvedValue({ state: '90' });
+    els.evTargetSoc.value = '80';
+
+    wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
+    els.evTargetSocEntity.value = 'number.tesla_charge_limit';
+    els.evTargetSocEntity.dispatchEvent(new Event('blur'));
+    await flushPromises();
+
+    expect(els.evTargetSoc.value).toBe('90');
     expect(els.evTargetSocQuickSet.disabled).toBe(false);
-    expect(els.evTargetSoc.value).toBe('72');
+
+    // Editing the entity id again drops the reading and disables the button.
+    els.evTargetSocEntity.dispatchEvent(new Event('input'));
+    expect(els.evTargetSocQuickSet.disabled).toBe(true);
   });
 
   it('shows live values for the actuation charger entities too', async () => {
@@ -162,17 +253,17 @@ describe('EV settings wiring', () => {
     fetchHaEntityState.mockRejectedValue(new Error('entity not found'));
 
     wireEvSensorInputs(els, { persistConfig, persistConfigDebounced, debounceRun });
-    els.evSocValue.dataset.haState = '50';
+    els.evTargetSocEntityValue.dataset.haState = '90';
     els.evTargetSocQuickSet.disabled = false;
-    els.evSocSensor.value = 'sensor.missing';
-    els.evSocSensor.dispatchEvent(new Event('blur'));
+    els.evTargetSocEntity.value = 'number.missing';
+    els.evTargetSocEntity.dispatchEvent(new Event('blur'));
     await flushPromises();
 
     expect(persistConfig).toHaveBeenCalledTimes(1);
-    expect(els.evSocValue.textContent).toBe('Error: entity not found');
-    expect(els.evSocValue.className).toContain('text-red-600');
-    expect(els.evSocValue.dataset.haState).toBeUndefined();
-    // afterUpdate ran on the error path: SoC quick-set is disabled again.
+    expect(els.evTargetSocEntityValue.textContent).toBe('Error: entity not found');
+    expect(els.evTargetSocEntityValue.className).toContain('text-red-600');
+    expect(els.evTargetSocEntityValue.dataset.haState).toBeUndefined();
+    // afterUpdate ran on the error path: the quick-set is disabled again.
     expect(els.evTargetSocQuickSet.disabled).toBe(true);
   });
 
@@ -259,15 +350,15 @@ describe('EV settings wiring', () => {
     expect(els.evSocValue.textContent).toBe('Current value: 88');
   });
 
-  it('does nothing in the SoC quick-set when the button element is absent', async () => {
+  it('still syncs Target SoC when the quick-set button element is absent', async () => {
     const els = setupEls();
-    els.evTargetSocQuickSet = null; // updateEvSocQuickSet must early-return safely.
-    els.evSocSensor.value = 'sensor.ev_soc';
+    els.evTargetSocQuickSet = null; // applyCarChargeLimit must skip the button safely.
+    els.evTargetSocEntity.value = 'number.tesla_charge_limit';
     fetchHaEntityState.mockResolvedValue({ state: '50' });
 
     // Should not throw despite the missing button.
     await expect(refreshEvSensorStates(els)).resolves.toBeUndefined();
-    expect(els.evSocValue.textContent).toBe('Current value: 50');
+    expect(els.evTargetSoc.value).toBe('50');
   });
 
   it('skips wiring a sensor entry whose indicator element is missing', () => {
