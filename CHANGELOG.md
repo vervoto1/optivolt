@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.80 - 2026-10-30
+
+- **The add-on runs Node.js 26 LTS** (26.13.0 "Lithium", `NODE_IMAGE=node:26.13.0-alpine3.24`), up from Node 24.22.2. Node 26 became Active LTS on 2026-10-28 and gets security fixes until 2029-04-30. Node 24 is in maintenance until 2028-04-30. The app itself doesn't change: `engines` already allows `>=24`.
+- **The image adds Alpine's `libatomic`.** Unlike Node 24, the official Node 26 musl binary links against it. Without it, `node` cannot load, and the build's type stripping check fails the build, so an image missing it is never published.
+- **CI runs the test suite on Node 26** (`test.yml`), the same major as the add-on.
+- Verified before the switch: on Node 26.13.0 the suite passes (4000 of 4001; the one failure was a git-dependent test run outside a checkout) and so does the typecheck. A local amd64 image boots without restarts or deprecation warnings, resolves `TZ=Europe/Amsterdam`, solves an Optimal plan and fetches over HTTPS.
+
 ## 0.7.79 - 2026-10-30
 
 - **Security updates of npm dependencies** (`npm audit fix`, lockfile only):
