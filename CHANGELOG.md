@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.79 - 2026-10-30
+
+- **Security updates of npm dependencies** (`npm audit fix`, lockfile only):
+  - **body-parser 2.3.0 → 2.4.0** (High, [GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)): a compressed request body with trailing bytes could take the server down. `express.json()` decompresses request bodies, so any client that can reach the add-on's port or ingress could send one.
+  - **qs 6.16.0 → 6.17.1** (Moderate, [GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)): a crash in `qs.stringify`, which OptiVolt does not call.
+  - **ip-address 10.7.3 → 10.7.5** (Moderate, [GHSA-rxp7-6hxx-x8q5](https://github.com/advisories/GHSA-rxp7-6hxx-x8q5)): reached only through mqtt's SOCKS proxy support, which OptiVolt does not use.
+  - **undici 8.11.2 → 8.12.3** (High, eight advisories): used only by jsdom in the tests, never in the add-on image.
+- **The add-on runs Node.js 24.22.2** (`NODE_IMAGE`), up from 24.22.1. The release brings five V8 backports and a stream fix; it is not labelled a security release. The rebuild also pulls the base image's current packages (curl 8.23.0).
+
 ## 0.7.78 - 2026-10-27
 
 - **The button next to Target SoC (EV tab) loads the car's charge limit.** It loaded the car's current battery level (`evSocSensor`), so with the car at 85 % and its limit at 100 % it set the target to 85 %. It now reads the "Target SoC entity" (Settings → EV, e.g. `number.tesla_charge_limit`) again and loads that value, even while you are typing in the field. Without a usable charge limit (no entity, or a state of `unavailable`, `unknown` or 0) the button is disabled.

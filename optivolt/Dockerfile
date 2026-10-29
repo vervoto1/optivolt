@@ -7,7 +7,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 # exact release on the base's Alpine branch. Bump it by hand on each Node
 # security release: Alpine's own nodejs package can lag one by weeks (v3.24
 # still shipped 24.18.1 after the 2026-10-21 security release, fixed in 24.22.1).
-ARG NODE_IMAGE=node:24.22.1-alpine3.24
+ARG NODE_IMAGE=node:24.22.2-alpine3.24
 #
 # Stage 1: install npm deps on the native builder platform to avoid QEMU
 # "Illegal instruction" crashes when cross-compiling for aarch64.
