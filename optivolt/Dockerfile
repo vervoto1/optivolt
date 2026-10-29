@@ -7,7 +7,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 # exact release on the base's Alpine branch. Bump it by hand on each Node
 # security release: Alpine's own nodejs package can lag one by weeks (v3.24
 # still shipped 24.18.1 after the 2026-10-21 security release, fixed in 24.22.1).
-ARG NODE_IMAGE=node:24.22.2-alpine3.24
+ARG NODE_IMAGE=node:26.13.0-alpine3.24
 #
 # Stage 1: install npm deps on the native builder platform to avoid QEMU
 # "Illegal instruction" crashes when cross-compiling for aarch64.
@@ -38,13 +38,15 @@ ENV \
 # Node is the official musl build from the node stage, not Alpine's nodejs
 # package, so a Node security release reaches the add-on as soon as NODE_IMAGE
 # is bumped. It bundles its own OpenSSL, ICU and CA store and needs only
-# libstdc++ and libgcc from Alpine; npm is not needed at runtime. It has
+# libstdc++, libgcc and (since Node 26) libatomic from Alpine; without
+# libatomic it cannot load and the type stripping check below fails the
+# build. npm is not needed at runtime. It has
 # TypeScript type stripping: the s6 service runs `node api/index.ts` directly.
 # `apk upgrade` pulls the base image's own packages (OpenSSL, curl,
 # ca-certificates) up to the current security fixes. The last step fails the
 # build, rather than the add-on at runtime, if Node lacks type stripping.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
-RUN apk add --no-cache libstdc++ libgcc curl \
+RUN apk add --no-cache libstdc++ libgcc libatomic curl \
   && apk upgrade --no-cache
 RUN node -e "process.exit(process.features.typescript ? 0 : 1)" \
   || { echo "Node.js $(node --version) lacks TypeScript type stripping" >&2; exit 1; }

@@ -11,7 +11,7 @@ GitHub configuration for CI/CD and automated dependency management.
 
 | File | Description |
 |------|-------------|
-| `workflows/test.yml` | GitHub Actions: lint, typecheck, and test on push/PR to main (Ubuntu, Node 24) |
+| `workflows/test.yml` | GitHub Actions: lint, typecheck, and test on push/PR to main (Ubuntu, Node 26) |
 | `dependabot.yml` | Automated monthly npm dependency updates |
 
 ## For AI Agents
@@ -19,7 +19,7 @@ GitHub configuration for CI/CD and automated dependency management.
 ### Working In This Directory
 
 - CI pipeline runs: `npm ci` → `npm run lint` → `npm run typecheck` → `npm test`
-- Node.js 24 with npm cache enabled
+- Node.js 26 with npm cache enabled
 - Triggers on push to `main` and PRs targeting `main`
 - Ensure all three checks pass locally before pushing: `npm run lint && npm run typecheck && npx vitest run`
 
