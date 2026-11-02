@@ -5,7 +5,9 @@ import { buildLP } from '../../lib/build-lp.ts';
 
 // Golden LP fixtures: sha256 of the exact LP text buildLP emits for a set of
 // representative SolverConfigs. The hashes pin the LP of v0.7.71 (generated
-// from the unmodified lib/build-lp.ts of that release).
+// from the unmodified lib/build-lp.ts of that release), except the two floor
+// ratchet fixtures, re-pinned in v0.7.81 (running ratchet floor + recovery
+// deadline, see CHANGELOG).
 //
 // Any change to these hashes must be deliberate: an LP edit that alters a
 // coefficient, a constraint name, the order of rows or the number formatting
@@ -143,7 +145,7 @@ const GOLDEN = [
   {
     name: '15-min, floor ratchet (initial SoC below minSoc)',
     config: () => cfg(96, 15, { minSoc_percent: 10, initialSoc_percent: 7, cvPhaseThresholds: CV }, { startHour: 22 }),
-    hash: 'f93870b8d587440f2290df4b49a11c72788e6f1fc0503e986018fc8d39f0003d',
+    hash: '115a08cda97f1a69c937c2cb8aa9267a05af303f1c02bd7affe22915ed0feb2c',
     features: ['cv', 'floor_recovered'],
   },
   {
@@ -237,7 +239,7 @@ const GOLDEN = [
       rebalanceTargetSoc_percent: 100,
       ev: { ...EV_BASE, evDepartureSlot: 50, evContinuous: true },
     }, { startHour: 17 }),
-    hash: 'bdaf81cff1ded275d4f3ee19c82eb7016cff4c8c7825b92a4704224669544fdb',
+    hash: '67d77373f5dee53f47c9add4eb1564549086bad291896fe5a2ece09a7ca2f591',
     features: ['cv', 'dp', 'floor_recovered', 'start_balance', 'ev_on', 'ev_trans', 'ev_tgt'],
   },
 ];

@@ -32,18 +32,26 @@ describe('buildLP — SoC floor ratchet (structure)', () => {
   });
 
   it('emits ratchet constraints when initial SoC is below the floor', () => {
-    // initial 5% = 500 Wh → inherited shortfall 500 Wh.
-    // allowance_0 = 500 + 10 = 510 (one slot of idle drain), so the
-    // pre-recovery floor is 1000 - 510 = 490 = the no-intervention SoC.
+    // initial 5% = 500 Wh → inherited shortfall 500 Wh. The ratchet floor
+    // starts on the no-intervention trajectory: 500 - 10 Wh idle drain.
     const lp = buildLP({ ...base, initialSoc_percent: 5 });
-    expect(lp).toMatch(/c_min_soc_0: soc_shortfall_0 \+ soc_0 - 510 floor_recovered_0 >= 490/);
-    expect(lp).toMatch(/c_min_soc_1: soc_shortfall_1 \+ soc_1 - 520 floor_recovered_1 >= 480/);
+    expect(lp).toMatch(/c_min_soc_0: soc_shortfall_0 \+ soc_0 - ratchet_floor_0 >= 0/);
+    expect(lp).toMatch(/c_min_soc_full_0: soc_shortfall_0 \+ soc_0 - 1000 floor_recovered_0 >= 0/);
+    expect(lp).toMatch(/c_ratchet_carry_0: ratchet_floor_0 >= 490/);
+    expect(lp).toMatch(/c_ratchet_carry_1: ratchet_floor_1 - ratchet_floor_0 >= -10/);
+    // Any SoC reached before recovery raises the ratchet floor.
+    expect(lp).toMatch(/c_ratchet_track_1: ratchet_floor_1 - soc_1 \+ 10000 floor_recovered_1 >= 0/);
     // Latch: M = maxSoc - minSoc = 9000; SoC above the floor forces the binary.
     expect(lp).toMatch(/c_floor_rec_0: soc_0 - 9000 floor_recovered_0 <= 1000/);
     // Monotone: recovery is permanent.
     expect(lp).toMatch(/c_floor_rec_mono_1: floor_recovered_1 - floor_recovered_0 >= 0/);
     // Binaries declared.
     expect(lp).toMatch(/Binaries[\s\S]*floor_recovered_0[\s\S]*floor_recovered_1/);
+    // 5 % short > 3 % tolerance: recovery due from R = min(12 h, T/2) = 1.
+    expect(lp).not.toContain('c_ratchet_deadline_0');
+    expect(lp).toMatch(/c_ratchet_deadline_1: ratchet_floor_1 >= 1000/);
+    // 2 % short: within the tolerance, no deadline.
+    expect(buildLP({ ...base, initialSoc_percent: 8 })).not.toContain('c_ratchet_deadline_');
   });
 });
 
@@ -139,5 +147,72 @@ describe('buildLP — SoC floor ratchet (solver behavior)', () => {
     };
     const result = highs.solve(buildLP(cfg3), { mip_rel_gap: 0, mip_abs_gap: 0 });
     expect(result.Status).toBe('Optimal');
+  });
+});
+
+// Issue (2026-11-02): minSoc raised to 20 % while the battery sat near 0 %.
+// The old ratchet kept the whole inherited deficit free until SoC went
+// strictly ABOVE minSoc, so the plan charged to exactly minSoc for arbitrage
+// and sold it back down to the inherited level, every day.
+describe('buildLP — SoC floor ratchet: large deficit and partial recovery', () => {
+  let highs;
+  beforeAll(async () => {
+    highs = await highsFactory({});
+  });
+
+  // Production-shaped: 35 kWh, 20 % floor, starting at 3 %, hourly slots.
+  // Cheap afternoon (38.5), evening peak (52.5), then a flat ~41 night.
+  const prices = [40, 40, 38.5, 38.5, 42, 47, 52.5, 51.5, 49.8, 44, 43.9, 41.9, 41.7, 41.1, 40.5, 40.1, 41.2, 42.8, 45, 47, 46, 44, 42, 40];
+  const T2 = prices.length;
+  const prod = (extra = {}) => ({
+    load_W: Array(T2).fill(700),
+    pv_W: Array(T2).fill(0),
+    importPrice: prices,
+    exportPrice: prices,
+    stepSize_m: 60,
+    batteryCapacity_Wh: 35000,
+    minSoc_percent: 20, // 7000 Wh
+    maxSoc_percent: 100,
+    maxChargePower_W: 15200,
+    maxDischargePower_W: 15200,
+    maxGridImport_W: 18000,
+    maxGridExport_W: 18000,
+    chargeEfficiency_percent: 95,
+    dischargeEfficiency_percent: 95,
+    inverterEfficiency_percent: 95,
+    batteryCost_cent_per_kWh: 1,
+    idleDrain_W: 50,
+    terminalSocValuation: 'zero',
+    initialSoc_percent: 3, // 1050 Wh — 5950 Wh short
+    ...extra,
+  });
+  const solve = cfg => {
+    const result = highs.solve(buildLP(cfg), { mip_rel_gap: 0, mip_abs_gap: 0 });
+    expect(result.Status).toBe('Optimal');
+    return parseSolution(result, cfg, { startMs: 0, stepMin: 60 });
+  };
+
+  it('buys a large deficit back before the deadline and holds the full floor after it', () => {
+    const rows = solve(prod());
+    const R = 12; // min(12 h, T/2)
+    // Bought back in the cheap slots, not at the peak.
+    expect(rows.slice(2, 4).reduce((s, r) => s + r.g2b, 0)).toBeGreaterThan(5000);
+    for (let t = R; t < T2; t++) expect(rows[t].soc).toBeGreaterThanOrEqual(7000 - 1);
+  });
+
+  it('never sells a partial recovery back below the level it reached', () => {
+    const rows = solve(prod());
+    const peakBelowFloor = Math.max(...rows.map(r => Math.min(r.soc, 7000)));
+    const firstPeak = rows.findIndex(r => Math.min(r.soc, 7000) >= peakBelowFloor - 1e-6);
+    for (let t = firstPeak; t < T2; t++) {
+      // Only idle drain may be given back (50 Wh per hourly slot).
+      expect(rows[t].soc).toBeGreaterThanOrEqual(peakBelowFloor - 50 * (t - firstPeak) - 1);
+    }
+  });
+
+  it('a small deficit still rides for free (no buy-back of 2 % drift)', () => {
+    const rows = solve(prod({ initialSoc_percent: 18, importPrice: Array(T2).fill(40), exportPrice: Array(T2).fill(40) }));
+    expect(rows.reduce((s, r) => s + r.g2b, 0)).toBeLessThan(1);
+    expect(rows[T2 - 1].soc).toBeCloseTo(6300 - 50 * T2, 0);
   });
 });

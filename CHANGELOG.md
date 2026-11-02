@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.81 - 2026-11-02
+
+- **The minimum SoC holds again when the battery starts below it.** With the floor raised to 20 % and the battery near 0 %, plans charged to *exactly* 20 % for arbitrage, sold that back into the evening peak and drifted to 0 % overnight, day after day. Cause: the inherited-deficit ratchet (0.7.49, #50) kept the whole deficit free until SoC went *strictly above* the floor, so stopping at exactly the floor kept it free for the rest of the horizon (and, since 0.7.72, on every forecast day too).
+- **Partial recoveries are kept.** Before recovery, the floor is now a running level (`ratchet_floor_t`): it starts on the no-intervention trajectory (initial SoC minus idle drain) and rises with any SoC the plan reaches below the floor. Only idle drain is given back, so charge put in toward the floor can no longer be sold back down to the inherited level. Once SoC crosses the floor the latch restores the full floor, as before.
+- **A large deficit is bought back within 12 h.** If the battery starts more than 3 % of capacity below the floor (typically a raised floor), the full floor applies from slot R = min(12 h, half the horizon) on, so the LP buys it back in the cheapest slots before R. A deficit of up to 3 % (overnight idle drain, integer SoC readings) still rides for free, as #50 intended; once it grows past 3 % it is bought back.
+- **LP:** with an inherited deficit, `c_min_soc_t` becomes `shortfall + soc − ratchet_floor ≥ 0` plus `c_min_soc_full_t` (`shortfall + soc − minSoc·floor_recovered ≥ 0`), with the new rows `c_ratchet_carry_t`, `c_ratchet_track_t` (firm slots) and `c_ratchet_deadline_t`. No new binaries. The LP is byte-identical whenever the initial SoC is at or above the floor; the two floor-ratchet golden fixtures are re-pinned.
+
 ## 0.7.80 - 2026-10-30
 
 - **The add-on runs Node.js 26 LTS** (26.13.0 "Lithium", `NODE_IMAGE=node:26.13.0-alpine3.24`), up from Node 24.22.2. Node 26 became Active LTS on 2026-10-28 and gets security fixes until 2029-04-30. Node 24 is in maintenance until 2028-04-30. The app itself doesn't change: `engines` already allows `>=24`.

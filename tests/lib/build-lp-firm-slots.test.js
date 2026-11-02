@@ -212,24 +212,38 @@ describe('buildLP — slot-indexed tie-breaks are capped at firmSlots − 1', ()
 });
 
 describe('buildLP — floor ratchet past the boundary', () => {
-  // 10 kWh, minSoc 10 % = 1000 Wh, initial 6 % = 600 Wh → shortfall 400 Wh;
-  // idle drain 40 Wh per 60-min slot. allowance(t) = 400 + 40·(t+1).
+  // 10 kWh, minSoc 10 % = 1000 Wh, initial 6 % = 600 Wh → shortfall 400 Wh
+  // (above the 3 % tolerance, so recovery is required from slot
+  // R = min(12 h, T/2) = 12 on); idle drain 40 Wh per 60-min slot.
   const lp = buildLP(base({ initialSoc_percent: 6, firmSlots: F }));
 
-  it('keeps the growing allowance and the latch in firm slots', () => {
-    expect(row(lp, `c_min_soc_${F - 1}`)).toBe(`soc_shortfall_${F - 1} + soc_${F - 1} - 1200 floor_recovered_${F - 1} >= -200`);
-    expect(row(lp, `c_floor_rec_${F - 1}`)).toBeDefined();
-    expect(row(lp, `c_floor_rec_mono_${F - 1}`)).toBeDefined();
+  it('keeps the ratchet floor, its soc tracking and the latch in firm slots', () => {
+    const t = F - 1;
+    expect(row(lp, `c_min_soc_${t}`)).toBe(`soc_shortfall_${t} + soc_${t} - ratchet_floor_${t} >= 0`);
+    expect(row(lp, `c_min_soc_full_${t}`)).toBe(`soc_shortfall_${t} + soc_${t} - 1000 floor_recovered_${t} >= 0`);
+    expect(row(lp, `c_ratchet_carry_${t}`)).toBe(`ratchet_floor_${t} - ratchet_floor_${t - 1} >= -40`);
+    expect(row(lp, `c_ratchet_track_${t}`)).toBe(`ratchet_floor_${t} - soc_${t} + 10000 floor_recovered_${t} >= 0`);
+    expect(row(lp, `c_floor_rec_${t}`)).toBeDefined();
+    expect(row(lp, `c_floor_rec_mono_${t}`)).toBeDefined();
   });
 
-  it('keeps growing the allowance past the boundary, gated by floor_recovered_{F−1}', () => {
+  it('carries the ratchet floor past the boundary, gated by floor_recovered_{F−1}', () => {
     for (const t of [F, F + 1, T - 1]) {
-      const allowance = 400 + 40 * (t + 1);
-      expect(row(lp, `c_min_soc_${t}`)).toBe(`soc_shortfall_${t} + soc_${t} - ${allowance} floor_recovered_${F - 1} >= ${1000 - allowance}`);
+      expect(row(lp, `c_min_soc_full_${t}`)).toBe(`soc_shortfall_${t} + soc_${t} - 1000 floor_recovered_${F - 1} >= 0`);
+      expect(row(lp, `c_ratchet_carry_${t}`)).toBe(`ratchet_floor_${t} - ratchet_floor_${t - 1} >= -40`);
+      expect(row(lp, `c_ratchet_track_${t}`)).toBeUndefined();
       expect(row(lp, `c_floor_rec_${t}`)).toBeUndefined();
       expect(row(lp, `c_floor_rec_mono_${t}`)).toBeUndefined();
     }
     expect(hasIndexedFrom(lp, 'floor_recovered_', F)).toBe(false);
+  });
+
+  it('requires a large deficit to be recovered from slot R on', () => {
+    expect(row(lp, 'c_ratchet_deadline_11')).toBeUndefined();
+    expect(row(lp, 'c_ratchet_deadline_12')).toBe('ratchet_floor_12 >= 1000');
+    expect(row(lp, `c_ratchet_deadline_${T - 1}`)).toBe(`ratchet_floor_${T - 1} >= 1000`);
+    // A deficit within the tolerance (8 % → 200 Wh) rides for free.
+    expect(buildLP(base({ initialSoc_percent: 8, firmSlots: F }))).not.toContain('c_ratchet_deadline_');
   });
 });
 
@@ -689,7 +703,7 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
 
   /**
    * The shipped LP with a per-slot recovery latch added to the forecast slots
-   * (mirroring the firm rows): floor_recovered_t gates c_min_soc_t, is
+   * (mirroring the firm rows): floor_recovered_t gates c_min_soc_full_t, is
    * monotone from floor_recovered_{F−1} and is forced to 1 by soc_t > minSoc.
    * `binary` declares it binary (the reference model), `relaxed` bounds it to
    * [0, 1] (the binary-free candidate).
@@ -704,7 +718,7 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
     const extraBounds = [];
     const extraBinaries = [];
     for (let t = F; t < T; t++) {
-      const i = lines.findIndex(l => l.startsWith(` c_min_soc_${t}: `));
+      const i = lines.findIndex(l => l.startsWith(` c_min_soc_full_${t}: `));
       lines[i] = lines[i].replace(`floor_recovered_${F - 1}`, `floor_recovered_${t}`);
       rows.push(` c_floor_rec_${t}: soc_${t} - ${maxSoc - minSoc} floor_recovered_${t} <= ${minSoc}`);
       rows.push(` c_floor_rec_mono_${t}: floor_recovered_${t} - floor_recovered_${t - 1} >= 0`);
@@ -725,18 +739,33 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
     return k < 0 ? Infinity : Math.min(...rows.slice(k).map(r => r.soc));
   }
 
-  it('Run A: the firm part does not recover; forecast slots never go below the no-intervention bound', () => {
+  it('Run A: a large deficit the firm part does not recover is bought back at the deadline and held', () => {
+    // 4 % start, 10 % floor: 600 Wh short (> 3 % tolerance) → recovery due
+    // from R = min(12 h, T/2) = 12 = the first forecast slot.
     const cfg = runA();
     const { result, rows } = solve(cfg);
     expect(result.Columns[`floor_recovered_${RA_F - 1}`].Primal).toBeCloseTo(0, 6);
-    // The forecast days recover (charge at 10 c)...
-    expect(Math.max(...rows.slice(RA_F).map(r => r.soc))).toBeGreaterThan(MIN_SOC_WH);
-    // ...and every slot stays on or above its documented floor: no shortfall
-    // anywhere, soc_t >= minSoc − allowance(t) (the no-intervention trajectory).
     for (let t = 0; t < rows.length; t++) {
       expect(result.Columns[`soc_shortfall_${t}`].Primal).toBeCloseTo(0, 6);
-      const allowance = 600 + 40 * (t + 1);
-      expect(rows[t].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - allowance - 1e-6);
+      if (t < RA_F) {
+        // Before R: never below the no-intervention trajectory.
+        expect(rows[t].soc).toBeGreaterThanOrEqual(400 - 40 * (t + 1) - 1e-6);
+      } else {
+        // From R on: the full floor, on every forecast day.
+        expect(rows[t].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
+      }
+    }
+  });
+
+  it('Run A (small deficit): forecast slots never go below the no-intervention bound', () => {
+    // 8 % start: 200 Wh short, within the tolerance → no forced recovery.
+    const cfg = runA({ initialSoc_percent: 8 });
+    const { result, rows } = solve(cfg);
+    expect(result.Columns[`floor_recovered_${RA_F - 1}`].Primal).toBeCloseTo(0, 6);
+    expect(Math.max(...rows.slice(RA_F).map(r => r.soc))).toBeGreaterThan(MIN_SOC_WH);
+    for (let t = 0; t < rows.length; t++) {
+      expect(result.Columns[`soc_shortfall_${t}`].Primal).toBeCloseTo(0, 6);
+      expect(rows[t].soc).toBeGreaterThanOrEqual(800 - 40 * (t + 1) - 1e-6);
     }
     // Known limitation (comment in buildLP): a forecast-day recovery does not
     // restore the full floor, so later forecast days may drain below minSoc.
@@ -797,19 +826,21 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
   it('a continuous forecast latch drains below minSoc where the binary latch holds it', () => {
     // Run A without export (the battery only serves a 300 W load): the
     // forecast days charge only what the evenings need.
-    const cfg = runA({ load_W: Array(84).fill(300), exportPrice: Array(84).fill(0) });
+    const cfg = runA({ initialSoc_percent: 8, load_W: Array(84).fill(300), exportPrice: Array(84).fill(0) });
     const binary = solveLp(withForecastLatch(cfg, 'binary'), cfg).rows;
     const relaxed = solveLp(withForecastLatch(cfg, 'relaxed'), cfg).rows;
     expect(minAfterForecastRecovery(binary, RA_F)).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
-    expect(minAfterForecastRecovery(relaxed, RA_F)).toBeLessThan(MIN_SOC_WH - 500);
     const peak = rows => Math.max(...rows.slice(RA_F).map(r => r.soc));
-    expect(peak(relaxed)).toBeLessThan(peak(binary) - 500);
+    expect(minAfterForecastRecovery(relaxed, RA_F)).toBeLessThan(MIN_SOC_WH - 300);
+    expect(peak(relaxed)).toBeLessThan(peak(binary) - 300);
   });
 
-  it('across random prices the relaxed latch sits between the shipped LP and the binary latch, and is exploited', () => {
+  it('across random prices the relaxed latch sits between the shipped LP and the binary latch', () => {
+    // (With the running ratchet floor and the recovery deadline, the relaxed
+    // latch no longer drains below minSoc on these random cases; the targeted
+    // case above still shows the gap.)
     let seed = 12345;
     const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-    let exploited = 0;
     for (let i = 0; i < 30; i++) {
       const F = 6 + Math.floor(rnd() * 10);
       const T = F + 24 + Math.floor(rnd() * 12);
@@ -834,9 +865,7 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
       expect(shipped).toBeLessThanOrEqual(relaxed.result.ObjectiveValue + 1e-6);
       expect(relaxed.result.ObjectiveValue).toBeLessThanOrEqual(binary.result.ObjectiveValue + 1e-6);
       expect(minAfterForecastRecovery(binary.rows, F)).toBeGreaterThanOrEqual(MIN_SOC_WH - 1);
-      if (minAfterForecastRecovery(relaxed.rows, F) < MIN_SOC_WH - 5) exploited++;
     }
-    expect(exploited).toBeGreaterThan(0);
   });
 });
 
