@@ -210,6 +210,23 @@ describe('buildLP — SoC floor ratchet: large deficit and partial recovery', ()
     }
   });
 
+  it('does not charge to exactly the floor and sell it back (small deficit, slow charger)', () => {
+    // 2 % short (within the tolerance, so no recovery deadline) and a 1 kW
+    // charge limit: the 38.5 → 52.5 c spread can only pay for topping up to
+    // the floor, never past it. Before 0.7.81 the plan charged to exactly
+    // 20 % (the latch only fires strictly above the floor) and then sold it
+    // back down to the inherited level at the peak.
+    const flat = Array(T2 - 4).fill(41);
+    const p = [38.5, 38.5, 52.5, 52.5, ...flat];
+    const rows = solve(prod({ initialSoc_percent: 18, maxChargePower_W: 1000, importPrice: p, exportPrice: p }));
+    const peak = Math.max(...rows.map(r => r.soc));
+    const peakAt = rows.findIndex(r => r.soc >= peak - 1e-6);
+    for (let t = peakAt; t < T2; t++) {
+      // Only idle drain may be given back (50 Wh per hourly slot).
+      expect(rows[t].soc).toBeGreaterThanOrEqual(peak - 50 * (t - peakAt) - 1);
+    }
+  });
+
   it('a small deficit still rides for free (no buy-back of 2 % drift)', () => {
     const rows = solve(prod({ initialSoc_percent: 18, importPrice: Array(T2).fill(40), exportPrice: Array(T2).fill(40) }));
     expect(rows.reduce((s, r) => s + r.g2b, 0)).toBeLessThan(1);
