@@ -207,22 +207,39 @@ export function buildLP({
   const initialSoc_Wh = (initialSoc_percent / 100) * batteryCapacity_Wh;
 
   // Inherited-deficit floor ratchet. When the initial SoC is already below the
-  // minSoc floor (overnight idle drain past the horizon end, integer SoC
-  // quantization, a raised floor), the per-slot shortfall penalty must not
-  // force an immediate grid buy-back at whatever the current price is — the
-  // Victron reactive layer treats a small deficit as maintained and does
-  // nothing. Until the battery first recovers to the floor, the effective
-  // floor follows the no-intervention trajectory (initialSoc minus cumulative
-  // idle drain): carrying the inherited deficit is free, deepening it is
-  // penalized as usual. Once SoC crosses the floor, floor_recovered_t latches
-  // to 1 (monotone), restoring the full floor for the rest of the horizon so
-  // the allowance can never be reused to drain below minSoc later (which
-  // would erode the floor a little further every day). Known limitation: a
-  // partial recovery that never reaches the floor keeps the full allowance
-  // alive; with realistic charge rates any planned charge window recovers
-  // completely, so this stays theoretical.
+  // minSoc floor (overnight idle drain, integer SoC quantization, a raised
+  // floor), the per-slot shortfall penalty must not force an immediate grid
+  // buy-back at whatever the current price is — the Victron reactive layer
+  // treats a small deficit as maintained and does nothing. Until the battery
+  // first recovers to the floor, the effective floor is a running level
+  // ratchet_floor_t (≤ minSoc) that
+  //   - starts on the no-intervention trajectory (initialSoc minus idle
+  //     drain), so carrying the inherited deficit is free, and
+  //   - ratchets up with every SoC the plan reaches below the floor
+  //     (ratchet_floor_t ≥ soc_t while not recovered), only ever giving back
+  //     idle drain. A partial recovery is therefore kept: the plan cannot
+  //     charge toward the floor for arbitrage and then sell that charge back
+  //     down to the inherited level (charging to exactly minSoc used to leave
+  //     the latch open and the whole allowance reusable).
+  // Once SoC crosses the floor, floor_recovered_t latches to 1 (monotone) and
+  // the full floor applies for the rest of the horizon.
+  //
+  // A large inherited deficit (more than FLOOR_RATCHET_TOLERANCE_PERCENT,
+  // typically a raised floor) must also be bought back: from slot R on the
+  // ratchet floor is minSoc itself, so the LP schedules the recovery in the
+  // cheapest slots before R. Small deficits keep riding for free.
+  const FLOOR_RATCHET_TOLERANCE_PERCENT = 3;
+  const FLOOR_RECOVERY_WINDOW_H = 12;
   const initialShortfall_Wh = Math.max(0, minSoc_Wh - initialSoc_Wh);
   const floorRatchetActive = initialShortfall_Wh > 0;
+  const floorRecoveryRequired = initialShortfall_Wh > (FLOOR_RATCHET_TOLERANCE_PERCENT / 100) * batteryCapacity_Wh;
+  // Recovery deadline: within the recovery window, but no later than half the
+  // horizon so a short (firm-only) horizon still leaves enough penalized slots
+  // after R for the buy-back to pay off.
+  const floorRecoveryDeadline = Math.min(
+    Math.round(FLOOR_RECOVERY_WINDOW_H * 60 / stepSize_m),
+    Math.floor(T / 2),
+  );
 
   // Rebalancing MILP: number of slots remaining in the hold window (D) and
   // the allowed start positions [KMIN, KMAX]. See resolveRebalanceWindow: D
@@ -436,6 +453,7 @@ export function buildLP({
   // solution parser treats every soc_* column except soc_shortfall_* as the
   // per-slot SoC value.
   const floorRecovered = (t: number) => `floor_recovered_${t}`;
+  const ratchetFloor = (t: number) => `ratchet_floor_${t}`;
   const batteryCharging = (t: number) => `battery_charging_${t}`;
   const cvBin = (k: number, t: number) => `cv_${k}_${t}`;
   const dpBin = (k: number, t: number) => `dp_${k}_${t}`;
@@ -619,34 +637,34 @@ export function buildLP({
     lines.push(` c_battery_discharge_mode_${t}: ${batteryToLoad(t)} + ${batteryToGrid(t)}${batEvTerm} + ${toNum(maxDischargePower_W)} ${batteryCharging(t)} <= ${toNum(maxDischargePower_W)}`);
 
     // Soft min SOC constraint. With an inherited deficit (ratchet active) the
-    // pre-recovery floor is the no-intervention trajectory instead of minSoc:
-    //   floor_recovered = 0:  shortfall + soc >= minSoc - allowance
-    //                         (= initialSoc - idleDrain·(t+1), so sitting idle
-    //                         costs nothing and no phantom trickle-charge is
-    //                         needed to offset modeled idle drain)
-    //   floor_recovered = 1:  shortfall + soc >= minSoc  (full floor)
+    // pre-recovery floor is the running ratchet floor instead of minSoc:
+    //   shortfall + soc >= ratchet_floor                  (always)
+    //   shortfall + soc >= minSoc · floor_recovered       (full floor once recovered)
+    //   ratchet_floor_t >= ratchet_floor_{t−1} − idleDrain   (only drain is given back;
+    //                      ratchet_floor_{−1} = initialSoc, so idling costs nothing)
+    //   ratchet_floor_t >= soc_t − maxSoc · floor_recovered_t (keeps any partial recovery)
+    //   ratchet_floor_t >= minSoc  for t >= R  (large deficit: recover by R)
     if (floorRatchetActive) {
-      const allowance_Wh = initialShortfall_Wh + idleDrain_Wh * (t + 1);
-      // Forecast slots carry no latch of their own: the allowance keeps
-      // growing with idle drain (holding a level past the boundary needs no
-      // made-up trickle charge and pulls no grid charging into firm slots)
-      // and is gated by the last firm slot's latch:
-      //   shortfall + soc >= minSoc − allowance(t)·(1 − floor_recovered_{F−1})
-      // Known limitation: when the firm part does not recover, a recovery on
-      // a forecast day does not restore the full floor, so later forecast
-      // slots may plan below minSoc (down to the no-intervention trajectory)
-      // without penalty. A continuous latch (floor_recovered_t in [0, 1],
-      // monotone, forced up by soc_t > minSoc) does not fix that: it is the
-      // convex hull of the binary latch, which raises the floor only in
-      // proportion to (soc − minSoc)/(maxSoc − minSoc), so after a partial
-      // recovery it still plans below minSoc and rewards charging less to
-      // keep the floor low (tests/lib/build-lp-firm-slots.test.js compares it
-      // with a binary latch). Forecast slots are never executed; a recovery
-      // that is executed happens in the firm part of a later solve, under the
-      // binary latch.
+      // Forecast slots carry no latch of their own: they are gated by the
+      // last firm slot's latch, and their ratchet floor only carries forward
+      // (no soc-tracking term, which needs the per-slot binary). Known
+      // limitation: a partial recovery planned on a forecast day is not
+      // protected there. Forecast slots are never executed; a recovery that is
+      // executed happens in the firm part of a later solve, under the binary
+      // latch.
       const latch = isForecastSlot(t) ? floorRecovered(F - 1) : floorRecovered(t);
-      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(allowance_Wh)} ${latch} >= ${toNum(minSoc_Wh - allowance_Wh)}`);
+      lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${ratchetFloor(t)} >= 0`);
+      lines.push(` c_min_soc_full_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(minSoc_Wh)} ${latch} >= 0`);
+      if (t === 0) {
+        lines.push(` c_ratchet_carry_0: ${ratchetFloor(0)} >= ${toNum(initialSoc_Wh - idleDrain_Wh)}`);
+      } else {
+        lines.push(` c_ratchet_carry_${t}: ${ratchetFloor(t)} - ${ratchetFloor(t - 1)} >= ${toNum(-idleDrain_Wh)}`);
+      }
+      if (floorRecoveryRequired && t >= floorRecoveryDeadline) {
+        lines.push(` c_ratchet_deadline_${t}: ${ratchetFloor(t)} >= ${toNum(minSoc_Wh)}`);
+      }
       if (!isForecastSlot(t)) {
+        lines.push(` c_ratchet_track_${t}: ${ratchetFloor(t)} - ${soc(t)} + ${toNum(maxSoc_Wh)} ${floorRecovered(t)} >= 0`);
         // Latch: SoC above the floor forces floor_recovered = 1 (M spans the
         // remaining SoC range above the floor); monotonicity keeps it there.
         lines.push(` c_floor_rec_${t}: ${soc(t)} - ${toNum(maxSoc_Wh - minSoc_Wh)} ${floorRecovered(t)} <= ${toNum(minSoc_Wh)}`);
