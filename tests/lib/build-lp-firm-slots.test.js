@@ -213,7 +213,7 @@ describe('buildLP — slot-indexed tie-breaks are capped at firmSlots − 1', ()
 
 describe('buildLP — floor ratchet past the boundary', () => {
   // 10 kWh, minSoc 10 % = 1000 Wh, initial 6 % = 600 Wh → shortfall 400 Wh
-  // (above the 3 % tolerance, so recovery is required from slot
+  // (above the 1 % tolerance, so recovery is required from slot
   // R = min(12 h, T/2) = 12 on); idle drain 40 Wh per 60-min slot.
   const lp = buildLP(base({ initialSoc_percent: 6, firmSlots: F }));
 
@@ -242,8 +242,19 @@ describe('buildLP — floor ratchet past the boundary', () => {
     expect(row(lp, 'c_ratchet_deadline_11')).toBeUndefined();
     expect(row(lp, 'c_ratchet_deadline_12')).toBe('ratchet_floor_12 >= 1000');
     expect(row(lp, `c_ratchet_deadline_${T - 1}`)).toBe(`ratchet_floor_${T - 1} >= 1000`);
-    // A deficit within the tolerance (8 % → 200 Wh) rides for free.
-    expect(buildLP(base({ initialSoc_percent: 8, firmSlots: F }))).not.toContain('c_ratchet_deadline_');
+  });
+
+  it('gives forecast slots the full floor from R on even for a deficit within the tolerance', () => {
+    // 9.5 % → 50 Wh short (≤ 1 %): firm slots ride for free, forecast slots
+    // (no per-slot latch) hold minSoc from max(R, F) on.
+    const small = buildLP(base({ initialSoc_percent: 9.5, firmSlots: F }));
+    for (let t = 0; t < F; t++) expect(row(small, `c_ratchet_deadline_${t}`)).toBeUndefined();
+    const from = Math.max(12, F);
+    if (from > F) expect(row(small, `c_ratchet_deadline_${from - 1}`)).toBeUndefined();
+    expect(row(small, `c_ratchet_deadline_${from}`)).toBe(`ratchet_floor_${from} >= 1000`);
+    expect(row(small, `c_ratchet_deadline_${T - 1}`)).toBe(`ratchet_floor_${T - 1} >= 1000`);
+    // Firm-only (no forecast slots): no deadline within the tolerance.
+    expect(buildLP(base({ initialSoc_percent: 9.5 }))).not.toContain('c_ratchet_deadline_');
   });
 });
 
@@ -740,7 +751,7 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
   }
 
   it('Run A: a large deficit the firm part does not recover is bought back at the deadline and held', () => {
-    // 4 % start, 10 % floor: 600 Wh short (> 3 % tolerance) → recovery due
+    // 4 % start, 10 % floor: 600 Wh short (> 1 % tolerance) → recovery due
     // from R = min(12 h, T/2) = 12 = the first forecast slot.
     const cfg = runA();
     const { result, rows } = solve(cfg);
@@ -757,23 +768,26 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
     }
   });
 
-  it('Run A (small deficit): forecast slots never go below the no-intervention bound', () => {
-    // 8 % start: 200 Wh short, within the tolerance → no forced recovery.
-    const cfg = runA({ initialSoc_percent: 8 });
+  it('Run A (small deficit): forecast days hold the full floor after R', () => {
+    // 9.5 % start: 50 Wh short, within the tolerance → the firm part rides
+    // for free, but forecast slots hold minSoc from R = 12 = F on.
+    const cfg = runA({ initialSoc_percent: 9.5 });
     const { result, rows } = solve(cfg);
     expect(result.Columns[`floor_recovered_${RA_F - 1}`].Primal).toBeCloseTo(0, 6);
     expect(Math.max(...rows.slice(RA_F).map(r => r.soc))).toBeGreaterThan(MIN_SOC_WH);
     for (let t = 0; t < rows.length; t++) {
       expect(result.Columns[`soc_shortfall_${t}`].Primal).toBeCloseTo(0, 6);
-      expect(rows[t].soc).toBeGreaterThanOrEqual(800 - 40 * (t + 1) - 1e-6);
+      expect(rows[t].soc).toBeGreaterThanOrEqual(950 - 40 * (t + 1) - 1e-6);
+      if (t >= RA_F) expect(rows[t].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
     }
-    // Known limitation (comment in buildLP): a forecast-day recovery does not
-    // restore the full floor, so later forecast days may drain below minSoc.
-    expect(minAfterForecastRecovery(rows, RA_F)).toBeLessThan(MIN_SOC_WH);
+    // Before 0.7.82 a forecast-day recovery did not restore the full floor,
+    // so later forecast days drained below minSoc (2026-11-08: 47 % → 3.7 %).
+    expect(minAfterForecastRecovery(rows, RA_F)).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
   });
 
-  // Run B: no load, flat prices, a small idle drain. Starting at 8 % (200 Wh
-  // short) the battery just sits; nothing is worth buying.
+  // Run B: no load, flat prices, a small idle drain. Starting at 9.5 % (50 Wh
+  // short, within the tolerance) the firm part just sits; the forecast slots
+  // need the full floor back from R = 12 = F on.
   const RB_F = 12;
   const RB_T = 48;
   const runB = (firmPrice, forecastPrice, extra = {}) => {
@@ -784,7 +798,7 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
       importPrice: price,
       exportPrice: price,
       idleDrain_W: 10,
-      initialSoc_percent: 8,
+      initialSoc_percent: 9.5,
       firmSlots: RB_F,
       ...extra,
     });
@@ -798,41 +812,45 @@ describe('buildLP — floor ratchet past the boundary (HiGHS)', () => {
     exportPrice: cfg.exportPrice.slice(0, RB_F),
   });
 
-  it('Run B: idle drain past the boundary needs no trickle charge', () => {
+  it('Run B: forecast slots restore the floor without a shortfall', () => {
+    // Flat prices: the recovery may land anywhere up to F (the earlier-charging
+    // tiebreak puts it in the firm part); the cheaper-forecast run below checks
+    // that it waits when the forecast is cheaper.
     const cfg = runB(20, 20);
     const { result, rows } = solve(cfg);
-    expect(sum(rows.map(r => r.g2b))).toBeLessThan(1);
     for (let t = 0; t < RB_T; t++) expect(result.Columns[`soc_shortfall_${t}`].Primal).toBeCloseTo(0, 6);
-    // The battery follows the idle-drain trajectory: 800 − 10·(t+1).
-    expect(rows[RB_T - 1].soc).toBeCloseTo(800 - 10 * RB_T, 3);
+    for (let t = 0; t < RB_F; t++) expect(rows[t].soc).toBeGreaterThanOrEqual(950 - 10 * (t + 1) - 1e-6);
+    // From F on: the full floor (plus the trickle that holds it against drain).
+    for (let t = RB_F; t < RB_T; t++) expect(rows[t].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
   });
 
-  it('Run B: a cheaper firm part does not pull charging into firm slots', () => {
+  it('Run B: a cheaper forecast part keeps the recovery out of the firm slots', () => {
     // No export value: stored energy is only worth something to the floor.
-    const cfg = runB(10, 20, { exportPrice: Array(RB_T).fill(0) });
+    const cfg = runB(20, 10, { exportPrice: Array(RB_T).fill(0) });
     const firmOnly = solve(firmOnlyOf(cfg)).rows;
     const ext = solve(cfg).rows;
     const firmG2b = rows => sum(rows.slice(0, RB_F).map(r => r.g2b));
     expect(firmG2b(ext)).toBeCloseTo(firmG2b(firmOnly), 3);
     expect(firmG2b(ext)).toBeLessThan(1);
     expect(ext[RB_F - 1].soc).toBeCloseTo(firmOnly[RB_F - 1].soc, 3);
+    expect(ext[RB_F].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
   });
 
-  // Proof that a binary-free latch in forecast slots is exploitable. Relaxing
+  // A binary-free latch in forecast slots is exploitable: relaxing
   // floor_recovered_t (t >= F) to [0, 1] only raises the floor in proportion
-  // to (soc − minSoc)/(maxSoc − minSoc) — the convex hull of the binary latch
-  // — so after a partial recovery the relaxed model plans below minSoc where
-  // the binary model holds it, and it charges less to keep the floor low.
-  it('a continuous forecast latch drains below minSoc where the binary latch holds it', () => {
+  // to (soc − minSoc)/(maxSoc − minSoc). The shipped LP therefore adds no
+  // forecast latch at all and applies the full floor to every forecast slot
+  // from R on instead; on the case that separated the relaxed and the binary
+  // latch it now holds minSoc just like the binary reference.
+  it('forecast days hold minSoc after a partial recovery, like the binary latch', () => {
     // Run A without export (the battery only serves a 300 W load): the
     // forecast days charge only what the evenings need.
-    const cfg = runA({ initialSoc_percent: 8, load_W: Array(84).fill(300), exportPrice: Array(84).fill(0) });
+    const cfg = runA({ initialSoc_percent: 9.5, load_W: Array(84).fill(300), exportPrice: Array(84).fill(0) });
+    const shipped = solve(cfg).rows;
     const binary = solveLp(withForecastLatch(cfg, 'binary'), cfg).rows;
-    const relaxed = solveLp(withForecastLatch(cfg, 'relaxed'), cfg).rows;
     expect(minAfterForecastRecovery(binary, RA_F)).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
-    const peak = rows => Math.max(...rows.slice(RA_F).map(r => r.soc));
-    expect(minAfterForecastRecovery(relaxed, RA_F)).toBeLessThan(MIN_SOC_WH - 300);
-    expect(peak(relaxed)).toBeLessThan(peak(binary) - 300);
+    expect(minAfterForecastRecovery(shipped, RA_F)).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
+    for (let t = RA_F; t < shipped.length; t++) expect(shipped[t].soc).toBeGreaterThanOrEqual(MIN_SOC_WH - 1e-6);
   });
 
   it('across random prices the relaxed latch sits between the shipped LP and the binary latch', () => {

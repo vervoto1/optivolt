@@ -47,11 +47,13 @@ describe('buildLP — SoC floor ratchet (structure)', () => {
     expect(lp).toMatch(/c_floor_rec_mono_1: floor_recovered_1 - floor_recovered_0 >= 0/);
     // Binaries declared.
     expect(lp).toMatch(/Binaries[\s\S]*floor_recovered_0[\s\S]*floor_recovered_1/);
-    // 5 % short > 3 % tolerance: recovery due from R = min(12 h, T/2) = 1.
+    // 5 % short > 1 % tolerance: recovery due from R = min(12 h, T/2) = 1.
     expect(lp).not.toContain('c_ratchet_deadline_0');
     expect(lp).toMatch(/c_ratchet_deadline_1: ratchet_floor_1 >= 1000/);
-    // 2 % short: within the tolerance, no deadline.
-    expect(buildLP({ ...base, initialSoc_percent: 8 })).not.toContain('c_ratchet_deadline_');
+    // 2 % short is past the 1 % tolerance too (it used to ride for free).
+    expect(buildLP({ ...base, initialSoc_percent: 8 })).toMatch(/c_ratchet_deadline_1: ratchet_floor_1 >= 1000/);
+    // 0.5 % short (integer SoC quantization): within the tolerance, no deadline.
+    expect(buildLP({ ...base, initialSoc_percent: 9.5 })).not.toContain('c_ratchet_deadline_');
   });
 });
 
@@ -211,14 +213,14 @@ describe('buildLP — SoC floor ratchet: large deficit and partial recovery', ()
   });
 
   it('does not charge to exactly the floor and sell it back (small deficit, slow charger)', () => {
-    // 2 % short (within the tolerance, so no recovery deadline) and a 1 kW
+    // 0.5 % short (within the tolerance, so no recovery deadline) and a 1 kW
     // charge limit: the 38.5 → 52.5 c spread can only pay for topping up to
     // the floor, never past it. Before 0.7.81 the plan charged to exactly
     // 20 % (the latch only fires strictly above the floor) and then sold it
     // back down to the inherited level at the peak.
     const flat = Array(T2 - 4).fill(41);
     const p = [38.5, 38.5, 52.5, 52.5, ...flat];
-    const rows = solve(prod({ initialSoc_percent: 18, maxChargePower_W: 1000, importPrice: p, exportPrice: p }));
+    const rows = solve(prod({ initialSoc_percent: 19.5, maxChargePower_W: 1000, importPrice: p, exportPrice: p }));
     const peak = Math.max(...rows.map(r => r.soc));
     const peakAt = rows.findIndex(r => r.soc >= peak - 1e-6);
     for (let t = peakAt; t < T2; t++) {
@@ -227,9 +229,21 @@ describe('buildLP — SoC floor ratchet: large deficit and partial recovery', ()
     }
   });
 
-  it('a small deficit still rides for free (no buy-back of 2 % drift)', () => {
-    const rows = solve(prod({ initialSoc_percent: 18, importPrice: Array(T2).fill(40), exportPrice: Array(T2).fill(40) }));
+  it('a quantization-sized deficit still rides for free (no buy-back of 0.5 % drift)', () => {
+    const rows = solve(prod({ initialSoc_percent: 19.5, importPrice: Array(T2).fill(40), exportPrice: Array(T2).fill(40) }));
     expect(rows.reduce((s, r) => s + r.g2b, 0)).toBeLessThan(1);
-    expect(rows[T2 - 1].soc).toBeCloseTo(6300 - 50 * T2, 0);
+    expect(rows[T2 - 1].soc).toBeCloseTo(6825 - 50 * T2, 0);
+  });
+
+  // Issue (2026-11-08): minSoc 10 %, battery at 8 %. A 2 % deficit sat under
+  // the old 3 % tolerance, so the plan idled below the floor all day and
+  // idle drain grew the deficit every night.
+  it('buys a 2 % deficit back in the cheapest slot before R and holds the floor after it', () => {
+    const p = [45, 45, 30, 30, ...Array(T2 - 4).fill(45)];
+    const rows = solve(prod({ minSoc_percent: 10, initialSoc_percent: 8, importPrice: p, exportPrice: p }));
+    const R = 12;
+    // Recovered in the cheap slots, not at 45 c.
+    expect(rows.slice(2, 4).reduce((s, r) => s + r.g2b, 0)).toBeGreaterThan(700);
+    for (let t = R; t < T2; t++) expect(rows[t].soc).toBeGreaterThanOrEqual(3500 - 1);
   });
 });

@@ -224,11 +224,18 @@ export function buildLP({
   // Once SoC crosses the floor, floor_recovered_t latches to 1 (monotone) and
   // the full floor applies for the rest of the horizon.
   //
-  // A large inherited deficit (more than FLOOR_RATCHET_TOLERANCE_PERCENT,
-  // typically a raised floor) must also be bought back: from slot R on the
-  // ratchet floor is minSoc itself, so the LP schedules the recovery in the
-  // cheapest slots before R. Small deficits keep riding for free.
-  const FLOOR_RATCHET_TOLERANCE_PERCENT = 3;
+  // An inherited deficit of more than FLOOR_RATCHET_TOLERANCE_PERCENT must
+  // also be bought back: from slot R on the ratchet floor is minSoc itself, so
+  // the LP schedules the recovery in the cheapest slots before R. The
+  // tolerance only absorbs integer SoC quantization (the reported SoC is a
+  // whole percent); a real 2 % deficit used to ride for free indefinitely and
+  // grow with every night's idle drain.
+  //
+  // Forecast slots have no per-slot latch, so the ratchet floor alone would
+  // let forecast days drain the battery from a planned recovery all the way
+  // back down (it only ever gives back idle drain). From R on, every forecast
+  // slot therefore gets the full floor, whatever the size of the deficit.
+  const FLOOR_RATCHET_TOLERANCE_PERCENT = 1;
   const FLOOR_RECOVERY_WINDOW_H = 12;
   const initialShortfall_Wh = Math.max(0, minSoc_Wh - initialSoc_Wh);
   const floorRatchetActive = initialShortfall_Wh > 0;
@@ -647,11 +654,9 @@ export function buildLP({
     if (floorRatchetActive) {
       // Forecast slots carry no latch of their own: they are gated by the
       // last firm slot's latch, and their ratchet floor only carries forward
-      // (no soc-tracking term, which needs the per-slot binary). Known
-      // limitation: a partial recovery planned on a forecast day is not
-      // protected there. Forecast slots are never executed; a recovery that is
-      // executed happens in the firm part of a later solve, under the binary
-      // latch.
+      // (no soc-tracking term, which needs the per-slot binary). Instead the
+      // recovery deadline applies to every forecast slot from R on (see
+      // FLOOR_RATCHET_TOLERANCE_PERCENT), so forecast days hold the full floor.
       const latch = isForecastSlot(t) ? floorRecovered(F - 1) : floorRecovered(t);
       lines.push(` c_min_soc_${t}: ${socShortfall(t)} + ${soc(t)} - ${ratchetFloor(t)} >= 0`);
       lines.push(` c_min_soc_full_${t}: ${socShortfall(t)} + ${soc(t)} - ${toNum(minSoc_Wh)} ${latch} >= 0`);
@@ -660,7 +665,7 @@ export function buildLP({
       } else {
         lines.push(` c_ratchet_carry_${t}: ${ratchetFloor(t)} - ${ratchetFloor(t - 1)} >= ${toNum(-idleDrain_Wh)}`);
       }
-      if (floorRecoveryRequired && t >= floorRecoveryDeadline) {
+      if ((floorRecoveryRequired || isForecastSlot(t)) && t >= floorRecoveryDeadline) {
         lines.push(` c_ratchet_deadline_${t}: ${ratchetFloor(t)} >= ${toNum(minSoc_Wh)}`);
       }
       if (!isForecastSlot(t)) {

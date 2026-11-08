@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.82 - 2026-11-08
+
+- **Forecast days keep the minimum SoC when the battery starts below it.** With minSoc at 10 % and the battery at 8 %, the plan charged to 47 % overnight on the forecast day, sold it into the evening peak down to 3.7 % and drifted to 0 % over the following days. Forecast slots have no per-slot recovery latch, so before recovery their only floor was the ratchet floor, which starts at the inherited level and gives back idle drain every slot. Now every forecast slot from R = min(12 h, half the horizon) on gets the full floor (`c_ratchet_deadline_t`), whatever the size of the deficit. No new binaries; firm slots are unchanged.
+- **A 2 % deficit is bought back.** The free-ride tolerance drops from 3 % to 1 % of capacity. It only needs to absorb integer SoC readings; at 3 % a battery sitting 2 % below the floor idled there indefinitely and idle drain grew the gap every night. A larger deficit is bought back in the cheapest slots before R, as in 0.7.81 — not immediately at the current price (#49).
+- **LP:** byte-identical whenever the initial SoC is at or above the floor. The 15-min floor-ratchet golden fixture (7 % start, 10 % floor) is re-pinned. The boundary tests that pinned the old forecast-day limitation now check that the floor holds.
+
 ## 0.7.81 - 2026-11-02
 
 - **The minimum SoC holds again when the battery starts below it.** With the floor raised to 20 % and the battery near 0 %, plans charged to *exactly* 20 % for arbitrage, sold that back into the evening peak and drifted to 0 % overnight, day after day. Cause: the inherited-deficit ratchet (0.7.49, #50) kept the whole deficit free until SoC went *strictly above* the floor, so stopping at exactly the floor kept it free for the rest of the horizon (and, since 0.7.72, on every forecast day too).
