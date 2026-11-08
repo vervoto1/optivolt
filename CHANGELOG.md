@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.83 - 2026-11-08
+
+- **npm dependency updates within the existing ranges** (`npm update`, lockfile only; `package.json` ranges unchanged):
+  - **Runtime:** express 5.2.1 → 5.3.0 (`res.send()` no longer sets `Content-Length` next to `Transfer-Encoding`; content-type 2.1.0 and content-disposition 2.0.1 underneath), mqtt 5.16.0 → 5.16.1 (reconnects a client whose stream was already destroyed instead of ending it). Patch updates underneath: ws 8.22.2, readable-stream 4.8.0, on-finished 2.4.2, encodeurl 2.0.1, ip-address 10.7.6, socks 2.8.10.
+  - **Dev:** vitest and @vitest/coverage-v8 5.1.0, eslint 10.14.0, @eslint/css 2.0.1, tailwindcss and @tailwindcss/cli 4.3.5, jsdom 30.1.3, supertest 7.3.2, dotenv-cli 11.1.0, globals 17.14.0. jsdom 31 (major) is left for later.
+- **`app/vendor/tailwind.css` rebuilt with Tailwind 4.3.5.** The only differences are the compiler's own output: `rounded-full` is `2147483647px` instead of `3.40282e38px`, the `@layer properties` fallback check tests `margin-trim:block`, and empty `var()` fallbacks are written `var(--x, )`. No classes were added or removed.
+- **Not fixed: the minimatch advisory** ([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), Moderate). It needs minimatch 11.0.1+, but the latest eslint, `@eslint/config-array` and nodemon still require minimatch 10, so there is no upgrade path yet (and the failing Dependabot job has nothing to propose). Both are dev tools; minimatch is not in the add-on image. `npm audit --omit=dev` reports 0 vulnerabilities.
+
 ## 0.7.82 - 2026-11-08
 
 - **Forecast days keep the minimum SoC when the battery starts below it.** With minSoc at 10 % and the battery at 8 %, the plan charged to 47 % overnight on the forecast day, sold it into the evening peak down to 3.7 % and drifted to 0 % over the following days. Forecast slots have no per-slot recovery latch, so before recovery their only floor was the ratchet floor, which starts at the inherited level and gives back idle drain every slot. Now every forecast slot from R = min(12 h, half the horizon) on gets the full floor (`c_ratchet_deadline_t`), whatever the size of the deficit. No new binaries; firm slots are unchanged.
