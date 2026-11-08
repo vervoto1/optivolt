@@ -7,7 +7,8 @@ import { buildLP } from '../../lib/build-lp.ts';
 // representative SolverConfigs. The hashes pin the LP of v0.7.71 (generated
 // from the unmodified lib/build-lp.ts of that release), except the two floor
 // ratchet fixtures, re-pinned in v0.7.81 (running ratchet floor + recovery
-// deadline, see CHANGELOG).
+// deadline, see CHANGELOG); the 15-min one again in v0.7.82 (1 % tolerance:
+// its 3 % deficit now gets a recovery deadline).
 //
 // Any change to these hashes must be deliberate: an LP edit that alters a
 // coefficient, a constraint name, the order of rows or the number formatting
@@ -145,7 +146,7 @@ const GOLDEN = [
   {
     name: '15-min, floor ratchet (initial SoC below minSoc)',
     config: () => cfg(96, 15, { minSoc_percent: 10, initialSoc_percent: 7, cvPhaseThresholds: CV }, { startHour: 22 }),
-    hash: '115a08cda97f1a69c937c2cb8aa9267a05af303f1c02bd7affe22915ed0feb2c',
+    hash: 'd672f209ee2e7c87e221f0f5d02b9fa7c809c02810334c9b1cab9ecaf23ef252',
     features: ['cv', 'floor_recovered'],
   },
   {
