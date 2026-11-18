@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.84 - 2026-11-18
+
+- **The add-on runs Node.js 26.13.1** (`NODE_IMAGE=node:26.13.1-alpine3.24`), up from 26.13.0. It is the November 2026 security release (9 High, 9 Medium/Low). Most fixes are in HTTP/2 and the TLS server, which OptiVolt does not use. Those that apply: the HTTP parser fix "tls,http: prevent nested parser execution from empty writes" (High) and llhttp 9.4.4, both in the Express server, plus the TLS client fixes, which cover the MQTT connection to Venus and the HTTPS calls to VRM and EpexPredictor.
+- **npm updates within the existing ranges** (`npm update`, lockfile only):
+  - **Runtime (patch level, underneath express and mqtt):** router 2.3.0, ws 8.23.0, encodeurl 2.0.3, object-inspect 1.14.0, @babel/runtime 7.29.14.
+  - **Dev:** eslint 10.15.0, vitest and @vitest/coverage-v8 5.1.1. Two majors are left for later: @eslint/markdown 9 and jsdom 31.
+- **The minimatch advisory ([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)) now comes only through nodemon.** eslint 10.15 and `@eslint/config-array` use minimatch 11.0.9. nodemon 3.1.14 still requires minimatch 10, and it is a dev tool that isn't in the add-on image. `npm audit --omit=dev` reports 0 vulnerabilities.
+
 ## 0.7.83 - 2026-11-08
 
 - **npm dependency updates within the existing ranges** (`npm update`, lockfile only; `package.json` ranges unchanged):
