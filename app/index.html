@@ -580,11 +580,18 @@
       <div class="card">
         <div class="mb-3 flex items-center justify-between gap-3">
           <h3 class="sidebar-label">Power flows</h3>
-          <label class="toggle">
-            <input id="flows-15m" type="checkbox">
-            <span class="toggle-knob"></span>
-            <span class="text-sm text-slate-600 dark:text-slate-400">15m bars</span>
-          </label>
+          <div class="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+            <label class="toggle" title="Mark the hovered moment on every plan chart">
+              <input id="charts-crosshair" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">Crosshair</span>
+            </label>
+            <label class="toggle">
+              <input id="flows-15m" type="checkbox">
+              <span class="toggle-knob"></span>
+              <span class="text-sm text-slate-600 dark:text-slate-400">15m bars</span>
+            </label>
+          </div>
         </div>
         <div class="h-80 w-full chart-wrap">
           <canvas id="flows" class="h-full w-full"></canvas>

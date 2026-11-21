@@ -8,11 +8,12 @@ import {
   refreshAllChartThemes,
   renderChart,
   dsBar,
+  sharedCrosshairPlugin,
 } from '../../../app/src/charts/core.js';
 import { dim } from '../../../app/src/charts/colors.js';
 
 // A minimal Chart.js stand-in. renderChart does:
-//   new Chart(canvas.getContext("2d"), config)
+//   new Chart(canvas.getContext("2d"), { ...config, plugins: [..., sharedCrosshairPlugin] })
 // and getRenderedCharts iterates document canvases reading canvas._chart
 // or Chart.getChart(canvas). We track lifecycle so tests can assert it.
 class FakeChart {
@@ -334,7 +335,10 @@ describe('renderChart', () => {
     renderChart(canvas, config);
 
     expect(canvas._chart).toBeInstanceOf(FakeChart);
-    expect(canvas._chart.config).toBe(config);
+    // The caller's config, plus the shared-crosshair plugin appended.
+    expect(canvas._chart.config).toMatchObject(config);
+    expect(canvas._chart.config.plugins).toEqual([sharedCrosshairPlugin]);
+    expect(config.plugins).toBeUndefined();
     expect(overlay.style.display).toBe('none');
   });
 

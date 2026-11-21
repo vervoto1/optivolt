@@ -49,6 +49,7 @@ export function buildTimeAxisFromTimestamps(timestampsMs) {
 
   return {
     labels,
+    timestampsMs,
     ticksCb: (_val, idx) => {
       const dt = times[idx];
       return (dt && isLabeledHour(dt)) ? fmtTickHourOrDate(dt) : "";
@@ -74,7 +75,7 @@ export function buildTimeAxisFromTimestamps(timestampsMs) {
  * Generates the standard Chart.js options object used by all charts.
  * Allows overriding specific sections via `overrides`.
  */
-export function getBaseOptions({ ticksCb, tooltipTitleCb, gridCb, yTitle, stacked = false }, overrides = {}) {
+export function getBaseOptions({ ticksCb, tooltipTitleCb, gridCb, yTitle, stacked = false, timestampsMs }, overrides = {}) {
   const theme = getChartTheme();
   const fontFamily = getComputedStyle(document.documentElement).fontFamily;
   const { ticks: xTicks, grid: xGrid, ...xRest } = overrides.scales?.x || {};
@@ -113,6 +114,8 @@ export function getBaseOptions({ ticksCb, tooltipTitleCb, gridCb, yTitle, stacke
         callbacks: { title: tooltipTitleCb },
         ...(tooltipOverrides || {}),
       },
+      // Slot start times, so the shared crosshair can place one moment on every chart.
+      ...(timestampsMs ? { [SHARED_CROSSHAIR_ID]: { timestampsMs } } : {}),
       ...pluginOverrides
     },
     scales: {
@@ -166,6 +169,114 @@ export function getChartTheme() {
 }
 
 const chartRegistry = new Set();
+
+// ---------------------------------------------------------------------------
+// Shared crosshair: hovering one chart marks the same moment on all the others
+// ---------------------------------------------------------------------------
+
+const SHARED_CROSSHAIR_ID = "sharedCrosshair";
+const SHARED_CROSSHAIR_KEY = "optivolt:sharedCrosshair";
+const sharedCrosshair = { enabled: false, timeMs: null };
+
+function crosshairTimestamps(chart) {
+  // Read from the config we handed Chart.js: `chart.options` is a resolved proxy.
+  return chart.config?.options?.plugins?.[SHARED_CROSSHAIR_ID]?.timestampsMs ?? null;
+}
+
+function repaintCrosshair(except) {
+  for (const chart of chartRegistry) {
+    if (chart !== except && chart.canvas?.isConnected && chart.chartArea?.width > 0) chart.draw();
+  }
+}
+
+/** Turn the shared crosshair on or off. */
+export function setSharedCrosshairEnabled(enabled) {
+  sharedCrosshair.enabled = !!enabled;
+  sharedCrosshair.timeMs = null;
+  repaintCrosshair(null);
+}
+
+export function getStoredSharedCrosshair() {
+  try {
+    return localStorage.getItem(SHARED_CROSSHAIR_KEY) === "on";
+  } catch {
+    return false; // storage blocked (private mode etc.): off
+  }
+}
+
+function storeSharedCrosshair(enabled) {
+  try {
+    localStorage.setItem(SHARED_CROSSHAIR_KEY, enabled ? "on" : "off");
+  } catch { /* storage blocked: the choice just won't persist */ }
+}
+
+/**
+ * Bind the crosshair checkbox: it starts from the stored choice (per browser,
+ * off by default) and stores every change.
+ */
+export function initSharedCrosshairToggle(input) {
+  if (!input) return;
+  input.checked = getStoredSharedCrosshair();
+  setSharedCrosshairEnabled(input.checked);
+  input.addEventListener("change", () => {
+    storeSharedCrosshair(input.checked);
+    setSharedCrosshairEnabled(input.checked);
+  });
+}
+
+export const sharedCrosshairPlugin = {
+  id: SHARED_CROSSHAIR_ID,
+  afterEvent(chart, args) {
+    if (!sharedCrosshair.enabled) return;
+    const times = crosshairTimestamps(chart);
+    if (!times?.length) return;
+    const { type, x } = args.event;
+    let timeMs;
+    if (type === "mouseout") {
+      timeMs = null;
+    } else if ((type === "mousemove" || type === "touchstart" || type === "touchmove") && args.inChartArea) {
+      const idx = Math.round(chart.scales.x.getValueForPixel(x));
+      timeMs = times[Math.max(0, Math.min(times.length - 1, idx))];
+    } else {
+      return;
+    }
+    if (timeMs === sharedCrosshair.timeMs) return;
+    sharedCrosshair.timeMs = timeMs;
+    args.changed = true;
+    repaintCrosshair(chart);
+  },
+  afterDatasetsDraw(chart) {
+    const timeMs = sharedCrosshair.timeMs;
+    if (!sharedCrosshair.enabled || timeMs == null) return;
+    const times = crosshairTimestamps(chart);
+    const xScale = chart.scales?.x;
+    if (!times?.length || !xScale) return;
+    // Last slot starting at or before the moment; charts can differ in resolution (15 min vs
+    // 1 h bars), so the line sits proportionally between two slots rather than snapping.
+    let i = -1;
+    for (let k = 0; k < times.length && times[k] <= timeMs; k++) i = k;
+    const step = times.length > 1 ? times[1] - times[0] : 0;
+    if (i < 0 || timeMs >= times[times.length - 1] + step) return;
+    const from = xScale.getPixelForValue(i);
+    // The last slot has no next tick: assume it is as wide as the one before it.
+    const to = i + 1 < times.length
+      ? xScale.getPixelForValue(i + 1)
+      : (i > 0 ? 2 * from - xScale.getPixelForValue(i - 1) : from);
+    const span = (times[i + 1] ?? times[i] + step) - times[i];
+    const xPx = from + (span > 0 ? ((timeMs - times[i]) / span) * (to - from) : 0);
+
+    const { ctx, chartArea } = chart;
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = getChartTheme().axisTickColor;
+    ctx.moveTo(xPx, chartArea.top);
+    ctx.lineTo(xPx, chartArea.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
 
 function updateLegendTheme(options, theme, fontFamily) {
   const legend = options.plugins?.legend;
@@ -248,6 +359,38 @@ if (typeof window !== "undefined") {
 }
 
 /**
+ * Clear the hover state (tooltip, highlighted bars, shared crosshair) of every chart except
+ * `except`. On a touch screen a tap leaves the tooltip up, as there is no "mouse leaves" to
+ * clear it; this is what takes it down again.
+ */
+export function dismissChartHighlights(except) {
+  for (const chart of getRenderedCharts()) {
+    if (chart === except) continue;
+    const active = chart.getActiveElements?.().length || chart.tooltip?.getActiveElements?.().length;
+    if (!active) continue;
+    chart.setActiveElements([]);
+    chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+    chart.update("none");
+  }
+  if (!except && sharedCrosshair.timeMs != null) {
+    sharedCrosshair.timeMs = null;
+    repaintCrosshair(null);
+  }
+}
+
+/* v8 ignore next — environment guard: document is always defined in the browser/jsdom contexts this runs in */
+if (typeof document !== "undefined") {
+  // A tap or click anywhere but on a chart closes the open tooltips; one on a chart closes the
+  // others. Scrolling closes them too, so a tooltip never rides along over unrelated content.
+  document.addEventListener("pointerdown", (event) => {
+    const target = event.target instanceof HTMLCanvasElement ? event.target : null;
+    const hit = target ? (target._chart ?? (typeof Chart !== "undefined" ? Chart.getChart?.(target) : null) ?? null) : null;
+    dismissChartHighlights(hit);
+  }, { passive: true });
+  window.addEventListener("scroll", () => dismissChartHighlights(null), { passive: true, capture: true });
+}
+
+/**
  * Handles the destruction of old chart instances and creation of new ones.
  */
 export function renderChart(canvas, config) {
@@ -255,7 +398,10 @@ export function renderChart(canvas, config) {
     chartRegistry.delete(canvas._chart);
     canvas._chart.destroy();
   }
-  canvas._chart = new Chart(canvas.getContext("2d"), config);
+  canvas._chart = new Chart(canvas.getContext("2d"), {
+    ...config,
+    plugins: [...(config.plugins ?? []), sharedCrosshairPlugin],
+  });
   chartRegistry.add(canvas._chart);
   const overlay = canvas.parentElement?.querySelector('.chart-empty');
   if (overlay) overlay.style.display = 'none';
