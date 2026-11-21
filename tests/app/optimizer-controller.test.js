@@ -82,6 +82,13 @@ function setupController() {
   };
 }
 
+/** setupController with extra service overrides. */
+function setupControllerWith(extraServices) {
+  const { els, services } = setupController();
+  const controller = createOptimizerController({ els, services: { ...services, ...extraServices } });
+  return { controller, els, services };
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
   vi.restoreAllMocks();
@@ -282,6 +289,68 @@ describe('optimizer controller', () => {
 
     expect(els.status.textContent).toBe('Settings error: disk full');
     expect(els.status.className).toContain('text-red-600');
+  });
+
+  it('reports a settings save that failed with a bare value, not an Error', async () => {
+    const { controller, els, services } = setupController();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    services.saveConfig.mockRejectedValue('offline');
+
+    await controller.persistConfig();
+
+    expect(els.status.textContent).toBe('Settings error: offline');
+  });
+
+  it('reports a failure to read the form for a save, even a bare thrown value', async () => {
+    const snapshotUI = vi.fn(() => { throw 'form unavailable'; });
+    const { controller, els, services } = setupControllerWith({ snapshotUI });
+    controller.markSettingsDirty('tableShowKwh');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await controller.persistConfig();
+
+    expect(els.status.textContent).toBe('Settings error: form unavailable');
+    expect(services.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it('ignores server settings that are missing or not an object', () => {
+    const hydrateSettingsKeys = vi.fn();
+    const { controller } = setupControllerWith({ hydrateSettingsKeys });
+    controller.hydrateServerSettings(null);
+    controller.hydrateServerSettings('nope');
+    expect(hydrateSettingsKeys).not.toHaveBeenCalled();
+  });
+
+  it('refills server settings at once while no control has focus', () => {
+    const hydrateSettingsKeys = vi.fn();
+    const onSettingsRehydrated = vi.fn();
+    const { controller, els } = setupControllerWith({ hydrateSettingsKeys, onSettingsRehydrated });
+    expect(document.activeElement).toBe(document.body);
+
+    controller.hydrateServerSettings({ stepSize_m: 15 });
+
+    expect(hydrateSettingsKeys).toHaveBeenCalledWith(els, { stepSize_m: 15 }, ['stepSize_m']);
+    expect(onSettingsRehydrated).toHaveBeenCalledOnce();
+  });
+
+  it('leaves the rebalance checkbox alone when the plan reports no rebalance status', async () => {
+    const rebalanceEnabled = checkbox(true);
+    const { els, services } = setupController();
+    const controller = createOptimizerController({ els: { ...els, rebalanceEnabled }, services });
+    services.requestRemoteSolve.mockResolvedValue({
+      initialSoc_percent: 42, rows: [], solverStatus: 'optimal', summary: {}, tsStart: '2026-05-01T12:00:00.000Z',
+    });
+    await controller.onRun();
+    expect(rebalanceEnabled.checked).toBe(true);
+  });
+
+  it('tolerates a solve reporting rebalanceStatus on a page without the rebalance checkbox', async () => {
+    const { controller, services } = setupController();
+    services.requestRemoteSolve.mockResolvedValue({
+      initialSoc_percent: 42, rows: [], solverStatus: 'optimal',
+      summary: { rebalanceStatus: 'disabled' }, tsStart: '2026-05-01T12:00:00.000Z',
+    });
+    await expect(controller.onRun()).resolves.toBeUndefined();
   });
 
   it('keeps a rejected settings save on screen after the solve succeeds', async () => {

@@ -840,6 +840,49 @@ describe('temperature predictor fields (opt-in)', () => {
     expect(hidden('pred-temperature-fields')).toBe(true);
   });
 
+  it('fills a partly stored temperature predictor with the defaults', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({
+      sensors, activeType: 'temperature', historicalPredictor: hp, temperaturePredictor: { sensor: 'Load' },
+    });
+    await form.hydratePredictionForm();
+    expect(form.readPredictionFormValues().temperaturePredictor).toEqual({ sensor: 'Load', lookbackWeeks: 4, dayFilter: 'all', bins: 3 });
+  });
+
+  it('reads an unset day filter as the default', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'temperature', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+    document.getElementById('pred-temp-filter').value = 'no-such-option'; // nothing selected → ''
+    expect(form.readPredictionFormValues().temperaturePredictor.dayFilter).toBe('all');
+  });
+
+  it('applyTemperatureRow tolerates a row without a sensor', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical', historicalPredictor: hp });
+    await form.hydratePredictionForm();
+    form.applyTemperatureRow({ lookbackWeeks: 8, dayFilter: 'same', bins: 6 });
+    expect(document.getElementById('pred-active-sensor').value).toBe('');
+    // No sensor, so no temperature strategy to send or highlight.
+    expect(form.readPredictionFormValues()).not.toHaveProperty('temperaturePredictor');
+  });
+
+  it('highlights nothing as active when the temperature type has no sensor', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors: [], activeType: 'temperature' });
+    await form.hydratePredictionForm();
+    wire();
+    const deps = validation.initValidation.mock.calls[0][0];
+    expect(deps.getHighlights().active).toBeNull();
+  });
+
+  it('useTemperatureRow saves without a fallback when none is stored', async () => {
+    api.fetchPredictionConfig.mockResolvedValue({ sensors, activeType: 'historical' });
+    await form.hydratePredictionForm();
+    api.savePredictionConfig.mockResolvedValue({});
+    const row = { sensor: 'Load', lookbackWeeks: 8, dayFilter: 'same', bins: 6 };
+
+    await form.useTemperatureRow(row);
+
+    expect(api.savePredictionConfig.mock.calls[0][0]).toMatchObject({ activeType: 'temperature', temperaturePredictor: row });
+  });
+
   it('highlights the temperature row as active when the type is selected', async () => {
     api.fetchPredictionConfig.mockResolvedValue({
       sensors,

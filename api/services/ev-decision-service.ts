@@ -115,9 +115,9 @@ export async function computeEvDecision(
   // Departure-slot target-met flag, if present in the plan. Only from a firm
   // row: a target due in a forecast row (the charge is waiting for forecast
   // days) is a plan days out, not a result, so targetMet stays null there.
-  const targetRow = lastPlan?.rows.find(r => r.ev_target_met != null);
+  const targetRow = lastPlan?.rows.find((r): r is PlanRow & { ev_target_met: boolean } => r.ev_target_met != null);
   const targetDeferred = targetRow?.priceForecast === true;
-  const targetMet = targetRow && !targetDeferred ? (targetRow.ev_target_met ?? null) : null;
+  const targetMet = targetRow && !targetDeferred ? targetRow.ev_target_met : null;
 
   // Live HA reads (best-effort). Concurrent, not sequential: this runs on the
   // actuator's control tick, every REST read carries its own 10s timeout, and

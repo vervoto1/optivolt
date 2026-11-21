@@ -84,6 +84,16 @@ describe('json-store — writeJson', () => {
     expect(fs.unlink).not.toHaveBeenCalled();
   });
 
+  it('tolerates a directory handle that fails to close', async () => {
+    openWith((h, flags) => {
+      if (flags === 'r') h.close.mockRejectedValue(new Error('EBADF'));
+    });
+
+    await expect(writeJson('/tmp/test/data.json', { a: 3 })).resolves.toBeUndefined();
+    expect(dirHandles()[0].close).toHaveBeenCalled();
+    expect(fs.rename).toHaveBeenCalledTimes(1);
+  });
+
   it('uses a distinct temp file per write so concurrent writers cannot tear each other', async () => {
     // Two in-flight writes to the same target used to share `${file}.tmp`; the
     // second write could land mid-way through the first, and whichever

@@ -413,6 +413,13 @@ describe('runAutoSelect', () => {
     });
   });
 
+  it('records a failure that was thrown as a bare value, not an Error', async () => {
+    scoreStrategies.mockRejectedValue('recorder unavailable');
+    await expect(runAutoSelect()).rejects.toBe('recorder unavailable');
+    expect(appendAutoSelectRun.mock.calls[0][0]).toMatchObject({ action: 'failed', error: 'recorder unavailable' });
+    expect(isAutoSelectRunning()).toBe(false);
+  });
+
   it('still rethrows the run error when recording the failure itself fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     scoreStrategies.mockRejectedValue(new Error('HA down'));

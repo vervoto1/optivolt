@@ -126,6 +126,23 @@ describe('optimizer quick settings', () => {
     expect(blockMirror.checked).toBe(false);
   });
 
+  it('syncMirrors refreshes every pinned copy except the one being typed in', () => {
+    const els = setupDom('["minSoc_percent","mode"]');
+    const quick = initOptimizerQuickSettings({ ...els, definitions });
+    const minSocMirror = document.querySelector('#optimizer-quick-minSoc_percent');
+    const modeMirror = document.querySelector('#optimizer-quick-mode');
+
+    // Sources refilled from code (no event), while the user is typing in the minSoc copy.
+    document.querySelector('#minsoc').value = '55';
+    document.querySelector('#mode').value = 'max';
+    minSocMirror.focus();
+    minSocMirror.value = '4';
+    quick.syncMirrors();
+
+    expect(minSocMirror.value).toBe('4');
+    expect(modeMirror.value).toBe('max');
+  });
+
   it('routes mirror edits through the source input event path', () => {
     const els = setupDom('["minSoc_percent"]');
     initOptimizerQuickSettings({ ...els, definitions });

@@ -80,6 +80,11 @@ describe('wall time ↔ instant in the display zone', () => {
     expect(fromDatetimeLocal('2026-10-09T06:45:30.5')).toBe(SLOT_MS + 30_500);
     expect(fromDatetimeLocal('2026-10-09T10:45:00Z')).toBe(SLOT_MS);
     expect(fromDatetimeLocal('nope')).toBeNull();
+    // A missing value is invalid, not Date's epoch 0 for null.
+    expect(fromDatetimeLocal(null)).toBeNull();
+    expect(fromDatetimeLocal(undefined)).toBeNull();
+    expect(fromDatetimeLocal('')).toBeNull();
+    expect(fromDatetimeLocal(' 2026-10-09T10:45:00Z ')).toBe(SLOT_MS);
   });
 
   it('handles both DST changes', () => {

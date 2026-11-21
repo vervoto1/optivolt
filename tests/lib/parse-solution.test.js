@@ -364,6 +364,10 @@ describe('parseSolution — solver status guard', () => {
     }, cfg, opts)).toThrow(SolverStatusError);
   });
 
+  it('throws for an early stop with a finite objective but no columns at all', () => {
+    expect(() => parseSolution({ Status: 'Time limit reached', ObjectiveValue: 5 }, cfg, opts)).toThrow(SolverStatusError);
+  });
+
   it('parses a feasible incumbent under an early-stop status (finite objective and soc primals)', () => {
     for (const Status of ['Time limit reached', 'Iteration limit reached', 'Bound on objective reached', 'Target for objective reached']) {
       const rows = parseSolution({ Status, ObjectiveValue: 12.5, Columns: columns }, cfg, opts);

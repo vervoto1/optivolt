@@ -10,14 +10,16 @@ export function toDatetimeLocal(d) {
 // Inverse of toDatetimeLocal: a datetime-local value read in the display
 // zone → epoch ms. Seconds are optional (a browser may add them), so such a
 // value is never left to Date, which would read it in the browser's zone.
-// Anything else is parsed by Date as-is. Invalid → null.
+// Any other text is parsed by Date. Invalid, empty or missing → null (not
+// Date's epoch 0 for null).
 export function fromDatetimeLocal(value) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d{1,3})?))?$/.exec(String(value ?? '').trim());
+  const text = String(value ?? '').trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d{1,3})?))?$/.exec(text);
   if (m) {
     const ms = zonedWallTimeToMs(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
     return ms + Math.round(Number(m[6] ?? 0) * 1000);
   }
-  const ms = new Date(value).getTime();
+  const ms = new Date(text).getTime();
   return Number.isFinite(ms) ? ms : null;
 }
 

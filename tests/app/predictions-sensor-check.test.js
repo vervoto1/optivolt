@@ -137,6 +137,37 @@ describe('prediction sensor check', () => {
     expect(lines()).toEqual([]);
   });
 
+  it('drops a request error for text that was edited while the check was in flight', async () => {
+    wireSensorCheck();
+    let fail;
+    checkPredictionSensors.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+
+    const run = runSensorCheck();
+    document.getElementById('pred-sensors').dispatchEvent(new Event('input', { bubbles: true }));
+    fail(new Error('HTTP 500'));
+
+    await expect(run).resolves.toBeNull();
+    expect(lines()).toEqual([]);
+  });
+
+  it('sends only list-shaped editors and omits missing ones', async () => {
+    setupDom({ sensors: '{"id":"sensor.grid"}' }); // valid JSON, but not a list
+    document.getElementById('pred-derived').remove();
+    checkPredictionSensors.mockResolvedValue({ reachable: true, sensors: [], derived: [] });
+    await runSensorCheck();
+    expect(checkPredictionSensors).toHaveBeenCalledWith({});
+  });
+
+  it('renders a sparse result: no error text, no lists, a reading without a unit', () => {
+    renderSensorCheck({ reachable: false });
+    expect(lines().map(l => l.text)).toEqual([
+      'Could not reach Home Assistant to check the sensors (unknown error). Saving is not affected.',
+    ]);
+
+    renderSensorCheck({ reachable: true, sensors: [ok({ unit: null, state: '12' })] });
+    expect(lines().map(l => l.text)).toEqual(['✓ Grid Import (sensor.grid) = 12']);
+  });
+
   it('re-checks when an editor change is committed and on the button', async () => {
     checkPredictionSensors.mockResolvedValue({ reachable: true, sensors: [ok()], derived: [] });
     wireSensorCheck();

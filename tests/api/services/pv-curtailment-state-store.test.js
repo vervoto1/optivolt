@@ -103,6 +103,27 @@ describe('pv-curtailment-state-store', () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
+  it('rejects with the rename error even when the temp file cannot be removed', async () => {
+    vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('EXDEV'));
+    const unlink = vi.spyOn(fs, 'unlink').mockRejectedValueOnce(new Error('EBUSY'));
+    await expect(savePvCurtailmentState(state)).rejects.toThrow('EXDEV');
+    expect(unlink).toHaveBeenCalledWith(expect.stringMatching(/pv-curtailment-state\.json\.\d+\.\d+\.tmp$/));
+  });
+
+  it('still saves when the directory handle fails to close', async () => {
+    const realOpen = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (p, flags) => {
+      const handle = await realOpen(p, flags);
+      if (flags === 'r') {
+        const realClose = handle.close.bind(handle);
+        handle.close = async () => { await realClose(); throw new Error('EBADF'); };
+      }
+      return handle;
+    });
+    await savePvCurtailmentState(state);
+    await expect(loadPvCurtailmentState()).resolves.toEqual(state);
+  });
+
   it('still saves when the directory cannot be fsynced', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const realOpen = fs.open.bind(fs);
