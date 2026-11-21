@@ -66,7 +66,7 @@ Settings, prediction config, and time-series data are server-owned, persisted as
 
 ## Testing
 
-Tests use vitest with supertest for API tests. Test files mirror the source structure under `tests/`. API tests mock external services (`settings-store`, `data-store`, `vrm-refresh`, `mqtt-service`). The `lib/` tests are pure unit tests. Browser-side tests (`tests/app/`) use jsdom.
+Tests use vitest with supertest for API tests. Coverage is held at 100 % (statements, branches, functions, lines): `npm run test:coverage`, which CI runs, fails below that (`thresholds` in `vitest.config.js`). Cover new code with tests; code that can never run is removed, or marked `/* v8 ignore next — <reason> */` like the existing environment guards. Test files mirror the source structure under `tests/`. API tests mock external services (`settings-store`, `data-store`, `vrm-refresh`, `mqtt-service`). The `lib/` tests are pure unit tests. Browser-side tests (`tests/app/`) use jsdom.
 
 ## Code conventions
 

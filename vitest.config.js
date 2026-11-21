@@ -26,6 +26,9 @@ export default defineConfig({
         'api/defaults/**',
         'tests/**',
       ],
+      // Every line, branch, function and statement is covered; keep it that way.
+      // Code that can never run is removed, or marked `v8 ignore next — <reason>`.
+      thresholds: { 100: true },
     },
   },
 });
