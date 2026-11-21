@@ -11,16 +11,17 @@ hashes below, so a swapped binary fails CI until this file is updated with it.
 
 | | |
 |---|---|
-| Source | [`lovasoa/highs-js`](https://github.com/lovasoa/highs-js) @ `96981da1d88bbf657d81f7f3027377ba6a7e81bf` (2026-09-11, "Release v1.15.3" = tag `v1.15.3`) |
-| HiGHS | [`ERGO-Code/HiGHS`](https://github.com/ERGO-Code/HiGHS) @ `04024d701f79feb8e2f18bc3df0dffc04ef05088` (2026-07-02, **v1.15.1**) — the `HiGHS` submodule of the tag above |
-| Built by | upstream release build: npm `highs@1.15.3` (published 2026-09-11, tarball sha1 `516181f8c1c6fd0c7d8698073e01f3e07671a82a`), `package/build/` copied verbatim |
-| `highs.wasm` | sha256 `528be4365bea1d4188988646b244263f50320df55782e14d6af5bce7cd45c840` (3 531 385 bytes) |
-| `highs.js` | sha256 `0bd23843c9795753f2276e9901eb2a1e66288547b6bcba84fa0665dc037b5c7c` (168 432 bytes, Emscripten `MODULARIZE` wrapper, CommonJS — hence the sibling `package.json`) |
-| License | MIT ("Copyright (c) 2023 highs-js / Copyright (c) 2026 HiGHS"): `LICENSE` is `package/LICENSE` of the same tarball, verbatim. It ships with the binaries in the add-on image. HiGHS lists the licenses of code it bundles in its [`THIRD_PARTY_NOTICES.md`](https://github.com/ERGO-Code/HiGHS/blob/04024d701f79feb8e2f18bc3df0dffc04ef05088/THIRD_PARTY_NOTICES.md) |
+| Source | [`lovasoa/highs-js`](https://github.com/lovasoa/highs-js) @ `873198322c76781c26066f6997c752ea13ff59ef` (2026-11-19, "Merge pull request #59 from lovasoa/fix" = tag `v1.16.0`) |
+| HiGHS | [`ERGO-Code/HiGHS`](https://github.com/ERGO-Code/HiGHS) @ `f3f113d230429a8c0014b12ab0dd1a3847e58c55` (2026-11-11, **v1.16.0**) — the `HiGHS` submodule of the tag above |
+| Built by | upstream release build: npm `highs@1.16.0` (published 2026-11-20, tarball sha1 `3d1222116ee168cc5ea29b81a6826ac56ac01e50`), `package/build/` copied verbatim |
+| `highs.wasm` | sha256 `69a85477acde13876c8fe83357959724e795abdfd144af0531f920d41b5f813e` (3 985 864 bytes) |
+| `highs.js` | sha256 `4e21caba96b452eb70c7796779082b7997727850a468d8ce5b0a3ee82e030e6e` (168 538 bytes, Emscripten `MODULARIZE` wrapper, CommonJS — hence the sibling `package.json`) |
+| License | MIT ("Copyright (c) 2023 highs-js / Copyright (c) 2026 HiGHS"): `LICENSE` is `package/LICENSE` of the same tarball, verbatim. It ships with the binaries in the add-on image. HiGHS lists the licenses of code it bundles in its [`THIRD_PARTY_NOTICES.md`](https://github.com/ERGO-Code/HiGHS/blob/f3f113d230429a8c0014b12ab0dd1a3847e58c55/THIRD_PARTY_NOTICES.md) |
 
-Previous build, for rollback (`git checkout 3fe075e -- vendor/highs-build`, the v0.7.56 commit):
-highs-js `98c35cc8071104828e881cadfcfcba034c596411` (v1.8.0 + the stack-size
-fix) bundling HiGHS v1.8.0, `highs.wasm` sha256 `57c508b9…04226b`.
+Previous build, for rollback (`git checkout 3a03504 -- vendor/highs-build`, the v0.7.84 commit):
+npm `highs@1.15.3` (highs-js `96981da1…`) bundling HiGHS v1.15.1, `highs.wasm`
+sha256 `528be436…45c840`. The one before it, HiGHS v1.8.0 (`highs.wasm`
+`57c508b9…04226b`), is in `3fe075e` (v0.7.56).
 
 The source commits above are the whole provenance record. There used to be a
 `vendor/highs-js` git submodule pointing at the same commit; it was removed
@@ -87,6 +88,44 @@ toolchain** — copy the release artifacts instead.
   `../../vendor/highs-build/highs.js`.
 
 ## Last evaluated refresh
+
+2026-11-21, npm `highs@1.16.0` (HiGHS v1.16.0) — **adopted**, replacing
+`highs@1.15.3` (HiGHS v1.15.1). HiGHS 1.16 rewrites the LP file reader (invalid
+files are now rejected instead of read as a different model), runs presolve as
+an initial low-cost sweep plus a `presolve_mode` option, and changes MIP
+defaults and many presolve/MIP correctness details. The planner's LP strings
+parse unchanged. highs-js 1.16 has one behaviour change that reaches us: when
+there is no primal solution, `solve()` now returns the columns **without**
+`Primal` values instead of zeros. `parseSolution`'s finite-objective and finite
+`soc_t` checks already reject that; the real-solver time-limit test was updated
+to pin the new shape.
+
+All gates with the planner's options (x86-64, Node 26.13.1), 1.15.3 vs 1.16.0:
+
+- **Default dataset** (`compare-highs-builds.ts`): identical plan, objective
+  −57.079373 on both.
+- **Production snapshot** (`scripts/prod-solver-gate.sh <addon-host>`, 116 slots,
+  MILP, adaptive-learning calibration applied, EV not planned): identical plan,
+  objective −516.802593 on both, for the full stored horizon and from the current
+  slot; 73 → 70 ms.
+- **Six variants of that snapshot** (initial SoC 12 % and 100 %, reversed prices,
+  PV ×4, `avg` terminal valuation, rebalance enabled with a 2 h hold): five give
+  identical plans. The rebalance one is an alternative optimum inside the
+  planner's MIP gap (0.5 % = 2.55 c): 1.16 finds a 1.42 c cheaper plan
+  (−511.788851 vs −510.370138) and differs in 94 rows, but takes 2.75 s
+  instead of 1.55 s (repeatable). Rebalancing is disabled in production.
+- **Multi-day horizon on that snapshot** (`horizon-whatif.ts`, mode `on`: 116
+  firm + 288 forecast slots): both Optimal; 1.16's objective is 694.802472 vs
+  694.803957, inside the extended solve's `mip_abs_gap` (2.58). The firm part
+  (what can reach Victron) is identical for slots 0–79; from slot 80 (15:00 the
+  next day) up to 66 W of PV moves between load and battery, SoC differs by at
+  most 0.045 % and firm import totals differ by 3 Wh. The extended solve is
+  slower: 100 → 262 ms (5 runs each), well under its 15 s time limit; the
+  firm-only solve is 31 → 28 ms.
+
+The full suite passes with the one test update above.
+
+### Previous: 2026-09-19, `highs@1.15.3`
 
 2026-09-19, npm `highs@1.15.3` (HiGHS v1.15.1) — **adopted**, replacing the
 v1.8.0 build. `scripts/compare-highs-builds.ts`, old build vs new, on the

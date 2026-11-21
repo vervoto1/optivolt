@@ -55,15 +55,17 @@ describe('parseSolution against real HiGHS early stops', () => {
     optimal = highs.solve(lp, solveOptionsFor(cfg));
   });
 
-  it('time_limit 0: no incumbent (Infinity objective, all-zero primals) is a SolverStatusError, and the instance still solves Optimal afterwards', () => {
+  it('time_limit 0: no incumbent (Infinity objective, no primals) is a SolverStatusError, and the instance still solves Optimal afterwards', () => {
     expect(optimal.Status).toBe('Optimal');
 
     const stopped = highs.solve(lp, { ...solveOptionsFor(cfg), time_limit: 0 });
     expect(stopped.Status).toBe('Time limit reached');
     expect(stopped.ObjectiveValue).toBe(Infinity);
-    const primals = Object.values(stopped.Columns).map(c => c.Primal);
-    expect(primals.length).toBeGreaterThan(0);
-    expect(primals.every(v => v === 0)).toBe(true);
+    // highs-js 1.16 (HiGHS 1.16) returns the columns without Primal values here;
+    // earlier builds filled them with zeros. Either way parseSolution must refuse it.
+    const columns = Object.values(stopped.Columns);
+    expect(columns.length).toBeGreaterThan(0);
+    expect(columns.every(c => c.Primal === undefined)).toBe(true);
     expect(() => parseSolution(stopped, cfg, timing)).toThrow(SolverStatusError);
 
     // A time-limit stop does not throw or poison the instance.
