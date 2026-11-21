@@ -250,20 +250,21 @@ export const sharedCrosshairPlugin = {
     if (!sharedCrosshair.enabled || timeMs == null) return;
     const times = crosshairTimestamps(chart);
     const xScale = chart.scales?.x;
-    if (!times?.length || !xScale) return;
+    // A slot's width comes from its neighbour, so a one-slot chart has nothing to place by.
+    if (!(times?.length > 1) || !xScale) return;
     // Last slot starting at or before the moment; charts can differ in resolution (15 min vs
     // 1 h bars), so the line sits proportionally between two slots rather than snapping.
     let i = -1;
     for (let k = 0; k < times.length && times[k] <= timeMs; k++) i = k;
-    const step = times.length > 1 ? times[1] - times[0] : 0;
+    const step = times[1] - times[0];
     if (i < 0 || timeMs >= times[times.length - 1] + step) return;
     const from = xScale.getPixelForValue(i);
     // The last slot has no next tick: assume it is as wide as the one before it.
     const to = i + 1 < times.length
       ? xScale.getPixelForValue(i + 1)
-      : (i > 0 ? 2 * from - xScale.getPixelForValue(i - 1) : from);
+      : 2 * from - xScale.getPixelForValue(i - 1);
     const span = (times[i + 1] ?? times[i] + step) - times[i];
-    const xPx = from + (span > 0 ? ((timeMs - times[i]) / span) * (to - from) : 0);
+    const xPx = from + ((timeMs - times[i]) / span) * (to - from);
 
     const { ctx, chartArea } = chart;
     ctx.save();

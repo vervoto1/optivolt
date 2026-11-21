@@ -160,6 +160,36 @@ describe('shared crosshair', () => {
     expect(b.lines).toEqual([]);
   });
 
+  it('ignores charts drawn without slot timestamps or an x scale', () => {
+    setSharedCrosshairEnabled(true);
+    const plan = chartFor(slots(4, MIN15));
+    const noTimes = chartFor(slots(4, MIN15));
+    delete noTimes.config.options.plugins.sharedCrosshair;
+    const noScale = chartFor(slots(4, MIN15));
+    noScale.scales = {};
+    const noConfig = { scales: plan.scales, chartArea: plan.chartArea, ctx: plan.ctx };
+
+    // Hovering a chart that carries no timestamps moves nothing.
+    expect(hover(noTimes, 110).changed).toBe(false);
+    expect(hover(noConfig, 110).changed).toBe(false);
+
+    hover(plan, 110);
+    expect(noTimes.draws).toBe(1);
+    expect(noTimes.lines).toEqual([]);
+    expect(noScale.draws).toBe(1);
+    expect(noScale.lines).toEqual([]);
+    expect(() => sharedCrosshairPlugin.afterDatasetsDraw(noConfig)).not.toThrow();
+  });
+
+  it('draws nothing on a one-slot chart', () => {
+    setSharedCrosshairEnabled(true);
+    const plan = chartFor(slots(4, MIN15));
+    const single = chartFor([T0]);
+    hover(plan, 100); // T0 itself
+    expect(single.draws).toBe(1);
+    expect(single.lines).toEqual([]);
+  });
+
   it('skips charts on hidden tabs when repainting', () => {
     setSharedCrosshairEnabled(true);
     const a = chartFor(slots(4, MIN15));

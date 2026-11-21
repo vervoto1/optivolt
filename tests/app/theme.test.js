@@ -232,6 +232,16 @@ describe('theme.js', () => {
       expect(root.classList.contains('dark')).toBe(false);
     });
 
+    it('falls back to the system preference while Home Assistant has not loaded its state', async () => {
+      setupDOM({ prefersDark: true, storedTheme: 'light' });
+      const ha = embedInHomeAssistant(true);
+      delete ha.hass; // <home-assistant> present, hass not set yet
+      await loadTheme();
+      btn.click(); // light → system: "ha" is not offered without a readable darkMode
+      expect(localStorage.getItem('optivolt-theme')).toBeNull();
+      expect(root.classList.contains('dark')).toBe(true);
+    });
+
     it('falls back to the system preference when the parent page is cross-origin', async () => {
       setupDOM({ prefersDark: true, storedTheme: 'ha' });
       embedInHomeAssistant('cross-origin');
