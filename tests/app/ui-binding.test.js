@@ -169,6 +169,23 @@ describe('ui-binding', () => {
       expect(onFlowsAggregationChange).toHaveBeenCalledTimes(1);
     });
 
+    it('binds the crosshair switch to its stored per-browser choice', () => {
+      localStorage.setItem('optivolt:sharedCrosshair', 'on');
+      const chartsCrosshair = createEl('input', 'charts-crosshair');
+      chartsCrosshair.type = 'checkbox';
+
+      wireGlobalInputs(
+        { run: null, tableKwh: null, updateDataBeforeRun: null, pushToVictron: null, terminal: null, chartsCrosshair },
+        { onInput: vi.fn(), onRun: vi.fn(), updateTerminalCustomUI: vi.fn() },
+      );
+      expect(chartsCrosshair.checked).toBe(true);
+
+      chartsCrosshair.checked = false;
+      chartsCrosshair.dispatchEvent(new Event('change'));
+      expect(localStorage.getItem('optivolt:sharedCrosshair')).toBe('off');
+      localStorage.removeItem('optivolt:sharedCrosshair');
+    });
+
     it('ignores Enter without modifier', () => {
       const run = createEl('button', 'run3');
       run.click = vi.fn();

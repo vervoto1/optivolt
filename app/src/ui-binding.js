@@ -1,3 +1,5 @@
+import { initSharedCrosshairToggle } from "./charts/core.js";
+
 const $ = (sel) => document.querySelector(sel);
 
 export function getElements() {
@@ -43,6 +45,7 @@ export function getElements() {
     // charts + status
     flows: $("#flows"),
     flows15m: $("#flows-15m"),
+    chartsCrosshair: $("#charts-crosshair"),
     soc: $("#soc"),
     prices: $("#prices"),
     loadpv: $("#loadpv"),
@@ -323,6 +326,9 @@ export function wireGlobalInputs(
   if (onFlowsAggregationChange) {
     els.flows15m?.addEventListener("change", onFlowsAggregationChange);
   }
+
+  // Shared crosshair across the charts: a per-browser view choice, not a setting.
+  initSharedCrosshairToggle(els.chartsCrosshair);
 
   // Keyboard shortcut: Ctrl+Enter (or Cmd+Enter) to Recompute
   document.addEventListener("keydown", (e) => {
