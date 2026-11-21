@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.85 - 2026-11-21
+
+- **Home Assistant's POSTs no longer fail on a stale connection** (port of upstream [bmesuere/optivolt#218](https://github.com/bmesuere/optivolt/pull/218)). Node closes idle keep-alive sockets after 5 s, but Home Assistant's shared aiohttp pool keeps them longer and sometimes reuses one the server has already closed. aiohttp retries a GET in that case but not a POST, so an automation's price push to `/data` could fail with "Server disconnected" and stop the automation before calculate ran. The server now keeps idle sockets for 65 s (`keepAliveTimeout`, `headersTimeout` 66 s), so the client always closes first.
+- **The prediction validation table no longer breaks on an undefined metric** (port of upstream [bmesuere/optivolt#217](https://github.com/bmesuere/optivolt/pull/217)). The server reports a metric it can't compute as `NaN`, e.g. MAPE for a sensor whose actual values are all 0. JSON turns that into `null`, which got past the `isNaN` check, and `null.toFixed()` threw, so the table didn't render. Undefined MAE, RMSE and MAPE now show `—`. A row whose MAE is `null` also sorts last again, instead of being ranked as if its MAE were 0.
+- **Dev dependencies, two majors:**
+  - jsdom 30.1.3 → 31.0.1. It brings a new CSS engine and makes `@napi-rs/canvas` the optional canvas backend in place of `canvas`. Neither backend is installed here, before or after, so chart tests still run without a real canvas.
+  - @eslint/markdown 8.0.3 → 9.0.0 (`meta.languages` on rules, remapped locations for unused disable directives). The lint config needed no change.
+- **Not included: HiGHS 1.16.0** (npm `highs@1.16.0`, published 2026-11-20). It rewrites the LP file reader and changes presolve and MIP defaults, so it ships in its own PR after the production solver gate (see `vendor/highs-build/PROVENANCE.md`).
+
 ## 0.7.84 - 2026-11-18
 
 - **The add-on runs Node.js 26.13.1** (`NODE_IMAGE=node:26.13.1-alpine3.24`), up from 26.13.0. It is the November 2026 security release (9 High, 9 Medium/Low). Most fixes are in HTTP/2 and the TLS server, which OptiVolt does not use. Those that apply: the HTTP parser fix "tls,http: prevent nested parser execution from empty writes" (High) and llhttp 9.4.4, both in the Express server, plus the TLS client fixes, which cover the MQTT connection to Venus and the HTTPS calls to VRM and EpexPredictor.

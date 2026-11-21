@@ -477,6 +477,34 @@ describe('predictions-validation', () => {
     });
   });
 
+  it('renders metrics that arrive as null (NaN after JSON) as a dash and sorts them last', async () => {
+    savePredictionConfig.mockResolvedValue({});
+    // The server computes undefined metrics as NaN; JSON.stringify turns them into null.
+    runValidation.mockResolvedValue(JSON.parse(JSON.stringify({
+      sensorNames: ['s1'],
+      results: [
+        { sensor: 's1', lookbackWeeks: 2, dayFilter: 'all', aggregation: 'mean', mae: NaN, rmse: NaN, mape: NaN, n: 0, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 4, dayFilter: 'same', aggregation: 'mean', mae: 100, rmse: 120, mape: NaN, n: 96, validationPredictions: [] },
+        { sensor: 's1', lookbackWeeks: 8, dayFilter: 'same', aggregation: 'median', mae: 50, rmse: 60, mape: 10, n: 192, validationPredictions: [] },
+      ],
+    })));
+
+    initValidation({ readFormValues: vi.fn(() => ({})), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });
+    document.getElementById('pred-run-validation').click();
+
+    await vi.waitFor(() => {
+      const rows = document.querySelectorAll('#pred-metrics-body tr');
+      expect(rows.length).toBe(3);
+      // MAE, RMSE, MAPE are columns 4-6
+      const metrics = [...rows].map(r => [4, 5, 6].map(i => r.querySelectorAll('td')[i].textContent));
+      expect(metrics).toEqual([
+        ['50.0', '60.0', '10.0'],
+        ['100.0', '120.0', '—'],
+        ['—', '—', '—'],
+      ]);
+    });
+  });
+
   it('works when pred-run-validation button missing', () => {
     document.body.innerHTML = '';
     initValidation({ readFormValues: vi.fn(), renderLoadConfig: vi.fn(), setComparisonStatus: vi.fn() });

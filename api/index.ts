@@ -33,7 +33,7 @@ const shutdown = createShutdown({
 process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('SIGINT', () => { void shutdown('SIGINT'); });
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`Server listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
   console.log(`Node version: ${process.version}`);
 
@@ -58,3 +58,10 @@ app.listen(port, host, () => {
     })
     .catch(err => console.error('[boot] Failed to start timers:', err.message));
 });
+
+// Node closes idle keep-alive sockets after 5 s, while Home Assistant's shared
+// aiohttp pool reuses them for longer. A POST (e.g. the price push to /data)
+// that lands on a socket we just closed fails with "Server disconnected" and
+// is not retried. Outlast the client so it always closes first.
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
