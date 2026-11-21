@@ -16,13 +16,13 @@
 #
 # Without a calibration snapshot a box in adaptive-learning auto mode is solved
 # UNCALIBRATED, and compare-highs-builds.ts says so. REF=<git rev> picks the
-# commit whose vendor/highs-build is the reference (default 3fe075e = v0.7.56,
-# HiGHS 1.8.0). The snapshot is written to a private temp dir and removed on
+# commit whose vendor/highs-build is the reference (default 3a03504 = v0.7.84,
+# highs-js 1.15.3 / HiGHS 1.15.1). The snapshot is written to a private temp dir and removed on
 # exit; any haToken in the settings is stripped before it is written.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ref="${REF:-3fe075e}"
+ref="${REF:-3a03504}"
 work="$(mktemp -d)"
 chmod 700 "$work"
 trap 'rm -rf "$work"' EXIT

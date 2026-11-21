@@ -35,12 +35,11 @@ export class SolverStatusError extends Error {
 }
 
 // An early stop can happen before any incumbent is found, so the status alone
-// is not proof of a solution. The vendored highs-js copies Primal values out
-// for every status outside its no-solution set, so a time limit hit with no
-// incumbent comes back as finite all-zero primals with ObjectiveValue
-// Infinity: the objective must be finite too. The always-present soc_* columns
-// must also carry finite primals (an "Unknown"-style result can report a
-// finite objective with no columns at all).
+// is not proof of a solution. A time limit hit with no incumbent comes back
+// with ObjectiveValue Infinity and columns without Primal values (highs-js
+// 1.16; older builds filled them with zeros), so the objective must be finite.
+// The always-present soc_* columns must also carry finite primals (an
+// "Unknown"-style result can report a finite objective with no columns at all).
 function hasUsableIncumbent(result: HighsSolution, T: number): boolean {
   if (typeof result.ObjectiveValue !== 'number' || !Number.isFinite(result.ObjectiveValue)) return false;
   const columns = result.Columns ?? {};

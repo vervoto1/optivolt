@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.86 - 2026-11-21
+
+- **The solver is HiGHS 1.16.0** (npm `highs@1.16.0`, highs-js tag `v1.16.0`), up from HiGHS 1.15.1 (`highs@1.15.3`). HiGHS 1.16 rewrites the LP file reader and changes presolve and many MIP details. On the production snapshot both builds give the same day-ahead plan (objective −516.80, 116 slots, calibrated MILP). Five of six stressed variants are identical too. The sixth, a 2 h rebalance hold, is a 1.4 c cheaper alternative optimum within the MIP gap, but solves in 2.75 s instead of 1.55 s; rebalancing is off in production. The multi-day plan (116 firm + 288 forecast slots) is the same through slot 79, with up to 66 W of PV routing and 0.045 % SoC difference after that, at an equal objective within the MIP gap. Its solve takes 262 ms instead of 100 ms. Gate details are in `vendor/highs-build/PROVENANCE.md`. To roll back: `git checkout 3a03504 -- vendor/highs-build`.
+- **A time-limit stop with no plan now comes back without values.** highs-js 1.16 leaves the `Primal` values out when there is no primal solution, where it used to return zeros. The planner already rejects such a result (it needs a finite objective and finite SoC values), so behaviour is unchanged. The real-solver test and the `parseSolution` comment now describe the new shape.
+- **`scripts/prod-solver-gate.sh` compares against the 1.15.3 build by default** (`REF` default `3a03504`, was `3fe075e`, the HiGHS 1.8.0 build).
+
 ## 0.7.85 - 2026-11-21
 
 - **Home Assistant's POSTs no longer fail on a stale connection** (port of upstream [bmesuere/optivolt#218](https://github.com/bmesuere/optivolt/pull/218)). Node closes idle keep-alive sockets after 5 s, but Home Assistant's shared aiohttp pool keeps them longer and sometimes reuses one the server has already closed. aiohttp retries a GET in that case but not a POST, so an automation's price push to `/data` could fail with "Server disconnected" and stop the automation before calculate ran. The server now keeps idle sockets for 65 s (`keepAliveTimeout`, `headersTimeout` 66 s), so the client always closes first.
