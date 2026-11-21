@@ -1080,6 +1080,54 @@ describe('pricePointsToSeries', () => {
     expect(series.values).toEqual([1, 1, 1, 1]);
   });
 
+  it('cuts the run at a price that overflows to Infinity after the multiplier', () => {
+    const points = [
+      { time: '2026-10-06T10:00:00+02:00', value: 0.1 },
+      { time: '2026-10-06T11:00:00+02:00', value: 1e307 }, // ×100 → Infinity
+      { time: '2026-10-06T12:00:00+02:00', value: 0.3 },
+    ];
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T10:30:00+02:00') }));
+    expect(series.start).toBe('2026-10-06T08:00:00.000Z');
+    expect(series.values).toEqual([10, 10, 10, 10]);
+  });
+
+  it('places timestamps with a negative UTC offset', () => {
+    const points = [0, 1, 2].map(h => ({ time: `2026-10-06T0${h}:00:00-05:00`, value: 0.1 * (h + 1) }));
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T05:30:00Z') }));
+    expect(series.start).toBe('2026-10-06T05:00:00.000Z');
+    expect(series.values).toHaveLength(12);
+    expect(series.values[0]).toBeCloseTo(10);
+    expect(series.values[11]).toBeCloseTo(30);
+  });
+
+  it('reads other timestamp formats the JS parser accepts as server-local wall-clock times', () => {
+    // Slashes: not the ISO wall-clock shape, so no DST check, but Date reads it as local time.
+    const points = [0, 1].map(h => ({ time: `2026/10/06 1${h}:00`, value: 0.1 }));
+    const series = pricePointsToSeries(points, opts({ nowMs: Date.parse('2026-10-06T10:30:00+02:00') }));
+    expect(series.start).toBe('2026-10-06T08:00:00.000Z');
+    expect(series.values).toHaveLength(8);
+  });
+
+  it('remembers at most 1000 conflicting instants, forgetting the oldest first', () => {
+    const base = Date.parse('2026-10-06T00:00:00Z');
+    const conflicting = (i) => {
+      const time = new Date(base + i * 15 * 60_000).toISOString();
+      return [{ time, value: 0.1 }, { time, value: 0.2 }];
+    };
+    const o = opts({ interval: 15, nowMs: base });
+    const warnings = () => console.warn.mock.calls.filter(c => String(c[0]).includes('two different prices')).length;
+
+    pricePointsToSeries(Array.from({ length: 1001 }, (_, i) => conflicting(i)).flat(), o);
+    expect(warnings()).toBe(1001);
+
+    // The first instant was dropped to make room for the 1001st, so it is reported again;
+    // the most recent one is still remembered.
+    pricePointsToSeries(conflicting(0), o);
+    expect(warnings()).toBe(1002);
+    pricePointsToSeries(conflicting(1000), o);
+    expect(warnings()).toBe(1002);
+  });
+
   it('treats an unparseable timestamp as a defect', () => {
     const points = [
       { time: '2026-10-06T00:00:00+02:00', value: 0.1 },

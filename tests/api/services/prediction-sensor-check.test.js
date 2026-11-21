@@ -99,6 +99,34 @@ describe('checkPredictionSensors', () => {
   });
 });
 
+describe('checkPredictionSensors with malformed stored entries', () => {
+  it('checks what it can instead of throwing', () => {
+    const result = checkPredictionSensors(
+      [null, { id: 'sensor.grid' }, { name: 'Unnamed' }, { id: 'sensor.pv', name: 'PV', unit: 5 }],
+      [null, { formula: ['+sensor.grid'] }, { name: 'Odd', formula: '+PV' }, { name: 'Sum', formula: ['+PV', '+Unnamed'] }],
+      [energy('sensor.grid', '1.5'), energy('sensor.pv', '2')],
+    );
+
+    // A null entry and one without an id both check as id "" (not found, and the second a duplicate).
+    expect(result.sensors.map(s => [s.id, s.name, s.configuredUnit, s.status])).toEqual([
+      ['', '', null, 'error'],
+      ['sensor.grid', 'sensor.grid', null, 'error'], // name falls back to the id; no unit configured
+      ['', 'Unnamed', null, 'error'],
+      ['sensor.pv', 'PV', null, 'error'], // a non-string unit counts as none
+    ]);
+    expect(result.sensors[0].messages).toContain('configured unit "" is not Wh/kWh/MWh; its values would be read as Wh');
+    expect(result.sensors[2].messages).toContain('listed more than once; only one entry\'s name and unit are used');
+
+    expect(result.derived).toEqual([
+      { name: '', status: 'error', messages: ['formula is empty'] },
+      // A sensor without a name is known by its id.
+      { name: '', status: 'ok', messages: [] },
+      { name: 'Odd', status: 'error', messages: ['formula is empty'] }, // not a list
+      { name: 'Sum', status: 'ok', messages: [] },
+    ]);
+  });
+});
+
 describe('runPredictionSensorCheck', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -118,6 +146,12 @@ describe('runPredictionSensorCheck', () => {
     const result = await runPredictionSensorCheck({ haUrl: '', haToken: '' }, [sensor('sensor.a', 'A')], []);
     expect(result).toMatchObject({ reachable: false, error: 'Home Assistant connection is not configured' });
     expect(result.sensors[0]).toMatchObject({ checked: false, status: 'ok' });
+  });
+
+  it('reports a failure that is not an Error by its text', async () => {
+    fetchHaEntityStates.mockRejectedValue('socket hang up');
+    const result = await runPredictionSensorCheck({ haUrl: 'x', haToken: 'y' }, [], []);
+    expect(result).toMatchObject({ reachable: false, error: 'socket hang up' });
   });
 
   it('treats a non-list response as unreachable', async () => {

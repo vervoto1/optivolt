@@ -140,6 +140,31 @@ describe('buildTemperatureAnchors', () => {
     expect(anchors[0].profile[5]).toBe(50);
   });
 
+  it('skips load days without a temperature and records of other sensors', () => {
+    const { data, effTemps } = makeInputs();
+    const noTempDay = '2026-02-10'; // before the 16 days with temperatures
+    const summaries = summarizeTemperatureDays([
+      ...data,
+      ...loadForDay(noTempDay, 'Heat Pump', () => 99999),
+      ...loadForDay(days[0], 'Grid Import', () => 99999),
+    ], 'Heat Pump', effTemps);
+    expect(summaries.has(noTempDay)).toBe(false);
+    expect(summaries.size).toBe(16);
+    expect(summaries.get(days[0]).hours[12]).toBe(1200);
+  });
+
+  it('leaves an hour empty when no day in the bin has data for it', () => {
+    const { data, effTemps } = makeInputs();
+    // Local 03:00 is missing on every day (23 of 24 hours still make a usable day).
+    const without3 = data.filter(r => new Date(r.time).getHours() !== 3);
+    const anchors = buildTemperatureAnchors(without3, effTemps, cfg, nowMs).buckets.get('all');
+    expect(anchors).toHaveLength(2);
+    for (const anchor of anchors) {
+      expect(anchor.profile[3]).toBeNull();
+      expect(anchor.profile[2]).toBe(50);
+    }
+  });
+
   it('excludes today and days outside the lookback window', () => {
     const { data, effTemps } = makeInputs();
     const withToday = [...data, ...loadForDay('2026-03-01', 'Heat Pump', () => 99999)];

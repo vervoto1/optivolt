@@ -679,6 +679,26 @@ describe('Prediction route contracts', () => {
       expect(res.body.sensors[0]).toMatchObject({ id: 'sensor.grid', checked: false });
     });
 
+    it('POST /predictions/sensors/check tolerates stored files without sensors, derived or an HA connection', async () => {
+      const { sensors: _s, derived: _d, ...bareConfig } = structuredClone(mockConfig);
+      const { haUrl: _u, haToken: _t, ...bareSettings } = structuredClone(mockSettings);
+      loadPredictionConfig.mockResolvedValue(bareConfig);
+      loadSettings.mockResolvedValue(bareSettings);
+      fetchHaEntityStates.mockResolvedValue([]);
+      const res = await post(predictionsRouter, '/sensors/check', {});
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ reachable: true, sensors: [], derived: [] });
+      expect(fetchHaEntityStates).toHaveBeenCalledWith(expect.objectContaining({ haUrl: '', haToken: '' }));
+    });
+
+    it('POST /predictions/sensors/check maps a failing store read to a 500', async () => {
+      loadPredictionConfig.mockRejectedValueOnce(new Error('disk read failed'));
+      const res = await post(predictionsRouter, '/sensors/check', {});
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Sensor check failed');
+      expect(fetchHaEntityStates).not.toHaveBeenCalled();
+    });
+
     it('POST /predictions/sensors/check rejects a malformed sensor list (400) and saves nothing', async () => {
       const res = await post(predictionsRouter, '/sensors/check', { sensors: 'nope' });
       expect(res.status).toBe(400);

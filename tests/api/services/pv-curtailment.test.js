@@ -682,6 +682,40 @@ describe('pv-curtailment service — persisted ownership and boot reconciliation
     expect(getPvCurtailmentStatus()).toMatchObject({ externalDisable: true, ownsDisable: false });
   });
 
+  it('does not flag its own disable as external when the boot probe reads it late', async () => {
+    const warnSpy = vi.spyOn(console, 'warn');
+    let answerProbe;
+    readVictronSetting.mockImplementationOnce(() => new Promise((resolve) => { answerProbe = resolve; }));
+    startPvCurtailment(makeSettings());
+    const reconciling = reconcilePvCurtailmentAtBoot();
+    await flushPromises();
+
+    // The first plan arrives while the boot read of Pv/Disable is still out: we disable PV.
+    updatePvCurtailmentPlan(plan([row(0), row(1)]));
+    await flushPromises();
+    expect(getPvCurtailmentStatus().ownsDisable).toBe(true);
+
+    // The probe now reads our own 1 back.
+    answerProbe({ value: 1 });
+    await reconciling;
+    expect(getPvCurtailmentStatus()).toMatchObject({ ownsDisable: true, externalDisable: false });
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('holds no record of disabling it'));
+  });
+
+  it('changes nothing when the boot probe reads no Pv/Disable value', async () => {
+    const warnSpy = vi.spyOn(console, 'warn');
+    for (const answer of [null, { value: null }]) {
+      readVictronSetting.mockResolvedValueOnce(answer);
+      startPvCurtailment(makeSettings());
+      await reconcilePvCurtailmentAtBoot();
+      expect(getPvCurtailmentStatus()).toMatchObject({ externalDisable: false, ownsDisable: false });
+      await stopPvCurtailment();
+      resetPvCurtailmentState();
+    }
+    expect(writeVictronSetting).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('holds no record of disabling it'));
+  });
+
   it('does not probe Pv/Disable at boot when the feature is off and nothing is recorded', async () => {
     startPvCurtailment({ pvCurtailment: { enabled: false } });
     await reconcilePvCurtailmentAtBoot();

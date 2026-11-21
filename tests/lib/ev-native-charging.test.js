@@ -59,6 +59,16 @@ describe('EV native charging — soft target', () => {
     expect(rows.filter(r => r.ev_target_soc_percent != null)).toHaveLength(1);
   });
 
+  it('pins no target on the departure row when the config has no finite target', () => {
+    const cfg = { ...base, ev: { ...evBase } };
+    const result = highs.solve(buildLP(cfg), GAPS);
+    for (const evTargetSoc_percent of [undefined, NaN]) {
+      const rows = parseSolution(result, { ...cfg, ev: { ...evBase, evTargetSoc_percent } }, OPTS);
+      expect(rows[7].ev_target_met).toBeTypeOf('boolean');
+      expect(rows.some(r => 'ev_target_soc_percent' in r)).toBe(false);
+    }
+  });
+
   it('carries no pinned target when the deadline lies beyond the horizon', () => {
     const cfg = { ...base, ev: { ...evBase, evDepartureSlot: 9 } }; // T + 1: no target constraint
     const result = highs.solve(buildLP(cfg), GAPS);

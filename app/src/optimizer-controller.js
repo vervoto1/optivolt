@@ -307,9 +307,9 @@ export function createOptimizerController({ els, services = {} }) {
   }
 
   // The settings keys of a control: those read from it, or, for a pinned
-  // quick-settings copy, the key of the field it copies.
+  // quick-settings copy, the key of the field it copies. `control` is an event
+  // target or the focused element.
   function keysOfControl(control) {
-    if (!control || typeof control !== "object") return new Set();
     const keys = new Set(deps.settingsKeysForElement(els, control));
     const mirrorOf = control.dataset?.optimizerQuickMirror;
     if (mirrorOf) keys.add(mirrorOf);
@@ -319,6 +319,7 @@ export function createOptimizerController({ els, services = {} }) {
   // Keys whose control the user is in right now. Refilling it would move the
   // caret or undo what is being typed.
   function keysBeingEdited() {
+    /* v8 ignore next — environment guard: document is always defined in the browser/jsdom contexts this runs in */
     if (typeof document === "undefined") return new Set();
     const focused = document.activeElement;
     if (!focused || focused === document.body) return new Set();
@@ -345,6 +346,9 @@ export function createOptimizerController({ els, services = {} }) {
     }, true);
   }
 
+  /* v8 ignore next — unreachable: saveDirtySettings catches every error; kept so a future regression cannot wedge the save queue */
+  const keepSaveChainAlive = () => null;
+
   // Queue a save of the edited keys behind any save still running. Resolves
   // to the error message when the save failed, else null (also when there was
   // nothing to save).
@@ -352,7 +356,7 @@ export function createOptimizerController({ els, services = {} }) {
     const run = saveChain.then(saveDirtySettings);
     // saveDirtySettings never rejects; this keeps the chain alive even if it
     // ever did, so one broken save cannot block every later one.
-    saveChain = run.catch(() => null);
+    saveChain = run.catch(keepSaveChainAlive);
     return run;
   }
 

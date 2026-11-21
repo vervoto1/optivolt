@@ -350,7 +350,6 @@ function updatePredictorFieldVisibility() {
 }
 
 function renderTemperatureConfig(temperaturePredictor) {
-  if (!temperaturePredictor) return;
   setVal('pred-temp-lookback', temperaturePredictor.lookbackWeeks ?? TEMPERATURE_DEFAULTS.lookbackWeeks);
   setVal('pred-temp-filter', temperaturePredictor.dayFilter ?? TEMPERATURE_DEFAULTS.dayFilter);
   setVal('pred-temp-bins', temperaturePredictor.bins ?? TEMPERATURE_DEFAULTS.bins);

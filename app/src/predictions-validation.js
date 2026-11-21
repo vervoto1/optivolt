@@ -90,9 +90,9 @@ function rowParams(row) {
   return isTemperatureRow(row) ? `${row.bins} bins` : row.aggregation;
 }
 
-/** "Load / temperature / 4w / all / 3 bins" — for status lines and the chart title. */
-function describeRow(row) {
-  return `${row.sensor} / ${row.type ?? 'historical'} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${rowParams(row)}`;
+/** "Load / temperature / 4w / all / 3 bins" — for a temperature row's status line and chart title. */
+function describeTemperatureRow(row) {
+  return `${row.sensor} / temperature / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.bins} bins`;
 }
 
 function badge(label, tone) {
@@ -304,7 +304,7 @@ async function onUseTemperatureRow(row, deps) {
     if (!useTemperatureRow) throw new Error('temperature predictor is not available in this form');
     await useTemperatureRow({ sensor: row.sensor, lookbackWeeks: row.lookbackWeeks, dayFilter: row.dayFilter, bins: row.bins });
     setComparisonStatus(
-      `Active config updated: ${describeRow(row)}. The historical strategy stays as its fallback (now on ${row.sensor}); select Historical to switch back.`,
+      `Active config updated: ${describeTemperatureRow(row)}. The historical strategy stays as its fallback (now on ${row.sensor}); select Historical to switch back.`,
     );
     rerenderTable(deps);
   } catch (err) {
@@ -488,7 +488,7 @@ function renderAccuracyCharts(row, preds) {
   const title = document.getElementById('pred-chart-title');
   if (title) {
     title.textContent = isTemperatureRow(row)
-      ? `Accuracy: ${describeRow(row)}`
+      ? `Accuracy: ${describeTemperatureRow(row)}`
       : `Accuracy: ${row.sensor} / ${row.lookbackWeeks}w / ${row.dayFilter} / ${row.aggregation}`;
   }
 }
